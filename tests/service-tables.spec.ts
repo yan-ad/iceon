@@ -7,6 +7,53 @@ type Controls = { failure?: string; malformed?: string; empty?: boolean; hold?: 
 type MockWindow = Window & { __serviceCalls: Call[]; __serviceControls: Controls; __releaseServices: () => void; __releaseHelmCancels: () => void; __externalOpens: string[] };
 const grid = (page: Page, name: string) => page.getByRole("table", { name, exact: true });
 
+for (const width of [1440, 390]) for (const colorScheme of ["light", "dark"] as const) {
+  test(`port forwards use the Astryx empty state at ${width} in ${colorScheme}`, async ({ page }, testInfo) => {
+    await page.emulateMedia({ colorScheme });
+    await fixture(page, "port-forwarding");
+    await page.setViewportSize({ width, height: 900 });
+    const empty = grid(page, "Port forwards").locator(".astryx-empty-state");
+    await expect(empty).toHaveAttribute("role", "status");
+    await expect(empty.getByRole("heading", { name: "No port forwards", level: 2, exact: true })).toBeVisible();
+    await expect(empty).toContainText("Create a port forward to connect a local port to a Pod in this session.");
+    await expect(page.getByText("No active port forwards were returned.", { exact: true })).toHaveCount(0);
+    const viewport = page.locator("[data-iceon-table-viewport]");
+    for (const scroll of [false, true]) {
+      if (scroll) await viewport.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+      const box = (await empty.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(width);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: testInfo.outputPath("port-forwards-empty.png") });
+    await empty.getByRole("button", { name: "Create forward", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("dialog", { name: "Create port forward", exact: true })).toBeVisible();
+    expect(await calls(page, "cluster_pod_forward_start")).toEqual([]);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(empty).toBeVisible();
+  });
+}
+
+test("port forward loading and failed empty refreshes do not show a successful empty state", async ({ page }) => {
+  await fixture(page, "port-forwarding", { hold: true });
+  const empty = page.locator(".astryx-empty-state");
+  await expect(page.getByRole("status", { name: "Loading port forwards…", exact: true })).toBeVisible();
+  await expect(empty).toHaveCount(0);
+  await controls(page, { hold: false });
+  await page.evaluate(() => (window as MockWindow).__releaseServices());
+  await expect(empty).toBeVisible();
+  await controls(page, { failure: "network" });
+  await refreshForwards(page);
+  await expect(page.getByRole("alert")).toContainText("Port forwards unavailable");
+  await expect(empty).toHaveCount(0);
+  await expect(grid(page, "Port forwards")).toHaveCount(0);
+  await controls(page, { failure: "" });
+  await page.getByRole("alert").getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(empty.getByRole("heading", { name: "No port forwards", exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
 test("delayed Helm cleanup targets only the old read while the new read is pending", async ({ page }) => {
   await fixture(page);
   await expect(grid(page, "Helm Releases")).toContainText("edge");
@@ -42,7 +89,7 @@ for (const forwardStatus of ["stopped", "error"]) test(`${forwardStatus} forward
   await expect(page.getByRole("menuitem", { name: "Stop", exact: true })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "Remove", exact: true })).toBeEnabled();
   await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
-  await expect(table).toContainText("No active port forwards were returned.");
+  await expect(table).toContainText("No port forwards");
   expect(await calls(page, "cluster_pod_forward_stop")).toEqual([{ command: "cluster_pod_forward_stop", request: {
     clusterId: "one", sessionId: (await calls(page, "cluster_pod_forward_start"))[0].request.sessionId, id: "forward-one",
   } }]);
@@ -290,7 +337,7 @@ test("late Helm results cannot cross namespace scopes", async ({ page }) => {
 test("port table resolves Pod UID before loopback auto-port start, survives navigation, and stops through IPC", async ({ page }) => {
   await fixture(page, "port-forwarding");
   const table = grid(page, "Port forwards");
-  await expect(table).toContainText("No active port forwards were returned.");
+  await expect(table).toContainText("No port forwards");
   await page.getByRole("button", { name: "Create port forward", exact: true }).click();
   await expect(page.getByRole("button", { name: "Start forward", exact: true })).toBeDisabled();
   await expect(page.getByRole("textbox", { name: "Local port", exact: true })).toHaveValue("0");
@@ -312,7 +359,7 @@ test("port table resolves Pod UID before loopback auto-port start, survives navi
   await openForwardActions(page);
   await expect(page.getByRole("menuitem", { name: "Remove", exact: true })).toHaveCount(0);
   await page.getByRole("menuitem", { name: "Stop", exact: true }).click();
-  await expect(table).toContainText("No active port forwards were returned.");
+  await expect(table).toContainText("No port forwards");
   expect((await calls(page, "cluster_pod_forward_stop"))[0].request).toEqual({ clusterId: "one", sessionId: start.request.sessionId, id: "forward-one" });
   expect(await page.evaluate(() => (window as MockWindow).__externalOpens)).toEqual([]);
   expect(await page.evaluate(() => (window as MockWindow).__serviceCalls.some((call) => /open_url|opener|catalog_open_web_link/.test(call.command)))).toBe(false);
@@ -328,6 +375,17 @@ test("forward filters are local and failed refresh retains honest stale rows", a
   await page.getByRole("option", { name: "team-a", exact: true }).click();
   await page.getByRole("combobox", { name: "Status", exact: true }).click();
   await page.getByRole("option", { name: "running", exact: true }).click();
+  await expect(grid(page, "Port forwards")).toContainText("api-pod");
+  const search = page.getByRole("textbox", { name: "Search forwards", exact: true });
+  await search.fill("absent");
+  const empty = grid(page, "Port forwards").locator(".astryx-empty-state");
+  await expect(empty.getByRole("heading", { name: "No forwards match the current filters.", exact: true })).toBeVisible();
+  await expect(empty).toContainText("Try changing your search or clearing a filter.");
+  await empty.getByRole("button", { name: "Clear filters", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(search).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: "Namespace filter", exact: true })).toContainText("All namespaces");
+  await expect(page.getByRole("combobox", { name: "Status", exact: true })).toContainText("All statuses");
   await expect(grid(page, "Port forwards")).toContainText("api-pod");
   await controls(page, { failure: "network" });
   await refreshForwards(page);
@@ -352,7 +410,7 @@ test("failed forward Stop retains its row, reports the error, and retries the sa
   await openForwardActions(page);
   await page.getByRole("menuitem", { name: "Stop", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(grid(page, "Port forwards")).toContainText("No active port forwards were returned.");
+  await expect(grid(page, "Port forwards")).toContainText("No port forwards");
   expect(await calls(page, "cluster_pod_forward_stop")).toEqual([stop, stop]);
 });
 
@@ -363,7 +421,7 @@ test("forward errors never impersonate empty lists and failed UID resolution can
   await expect(page.getByText(/were returned/)).toHaveCount(0);
   await controls(page, { failure: "" });
   await refreshForwards(page);
-  await expect(grid(page, "Port forwards")).toContainText("No active port forwards were returned.");
+  await expect(grid(page, "Port forwards")).toContainText("No port forwards");
   await startForward(page);
   await expect(page.getByRole("alert")).toContainText("Kubernetes permissions");
   expect(await calls(page, "cluster_pod_forward_start")).toHaveLength(0);

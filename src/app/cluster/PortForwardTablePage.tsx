@@ -6,11 +6,12 @@ import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Table, proportional, type TableColumn } from "@astryxdesign/core/Table";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Text } from "@astryxdesign/core/Text";
 import { ContentLoading } from "../components/ContentLoading";
 import { ContentError } from "../components/ContentError";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { IconPlus, IconSearch } from "@tabler/icons-react";
+import { IconPlus, IconSearch, IconX } from "@tabler/icons-react";
 import { TableActionOverlay, TableToolbar, tableViewport } from "./TableToolbar";
 import type { SessionRequest } from "./api";
 import { podDetail, podForwardList, podForwardStart, podForwardStop, podMessage, type PodForward } from "./podApi";
@@ -183,22 +184,33 @@ function PortForwardSession({ clusterId, sessionId }: PortForwardTablePageProps)
 
   ], [inspectForward, openResource]);
   const plugins = useMemo(() => ({ viewport: tableViewport<PodForward>(), rowContext: rowMenu }), [rowMenu]);
-  const hasFilters = !!(deferredQuery || status || namespaceFilter);
-  const emptyState = useMemo(() => <VStack gap={2} padding={6}><Text>{hasFilters ? "No forwards match the current filters." : "No active port forwards were returned."}</Text><Text color="secondary">Choose Create port forward to enter a namespace, Pod, and ports.</Text></VStack>, [hasFilters]);
+  const hasFilters = !!(deferredQuery.trim() || status || namespaceFilter);
+  const emptyState = useMemo(() => <EmptyState
+    title={hasFilters ? "No forwards match the current filters." : "No port forwards"}
+    description={hasFilters ? "Try changing your search or clearing a filter." : "Create a port forward to connect a local port to a Pod in this session."}
+    actions={<Button label={hasFilters ? "Clear filters" : "Create forward"} variant="secondary"
+      icon={<Icon icon={hasFilters ? IconX : IconPlus} />} isDisabled={busy || pending}
+      onClick={() => {
+        if (hasFilters) { setQuery(""); setStatus(""); setNamespaceFilter(""); }
+        else { setCreateError(null); setCreateOpen(true); }
+      }} />}
+    headingLevel={2}
+    style={{ minHeight: "calc(var(--spacing-10) * 6)", width: "calc(100cqi - var(--spacing-1))", minWidth: 0,
+      position: "sticky", insetInlineStart: 0, overflowWrap: "anywhere" }} />, [hasFilters, busy, pending]);
 
-  return <VStack gap={3} style={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+  return <VStack gap={3} style={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", containerType: "inline-size" }}>
       <TableToolbar label="Port Forwarding" count={forwards ? `${items.length} / ${forwards.length}` : undefined}>
         <TextInput label="Search forwards" isLabelHidden placeholder="Search forwards…" startIcon={IconSearch} value={query} onChange={setQuery} hasClear size="sm" width="min(18rem, 100%)" />
         <Selector label="Status" isLabelHidden value={status} onChange={setStatus} size="sm" options={[{ value: "", label: "All statuses" }, ...statuses.map((value) => ({ value, label: value }))]} />
         <Selector label="Namespace filter" isLabelHidden value={namespaceFilter} onChange={setNamespaceFilter} size="sm" options={[{ value: "", label: "All namespaces" }, ...namespaces.map((value) => ({ value, label: value }))]} />
       </TableToolbar>
     <ContentLoading label="Loading port forwards…" refreshing active={refreshing && !!forwards} />
-    {error && <ContentError title="Port forwards unavailable" message={`${forwards ? "Retained forward states may be stale. " : ""}${error}`} retained={!!forwards} onRetry={() => void load(true)} disabled={isLoading} />}
+    {error && <ContentError title="Port forwards unavailable" message={`${items.length > 0 ? "Retained forward states may be stale. " : ""}${error}`} retained={items.length > 0} onRetry={() => void load(true)} disabled={isLoading} />}
     {actionError && <Text role="alert">{actionError}</Text>}
     {pending && <Text role="status">Updating search results…</Text>}
     {!forwards && !error && <ContentLoading label="Loading port forwards…" />}
-    {forwards && <ForwardTable aria-label="Port forwards" aria-busy={pending || refreshing} data={items} columns={columns} idKey="id" density="compact" hasHover textOverflow="truncate" plugins={plugins}
-      emptyState={emptyState} />}
+    {forwards && (!error || items.length > 0) && <ForwardTable aria-label="Port forwards" aria-busy={pending || refreshing} data={items} columns={columns} idKey="id" density="compact" hasHover textOverflow="truncate" plugins={plugins}
+      emptyState={pending || refreshing ? false : emptyState} />}
     <TableActionOverlay label="Port forward actions"><IconButton label="Create port forward" tooltip="Create port forward" icon={<Icon icon={IconPlus} />} variant="primary" size="lg" elevation="med"
       style={{ pointerEvents: "auto", borderRadius: "var(--radius-container)" }}
       isDisabled={busy} onClick={() => { setCreateError(null); setCreateOpen(true); }} /></TableActionOverlay>

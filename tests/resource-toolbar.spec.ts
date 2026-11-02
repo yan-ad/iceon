@@ -62,7 +62,7 @@ for (const theme of ["light", "dark"] as const) {
     expect(Math.abs(ring.y + ring.height / 2 - frame.y - frame.height / 2)).toBeLessThan(50);
     await page.screenshot({ path: testInfo.outputPath(`${theme}-loading.png`) });
     await change(page, { holdNamespaces: false, holdResources: false });
-    await expect(page.getByRole("table", { name: "Vertical Pod Autoscalers", exact: true })).toContainText("No vertical pod autoscalers were returned.");
+    await expect(page.getByRole("table", { name: "Vertical Pod Autoscalers", exact: true }).getByRole("heading", { name: "No vertical pod autoscalers found", exact: true })).toBeVisible();
     await expect(loading).toHaveCount(0);
     await expect(filters(page).locator(".astryx-spinner")).toHaveCount(0);
     expect((await search(page).boundingBox())!.y).toBe(box.y);
@@ -85,7 +85,7 @@ for (const theme of ["light", "dark"] as const) {
     expect((await search(page).boundingBox())!.y).toBe(before.y);
     await change(page, { fail: false });
     await failure.getByRole("button", { name: "Refresh", exact: true }).click();
-    await expect(page.getByRole("table", { name: "Vertical Pod Autoscalers", exact: true })).toContainText("No vertical pod autoscalers were returned.");
+    await expect(page.getByRole("table", { name: "Vertical Pod Autoscalers", exact: true }).getByRole("heading", { name: "No vertical pod autoscalers found", exact: true })).toBeVisible();
     await expect(failure).toHaveCount(0);
     expect(errors).toEqual([]);
   });

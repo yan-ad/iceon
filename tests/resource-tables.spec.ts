@@ -333,8 +333,8 @@ async function fixture(page: Page, options: Controls & { legacyPreference?: bool
           const items = filteredRequest ? [...firstPage, ...secondPage].filter(matches)
             : request.continueToken ? secondPage : firstPage;
           const response = { ...request, namespace: request.namespace ?? null, items: control.empty ? [] : items,
-            fetchedAt: Date.now(), truncated: filteredRequest ? false : !request.continueToken,
-            continueToken: filteredRequest ? null : request.continueToken ? null : "next-page-token", metrics: null };
+            fetchedAt: Date.now(), truncated: !control.empty && !filteredRequest && !request.continueToken,
+            continueToken: control.empty || filteredRequest || request.continueToken ? null : "next-page-token", metrics: null };
           switch (control.malformed) {
             case "namespace": response.namespace = "wrong-namespace"; break;
             case "session": response.sessionId = "wrong-session"; break;
@@ -469,8 +469,8 @@ test("search and Status filter are sent to Rust and can find continuation-page r
   expect((await calls(page)).at(-1)!.request).toMatchObject({ status: "Pending", continueToken: null });
   await search.fill("absent");
   await expect(table(page)).toContainText("No pods match your filters.");
-  await expect(table(page)).not.toContainText("No pods were returned.");
-  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(table(page)).not.toContainText("No pods found");
+  await table(page).getByRole("button", { name: "Clear filters", exact: true }).click();
   await ready(page); await expect(search).toHaveValue("");
   expect((await calls(page)).at(-1)!.request).not.toHaveProperty("query");
 });
@@ -488,7 +488,7 @@ test("CRD Group filter combines with Status and clears with a fresh unfiltered r
   await page.getByRole("textbox", { name: "Search Definitions", exact: true }).fill("absent");
   await expect(table(page, "Definitions")).toContainText("No definitions match your filters.");
   expect((await calls(page)).at(-1)!.request).toMatchObject({ query: "absent", status: "Active", group: "apps.example.test", continueToken: null });
-  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await table(page, "Definitions").getByRole("button", { name: "Clear filters", exact: true }).click();
   await ready(page, "Definitions"); expect((await calls(page)).at(-1)!.request).not.toHaveProperty("group");
 });
 
@@ -570,7 +570,7 @@ for (const [failure, message, section] of [
     await fixture(page, { failure, section });
     await expect(page.getByRole("alert")).toContainText(message);
     await expect(page.getByRole("table")).toHaveCount(0);
-    await expect(page.getByText(/were returned/)).toHaveCount(0);
+    await expect(page.locator(".astryx-empty-state")).toHaveCount(0);
     expect((await calls(page)).at(-1)!.request.kind).toBe(section === "pods" ? "pods" : "podSecurityPolicies");
   });
 }
@@ -579,7 +579,7 @@ for (const malformed of ["namespace", "session", "readId", "columns", "duplicate
     await fixture(page, { malformed });
     await expect(page.getByRole("alert")).toContainText("unsupported response");
     await expect(table(page)).toHaveCount(0);
-    await expect(page.getByText(/were returned/)).toHaveCount(0);
+    await expect(page.locator(".astryx-empty-state")).toHaveCount(0);
   });
 }
 
@@ -601,7 +601,7 @@ test("automatic Pod LIST updates are quiet, do not overlap, and leave continuati
   await expect(table(page)).toContainText("shared-name");
   await page.evaluate(() => document.querySelector("#held-confirmation")!.remove());
   await page.clock.fastForward(250);
-  await expect(table(page)).toContainText("No pods were returned.");
+  await expect(table(page).getByRole("heading", { name: "No pods found", exact: true })).toBeVisible();
   await controls(page, { empty: false });
   await page.clock.fastForward(10_000);
   await expect(table(page)).toContainText("shared-name");
@@ -632,7 +632,70 @@ test("successful empty response is distinct from loading and failures", async ({
   await expect(page.getByRole("status", { name: "Loading pods…", exact: true })).toBeVisible();
   await expect(table(page)).toHaveCount(0);
   await page.evaluate(() => (window as MockWindow).__releaseResources());
-  await expect(table(page)).toContainText("No pods were returned.");
+  await expect(table(page).getByRole("heading", { name: "No pods found", exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+for (const width of [1440, 390]) for (const colorScheme of ["light", "dark"] as const) {
+  test(`StatefulSets use the Astryx empty state at ${width} in ${colorScheme}`, async ({ page }, testInfo) => {
+    await page.emulateMedia({ colorScheme });
+    await fixture(page, { section: "stateful-sets", empty: true });
+    await page.setViewportSize({ width, height: 900 });
+    const empty = table(page, "Stateful Sets").locator(".astryx-empty-state");
+    await expect(empty.getByRole("heading", { name: "No stateful sets found", level: 2, exact: true })).toBeVisible();
+    await expect(empty).toHaveAttribute("role", "status");
+    await expect(empty).toContainText("No stateful sets were found across all namespaces.");
+    await expect(page.getByText("No stateful sets were returned.", { exact: true })).toHaveCount(0);
+    await expect(empty.getByRole("button", { name: "Refresh", exact: true })).toBeVisible();
+    const box = (await empty.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    const viewport = page.locator("[data-iceon-table-viewport]");
+    await viewport.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+    const scrolled = (await empty.boundingBox())!;
+    expect(scrolled.x).toBeGreaterThanOrEqual(0);
+    expect(scrolled.x + scrolled.width).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: testInfo.outputPath("statefulsets-empty.png") });
+    await controls(page, { empty: false });
+    await empty.getByRole("button", { name: "Refresh", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await ready(page, "Stateful Sets");
+    await expect(empty).toHaveCount(0);
+  });
+}
+
+test("StatefulSets filtered empty state clears filters with the keyboard and keeps namespace scope", async ({ page }) => {
+  await fixture(page, { section: "stateful-sets" });
+  await ready(page, "Stateful Sets");
+  await selectNamespace(page, "team-a");
+  const search = page.getByRole("textbox", { name: "Search Stateful Sets", exact: true });
+  await search.fill("absent");
+  const empty = table(page, "Stateful Sets").locator(".astryx-empty-state");
+  await expect(empty.getByRole("heading", { name: "No stateful sets match your filters.", exact: true })).toBeVisible();
+  await expect(empty).toContainText("Try changing your search or clearing a filter.");
+  await empty.getByRole("button", { name: "Clear filters", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await ready(page, "Stateful Sets");
+  await expect(search).toHaveValue("");
+  expect((await calls(page)).at(-1)!.request).toMatchObject({ namespace: "team-a", continueToken: null });
+  expect((await calls(page)).at(-1)!.request).not.toHaveProperty("query");
+});
+
+test("an empty snapshot does not mask a failed refresh with a successful empty state", async ({ page }) => {
+  await fixture(page, { section: "stateful-sets", empty: true });
+  const empty = table(page, "Stateful Sets").locator(".astryx-empty-state");
+  await expect(empty).toBeVisible();
+  await selectNamespace(page, "team-a");
+  await expect(empty).toContainText("No stateful sets were found in namespace team-a.");
+  await controls(page, { failure: "network" });
+  await empty.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Could not load stateful sets");
+  await expect(page.locator(".astryx-empty-state")).toHaveCount(0);
+  await expect(table(page, "Stateful Sets")).toHaveCount(0);
+  await controls(page, { failure: "" });
+  await page.getByRole("alert").getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(empty).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 

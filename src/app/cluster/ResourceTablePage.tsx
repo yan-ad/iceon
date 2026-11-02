@@ -6,9 +6,10 @@ import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Table, proportional, type TableColumn } from "@astryxdesign/core/Table";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { IconSearch, IconX, IconCircleCheck, IconAlertTriangle, IconHourglass, IconCircleDashed } from "@tabler/icons-react";
+import { IconSearch, IconX, IconCircleCheck, IconAlertTriangle, IconHourglass, IconCircleDashed, IconRefresh } from "@tabler/icons-react";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
 import { Icon } from "@astryxdesign/core/Icon";
 import { IconButton } from "@astryxdesign/core/IconButton";
@@ -216,8 +217,26 @@ function ResourceSnapshotContent({ view, clusterId, sessionId, namespace, token,
   const tableColumns = useMemo(() => columns(view, openResource, openRelated, onNamespace, openPod), [view, openResource, openRelated, onNamespace, openPod]);
   const plugins = useMemo(() => ({ viewport: tableViewport<ResourceItem>(), selection: selection.plugin, rowContext: rowMenu.plugin }), [selection.plugin, rowMenu.plugin]);
   const emptyFiltered = rows.length === 0 && filtered;
-  const emptyState = useMemo(() => <VStack gap={2} padding={6}><Text>{emptyFiltered ? `No ${view.label.toLowerCase()} match your filters.` : `No ${view.label.toLowerCase()} were returned.`}</Text></VStack>, [emptyFiltered, view.label]);
-  return <VStack gap={0} style={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+  const emptyState = useMemo(() => {
+    const resource = view.label.toLowerCase();
+    return <EmptyState
+      title={emptyFiltered ? `No ${resource} match your filters.` : `No ${resource} found`}
+      description={emptyFiltered
+        ? "Try changing your search or clearing a filter."
+        : page?.truncated ? "This page is empty. Refresh or continue to the next page."
+        : view.namespaced ? namespace ? `No ${resource} were found in namespace ${namespace}.` : `No ${resource} were found across all namespaces.`
+        : `No ${resource} were found in this cluster.`}
+      actions={<Button
+        label={emptyFiltered ? "Clear filters" : "Refresh"}
+        icon={<Icon icon={emptyFiltered ? IconX : IconRefresh} />}
+        variant="secondary"
+        isDisabled={loading || pending}
+        onClick={() => emptyFiltered ? onFilter({ query: "", status: "", group: "" }) : setRevision(value => value + 1)} />}
+      headingLevel={2}
+      style={{ minHeight: "calc(var(--spacing-10) * 6)", width: "calc(100cqi - var(--spacing-1))", minWidth: 0,
+        position: "sticky", insetInlineStart: 0, overflowWrap: "anywhere" }} />;
+  }, [emptyFiltered, loading, namespace, onFilter, page?.truncated, pending, view.label, view.namespaced]);
+  return <VStack gap={0} style={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", containerType: "inline-size" }}>
     <TableToolbar label={view.label} count={readable && page ? `${rows.length}${page.truncated ? "+" : ""} items` : undefined}
       context={view.namespaced && <NamespaceSelector value={namespace} onChange={onNamespace} isLabelHidden accessWarning={accessWarning} />}>
       <TextInput label={`Search ${view.label}`} isLabelHidden value={filters.query} onChange={value => onFilter({ query: value })} placeholder={`Search ${view.label}…`}
@@ -235,12 +254,12 @@ function ResourceSnapshotContent({ view, clusterId, sessionId, namespace, token,
     {syncing && syncStatus !== "syncing" && <Text role="status">Live sync: {syncStatus}</Text>}
     <ContentLoading label={`Loading ${view.label.toLowerCase()}…`} refreshing active={visibleLoading && !!page} />
     {loading && !page && <ContentLoading label={`Loading ${view.label.toLowerCase()}…`} />}
-    {error && <ContentError title={`Could not load ${view.label.toLowerCase()}`} message={`${connectionMessage(error)} (${error})`} retained={!!page}
+    {error && <ContentError title={`Could not load ${view.label.toLowerCase()}`} message={`${connectionMessage(error)} (${error})`} retained={rows.length > 0}
       disabled={loading || pending} onRetry={() => setRevision(value => value + 1)} />}
     {view.kind && <ResourceActions key={actionScope} clusterId={clusterId} sessionId={sessionId} kind={view.kind} namespace={namespace} createLabel={view.createLabel}
       hidePermissionNotice={view.namespaced} selected={selection.selected} disabled={inventoryUnavailable} contextTarget={rowMenu.contextTarget} onContextClose={rowMenu.onContextClose} onAccepted={selection.remove} onRefresh={() => setRevision(value => value + 1)} />}
-    {page && <ResourceTable aria-label={view.label} data={rows} columns={tableColumns} density="compact" idKey={resourceRowKey} hasHover textOverflow="truncate" aria-busy={visibleLoading || pending}
-      plugins={plugins} emptyState={emptyState} />}
+    {page && (!error || rows.length > 0) && <ResourceTable aria-label={view.label} data={rows} columns={tableColumns} density="compact" idKey={resourceRowKey} hasHover textOverflow="truncate" aria-busy={visibleLoading || pending}
+      plugins={plugins} emptyState={visibleLoading || pending ? false : emptyState} />}
     </>}
   </VStack>;
 }

@@ -331,6 +331,18 @@ and stale notice, not a blocking replacement. Offer retry and its shortcut only
 when there is a working action. This keeps failure distinct from a successful empty
 result; errors wrap at narrow widths in both themes.
 
+Resource inventory tables use Astryx `EmptyState` for successful empty and
+filtered-empty results, with a centered heading, scope-aware description, and
+working Refresh or Clear filters action. Loading and failed empty snapshots do
+not show a success-style empty state; failures retain rows only when rows exist.
+`tests/resource-tables.spec.ts` covers StatefulSets in both themes at desktop and
+narrow widths, keyboard recovery, namespace preservation, and empty-refresh failure.
+Port-forward inventories use the same responsive `EmptyState` layout, offering
+Create forward for an empty session and Clear filters for no matches. The create
+action only opens the existing form; starting still requires validation and explicit
+confirmation. `tests/service-tables.spec.ts` covers keyboard actions, both themes,
+narrow layouts, and loading/failed-empty refresh separation.
+
 The compact details header shows the plain resource name and tooltip-equipped,
 accessible icon controls. Resource edit/delete, workload and Node scheduling launchers,
 and Service forwarding join Pod Logs/Shell/Attach/forward in this header rather than
