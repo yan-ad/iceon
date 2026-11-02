@@ -297,26 +297,30 @@ impl Engine {
     pub fn start(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         let stop = self.stop.clone();
-        self.tasks.spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = stop.cancelled() => break,
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                }
-                let Some(engine) = weak.upgrade() else { break };
-                if let Ok(mut sessions) = engine.sessions.lock() {
-                    for session in sessions.values_mut() {
-                        if !session.expired
-                            && (session.expires.is_some_and(|expiry| expiry <= now())
-                                || now().saturating_sub(session.touched) > 30 * 60 * 1000)
-                        {
-                            session.clear();
-                            session.expired = true;
+        // Native setup runs outside an entered Tokio runtime.
+        self.tasks.spawn_on(
+            async move {
+                loop {
+                    tokio::select! {
+                        _ = stop.cancelled() => break,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
+                    let Some(engine) = weak.upgrade() else { break };
+                    if let Ok(mut sessions) = engine.sessions.lock() {
+                        for session in sessions.values_mut() {
+                            if !session.expired
+                                && (session.expires.is_some_and(|expiry| expiry <= now())
+                                    || now().saturating_sub(session.touched) > 30 * 60 * 1000)
+                            {
+                                session.clear();
+                                session.expired = true;
+                            }
                         }
                     }
                 }
-            }
-        });
+            },
+            tauri::async_runtime::handle().inner(),
+        );
     }
     pub fn shutdown(&self) {
         self.stop.cancel();

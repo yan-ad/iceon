@@ -809,6 +809,40 @@ async fn remove_store_failure_preserves_profile_but_invalidates_all_its_sessions
     assert!(engine.profile(&other_profile.id).await.is_ok());
 }
 
+#[test]
+fn synchronous_native_setup_starts_and_drains_expiry_task_without_tokio_context() {
+    assert!(tokio::runtime::Handle::try_current().is_err());
+    let (_dir, engine, _, profile) = tauri::async_runtime::block_on(fixture());
+    let request = tauri::async_runtime::block_on(open(&engine, &profile, "w", "owner"));
+    let authenticating = engine.begin_auth("w", &request).unwrap();
+    engine
+        .sessions
+        .lock()
+        .unwrap()
+        .get_mut("w")
+        .unwrap()
+        .touched = 0;
+
+    assert!(tokio::runtime::Handle::try_current().is_err());
+    engine.start();
+    let expired = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), authenticating.cancel.cancelled()).await
+    });
+    engine.shutdown();
+    let drained = tauri::async_runtime::block_on(async {
+        tokio::time::timeout(Duration::from_secs(2), engine.drain()).await
+    });
+    assert!(
+        expired.is_ok(),
+        "startup task must actually poll on Tauri's runtime"
+    );
+    assert!(
+        drained.is_ok(),
+        "shutdown must drain the tracked startup task"
+    );
+    assert!(engine.sessions.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn shutdown_cancels_auth_reads_and_background_task_then_drains() {
     let (_dir, engine, _, p) = fixture().await;
