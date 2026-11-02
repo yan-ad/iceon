@@ -1,6 +1,28 @@
 # Changelog
 
-## 0.1.0 (pending CI)
+## 0.1.1 (pending CI)
+
+### Startup and Secrets workspace
+
+- Fix the native launch abort by scheduling Secrets expiry work on Tauri's runtime
+  explicitly. Add a synchronous-setup regression test outside an entered Tokio runtime.
+- Make Open activate a connection workspace, with right-side login and secret details,
+  discovered Vault engines, folder navigation, metadata/version history and explicit
+  Reveal. Unsupported engines remain visible without pretending they are supported.
+- Add editable connections, persisted sidebar pins and concurrent isolated connection
+  sessions. Edits preserve identity/pin and forget the previous saved login before
+  saving; switching connections clears hidden inputs and revealed values.
+- Put validation messages at their fields, distinguish mount paths from login
+  credentials, focus the first invalid field and prevent blur errors from moving Save
+  between pointer-down and click. Keep storage failures distinct from empty data.
+- Route Secrets refresh through the universal toolbar action after Go forward. Use
+  consistent floating add controls, and fix frame sizing under zoom so actions and
+  inspectors remain reachable in narrow windows.
+- Local verification covers 540 Rust tests, 50 Secrets/shared-control UI tests,
+  production build, formatting, strict Clippy and release tooling. Native OS credential
+  prompts and packaged window behavior still require manual smoke verification.
+
+## 0.1.0
 
 ### Secrets management
 

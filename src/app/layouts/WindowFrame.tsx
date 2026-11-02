@@ -19,7 +19,7 @@ export function WindowFrame({
   return (
     <VStack
       gap={0}
-      height="100dvh"
+      height="100%"
       data-seamless={hasChrome || undefined}
       style={{
         boxSizing: "border-box",

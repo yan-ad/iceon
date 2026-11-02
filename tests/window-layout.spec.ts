@@ -1,5 +1,49 @@
 import { expect, test, type Page } from "@playwright/test";
 
+for (const platform of ["browser", "macos", "windows", "linux"]) {
+  test(`${platform}: frame follows the zoomed root and reserves insets once`, async ({ page }) => {
+    if (platform !== "browser") await mockWindow(page, platform);
+    await page.setViewportSize({ width: 390, height: 640 });
+    await page.goto("/");
+    const main = page.getByRole("main");
+    await expect(main).toBeVisible();
+    const frame = page.locator(".astryx-stack").filter({ has: page.locator(".astryx-app-shell") }).first();
+
+    for (const zoom of [1, 1.25, 1.5, 1]) {
+      await page.evaluate(zoom => { document.documentElement.style.zoom = String(zoom); }, zoom);
+      for (const height of [640, 520]) {
+        await page.setViewportSize({ width: 390, height });
+        await expect.poll(async () => (await frame.boundingBox())!.height).toBeCloseTo(height, 0);
+        const bounds = (await main.boundingBox())!;
+        expect(bounds.y + bounds.height).toBeLessThanOrEqual(height + 1);
+        const sidebar = main.getByRole("navigation", { name: "Catalog navigation", exact: true });
+        const navigation = (await sidebar.boundingBox())!;
+        expect(navigation.y + navigation.height).toBeLessThanOrEqual(height + 1);
+        expect(await page.evaluate(() => ({
+          width: document.documentElement.scrollWidth <= window.innerWidth,
+          height: document.documentElement.scrollHeight <= window.innerHeight,
+        }))).toEqual({ width: true, height: true });
+      }
+    }
+
+    // Synthetic device insets exercise the frame's border-box budget without OS APIs.
+    await frame.evaluate(element => {
+      element.style.paddingTop = "var(--spacing-3)";
+      element.style.paddingBottom = "var(--spacing-4)";
+    });
+    await page.evaluate(() => { document.documentElement.style.zoom = "1.25"; });
+    const inset = await frame.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { top: Number.parseFloat(style.paddingTop) * 1.25, bottom: Number.parseFloat(style.paddingBottom) * 1.25 };
+    });
+    const toolbar = (await page.getByRole("navigation", { name: "App toolbar", exact: true }).boundingBox())!;
+    const content = (await main.boundingBox())!;
+    expect((await frame.boundingBox())!.height).toBeCloseTo(520, 0);
+    expect(toolbar.y).toBeCloseTo(inset.top, 0);
+    expect(content.y + content.height).toBeCloseTo(520 - inset.bottom, 0);
+  });
+}
+
 async function mockWindow(page: Page, platform: string, seamless = true, failActions = false) {
   await page.addInitScript(({ platform, seamless, failActions }) => {
     Object.defineProperty(window, "__ICEON_WINDOW_LAYOUT__", {

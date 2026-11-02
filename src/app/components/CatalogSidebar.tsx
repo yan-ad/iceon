@@ -2,7 +2,7 @@ import { useRouterState } from "@tanstack/react-router";
 import { Divider } from "@astryxdesign/core/Divider";
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Text } from "@astryxdesign/core/Text";
-import { IconMenu2, IconPin } from "@tabler/icons-react";
+import { IconMenu2, IconPin, IconKey } from "@tabler/icons-react";
 import { destinations } from "../navigation";
 import { useCatalog } from "../catalog/CatalogProvider";
 import { RecordIcon } from "../catalog/RecordIcon";
@@ -11,6 +11,7 @@ import { usePinnedItems } from "../catalog/usePinnedItems";
 import { NavLink } from "./NavLink";
 import { useAppShellMobile } from "@astryxdesign/core/AppShell";
 import { clusterDestinations } from "../cluster/navigation";
+import { useSecretsProfiles } from "../secrets/SecretsProvider";
 
 export function CatalogSidebar({ onNavigate, id = "catalog-sidebar" }: { onNavigate: () => void; id?: string }) {
   const mobile = useAppShellMobile();
@@ -19,6 +20,9 @@ export function CatalogSidebar({ onNavigate, id = "catalog-sidebar" }: { onNavig
   const activeClusterId = useRouterState({ select: state => state.matches.find(match => "clusterId" in match.params)?.params as { clusterId?: string } | undefined });
   const activeSection = useRouterState({ select: state => (state.location.search as { section?: string }).section ?? "overview" });
   const pins = usePinnedItems();
+  const secrets = useSecretsProfiles();
+  const secretPins = secrets.profiles.filter(profile => profile.pinned);
+  const activeSecret = useRouterState({ select: state => (state.location.search as { connection?: string }).connection });
 
   return <>
     <SideNav aria-label="Catalog navigation" id={id} className="catalog-sidebar-motion" data-collapsed="true"
@@ -34,7 +38,7 @@ export function CatalogSidebar({ onNavigate, id = "catalog-sidebar" }: { onNavig
       </SideNavSection>
       <Divider />
       <SideNavSection title="Pinned items">
-        {!pins.items.length && <SideNavItem label={loading ? "Loading pinned items…" : "No pinned items"} icon={IconPin} isDisabled />}
+        {!pins.items.length && !secretPins.length && <SideNavItem label={loading ? "Loading pinned items…" : "No pinned items"} icon={IconPin} isDisabled />}
         {pins.items.map(target => {
           const cluster = snapshot?.clusters.find(item => item.id === target.id);
           const destination = target.section ? clusterDestinations.find(item => item.id === target.section) : null;
@@ -47,6 +51,9 @@ export function CatalogSidebar({ onNavigate, id = "catalog-sidebar" }: { onNavig
             onClick={event => { if (handlers.onClick(event)) onNavigate(); }} />;
           return null;
         })}
+        {secretPins.map(profile => <NavLink key={`secret:${profile.id}`} to="/secrets" search={{ connection: profile.id }}
+          label={`${profile.name} · Secrets`} icon={IconKey}
+          isSelected={pathname === "/secrets" && activeSecret === profile.id} onClick={onNavigate} />)}
       </SideNavSection>
     </SideNav>
     {pins.error && <Text role="alert" className="pin-menu-error">{pins.error}</Text>}

@@ -18,8 +18,12 @@ interface are separate so additional providers do not need Vault's transport.
 5. Open the connection and log in with a Vault userpass username and password.
 6. Optionally enable **Remember login** before logging in. Only the issued token
    is saved in the OS credential store. The password is not saved.
-7. Browse folders, or enter a path relative to the configured base path. Choose
-   **Reveal** for an individual secret to display that version's fields.
+7. After login, choose a discovered KV v2 engine, then browse folders and paths.
+   Select a secret to open its metadata and version inspector on the right. Choose
+   **Reveal** explicitly to display that version's fields.
+8. Use **Edit**, **Pin**, or **Remove** on a saved connection. Multiple connections
+   can be open at once; switching connections preserves independent Rust sessions,
+   while hidden browser passwords and revealed values are cleared.
 
 The Vault identity needs LIST access on the configured KV v2 `metadata` paths and
 read access on the corresponding `data` paths. Saved-login resume also needs
@@ -39,8 +43,9 @@ engine bridge cannot invoke Secrets operations.
 
 - Profile metadata lives in `secrets/secrets-profiles.sqlite3` below the app-data
   directory. It contains the provider, name, endpoint, namespace, mounts, and base
-  path, not credentials. These metadata fields can still identify internal
-  infrastructure; this is not an encrypted profile database.
+  path, not credentials. Pin state is metadata only and uses the same Rust-owned
+  profile store. These metadata fields can still identify internal infrastructure;
+  this is not an encrypted profile database.
 - **Remember login** uses macOS Keychain, Windows Credential Manager, or Linux's
   desktop Secret Service. Linux requires a working, unlocked Secret Service
   session. There is no plaintext-file, SQLite, or in-memory-only fallback for a
@@ -59,6 +64,9 @@ engine bridge cannot invoke Secrets operations.
 - Closing the connection/page or native window clears its session. Expiry, 30
   minutes of inactivity, and app shutdown clear credentials and cancel work.
   Disconnect/forget are local cleanup, not a Vault token-revocation operation.
+- Editing preserves the profile ID and pin but disconnects that profile and removes
+  its remembered token. If forgetting fails, the edit is not saved. Pin changes do
+  not read/write credentials or disturb sessions.
 - Revealed values are hidden after at most 30 seconds, when navigating/hiding,
   closing the view, or on window blur. JavaScript/IPC/HTTP serialization can create
   copies: hiding and zeroizing owned Rust buffers are not a guarantee of erasing
@@ -66,23 +74,26 @@ engine bridge cannot invoke Secrets operations.
 
 ## Supported scope and limits
 
-This first version supports username/password login, saved token resume, KV v2
-folder listing, and explicit latest-version reads. The remote operations are a
-userpass login POST, token lookup GET, KV metadata LIST, and KV data GET. It does
-not write, delete, rotate, inject, copy, export, or automatically reveal secrets.
-It does not modify Kubernetes authentication.
+This first version supports username/password login, saved token resume, authenticated
+KV v2 engine discovery, folder listing, metadata/version history, and explicit latest-
+version reads. The remote operations are userpass login, token lookup, mount metadata,
+KV metadata LIST, KV metadata GET, and KV data GET. It does not write, delete, rotate,
+inject, copy, export, or automatically reveal secrets. It does not modify Kubernetes
+authentication.
 
 Only verified HTTPS is accepted. Redirects and environment-derived proxies are
 disabled; no skip-TLS-verification option is provided. Custom CA files, custom
 proxies, OIDC, AppRole, MFA challenges, root-policy tokens, non-expiring tokens,
-KV v1, mount autodiscovery, profile editing, and automatic token renewal are not
-implemented. Mount paths are configurable; only KV v2 is understood.
+KV v1 and automatic token renewal are not implemented. Unsupported discovered
+engines are shown but cannot be browsed. Editing a connection preserves its identity
+and pin, invalidates its sessions, and forgets its saved login before saving changes.
 
 Responses have a 1 MiB bound and a 15-second deadline (5-second connect timeout).
 Lists show at most 1,000 immediate entries and expose a partial flag if more were
 returned. Reveals allow at most 256 fields. Nested JSON field values are displayed
 as plain text, never interpreted as HTML. There are at most 100 saved profiles
-and one Secrets session per native window, up to eight windows.
+and one Secrets session per native window/profile pair, up to 32 concurrent sessions.
+Version history shows at most 200 records with an explicit partial indicator.
 
 ## Verification and remaining native checks
 

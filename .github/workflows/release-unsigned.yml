@@ -2,13 +2,13 @@ name: Iceon release (GitHub verified updates)
 
 on:
   push:
-    tags: ['0.1.0']
+    tags: ['0.1.1']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing immutable stable tag (0.1.0); dispatch at the same commit'
+        description: 'Existing immutable stable tag (0.1.1); dispatch at the same commit'
         required: true
-        default: '0.1.0'
+        default: '0.1.1'
         type: string
 
 permissions:
@@ -43,8 +43,8 @@ jobs:
           from pathlib import Path
           tag = os.environ['RELEASE_TAG']
           number = r'(?:0|[1-9][0-9]*)'
-          if not re.fullmatch(rf'{number}\.{number}\.{number}', tag) or tag != '0.1.0':
-              raise SystemExit('This route accepts only the canonical stable tag 0.1.0, without v')
+          if not re.fullmatch(rf'{number}\.{number}\.{number}', tag) or tag != '0.1.1':
+              raise SystemExit('This route accepts only the canonical stable tag 0.1.1, without v')
           package = json.loads(Path('package.json').read_text())
           config = json.loads(Path('src-tauri/tauri.conf.json').read_text())
           cargo = tomllib.loads(Path('src-tauri/Cargo.toml').read_text())

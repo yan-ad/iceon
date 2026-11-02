@@ -11,9 +11,10 @@ import { validDefinitionName } from "./cluster/customResourcesApi";
 import { RouteRestoration } from "./RouteRestoration";
 import { PermissionProvider } from "./cluster/PermissionProvider";
 import SecretsPage from "./pages/SecretsPage";
+import { SecretsProvider } from "./secrets/SecretsProvider";
 
 const rootRoute = createRootRoute({
-  component: () => <CatalogProvider><RouteRestoration /><WorkspaceRefreshProvider><PermissionProvider><CustomResourcesProvider><MainLayout /></CustomResourcesProvider></PermissionProvider></WorkspaceRefreshProvider></CatalogProvider>,
+  component: () => <CatalogProvider><SecretsProvider><RouteRestoration /><WorkspaceRefreshProvider><PermissionProvider><CustomResourcesProvider><MainLayout /></CustomResourcesProvider></PermissionProvider></WorkspaceRefreshProvider></SecretsProvider></CatalogProvider>,
   notFoundComponent: NotFoundPage,
 });
 const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", beforeLoad: () => { throw redirect({ to: "/catalog", replace: true }); } });
@@ -24,7 +25,11 @@ const catalogIndexRoute = createRoute({ getParentRoute: () => catalogRoute, path
 const generalRoute = createRoute({ getParentRoute: () => catalogRoute, path: "general", beforeLoad: () => { throw redirect({ to: "/catalog/clusters", replace: true }); } });
 const allRoute = createRoute({ getParentRoute: () => catalogRoute, path: "all", beforeLoad: () => { throw redirect({ to: "/catalog/clusters", replace: true }); } });
 const clustersRoute = createRoute({ getParentRoute: () => catalogRoute, path: "clusters", component: CatalogPage });
-const secretsRoute = createRoute({ getParentRoute: () => rootRoute, path: "secrets", component: SecretsPage });
+const secretsRoute = createRoute({ getParentRoute: () => rootRoute, path: "secrets", component: SecretsPage,
+  validateSearch: (search: Record<string, unknown>): { connection?: string } => ({
+    connection: typeof search.connection === "string" && /^[a-f0-9]{32}$/.test(search.connection) ? search.connection : undefined,
+  }),
+});
 const webLinksRoute = createRoute({ getParentRoute: () => catalogRoute, path: "web-links", beforeLoad: () => { throw redirect({ to: "/catalog/clusters", replace: true }); } });
 const clusterWorkspaceRoute = createRoute({
   getParentRoute: () => rootRoute,

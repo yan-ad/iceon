@@ -147,12 +147,21 @@ unused starter CSS, not design authority. The active brand theme lives in
     Clusters, not a Catalog category or Preferences section. Its saved provider
     connections and read-only session browser share a bounded page, with an
     always-reachable bottom-right Add secret connection icon opening an Astryx
-    dialog. Vault KV v2 is the first provider; neither Secrets nor its connections
-    are pinnable through cluster pin menus. Browser preview shows a desktop-only
+     dialog with field-level validation. Vault KV v2 is the first provider. Saved
+     connections can be edited and pinned through their own Rust profile store;
+     their sidebar shortcuts remain separate from cluster pin menus. Opening a
+     connection activates its workspace: sign-in in a right sidebar, discovered
+     engines, then folders and metadata-only secret selection. The right inspector
+     shows overview, version history and paths; values require explicit Reveal.
+     Multiple connection workspaces retain independent sessions while hidden inputs
+     and revealed values clear on tab changes. Browser preview shows a desktop-only
     state without invoking secrets IPC. Rust owns provider sessions, verified HTTPS,
     profile metadata persistence and OS credential storage; only explicitly revealed
     values cross IPC. See [Secrets management](docs/secrets-management.md) for the
-    supported userpass/KV v2 workflow, limits, and remaining native verification.
+     supported userpass/KV v2 workflow, limits, and remaining native verification.
+     The single toolbar Refresh follows Go forward and targets connections, engines,
+     the current folder or selected details. Bottom-right add controls share one
+     component and dimensions across Catalog, resources, Helm, forwards and Secrets.
 5. **Content:** one main landmark and an accessible, visually hidden page heading.
    No category title bar, discovery switch, or routine explanatory information
    block; the normal view begins with the filter and table. Keep actionable errors
