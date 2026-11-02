@@ -1,4 +1,4 @@
-use super::{Entry, Error, Field, Profile, Result};
+use super::{Entry, Error, Field, MetadataData, Mount, Profile, Result, SecretVersion};
 use futures::StreamExt;
 use reqwest::{Method, StatusCode, Url, header::HeaderValue};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -28,6 +28,7 @@ impl Vault {
     pub(super) fn new() -> Result<Self> {
         Self::build(true)
     }
+
     fn build(https_only: bool) -> Result<Self> {
         crate::tls::initialize();
         Ok(Self {
@@ -183,6 +184,119 @@ impl Vault {
             fields.push(Field { name, value });
         }
         Ok((fields, metadata.version))
+    }
+    pub(super) async fn mounts(
+        &self,
+        profile: &Profile,
+        token: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(Vec<Mount>, bool)> {
+        #[derive(Deserialize)]
+        struct Response {
+            data: Data,
+        }
+        #[derive(Deserialize)]
+        struct Data {
+            secret: BTreeMap<String, Engine>,
+        }
+        #[derive(Deserialize)]
+        struct Engine {
+            #[serde(rename = "type")]
+            kind: String,
+            #[serde(default)]
+            options: Option<BTreeMap<String, String>>,
+        }
+        let url = endpoint(profile, &["sys", "internal", "ui", "mounts"])?;
+        let response: Response = self
+            .send(
+                self.request(profile, Method::GET, url, Some(token))?,
+                false,
+                cancel,
+            )
+            .await?;
+        let partial = response.data.secret.len() > ENTRY_LIMIT;
+        let mut mounts = Vec::new();
+        for (path, engine) in response.data.secret {
+            let path = path.trim_end_matches('/');
+            if !super::valid_path(path, false)
+                || engine.kind.is_empty()
+                || engine.kind.len() > NAME_LIMIT
+                || engine.kind.chars().any(char::is_control)
+            {
+                return Err(Error::InvalidResponse);
+            }
+            let version = engine
+                .options
+                .as_ref()
+                .and_then(|options| options.get("version"))
+                .map(|v| v.parse::<u64>().map_err(|_| Error::InvalidResponse))
+                .transpose()?;
+            if mounts.len() < ENTRY_LIMIT {
+                mounts.push(Mount {
+                    path: path.into(),
+                    supported: engine.kind == "kv" && version == Some(2),
+                    kind: engine.kind,
+                    version,
+                });
+            }
+        }
+        Ok((mounts, partial))
+    }
+    pub(super) async fn metadata(
+        &self,
+        profile: &Profile,
+        token: &str,
+        path: &str,
+        cancel: &CancellationToken,
+    ) -> Result<MetadataData> {
+        #[derive(Deserialize)]
+        struct Response {
+            data: Data,
+        }
+        #[derive(Deserialize)]
+        struct Data {
+            current_version: u64,
+            created_time: Option<String>,
+            updated_time: Option<String>,
+            versions: BTreeMap<String, Version>,
+        }
+        #[derive(Deserialize)]
+        struct Version {
+            created_time: String,
+            deletion_time: String,
+            destroyed: bool,
+        }
+        let url = kv_endpoint(profile, "metadata", path, false)?;
+        let response: Response = self
+            .send(
+                self.request(profile, Method::GET, url, Some(token))?,
+                false,
+                cancel,
+            )
+            .await?;
+        let partial = response.data.versions.len() > 200;
+        let mut versions = Vec::new();
+        for (number, version) in response.data.versions {
+            let number = number.parse::<u64>().map_err(|_| Error::InvalidResponse)?;
+            if number == 0 {
+                return Err(Error::InvalidResponse);
+            }
+            versions.push(SecretVersion {
+                version: number,
+                created_at: version.created_time,
+                deletion_time: version.deletion_time,
+                destroyed: version.destroyed,
+            });
+        }
+        versions.sort_unstable_by_key(|v| std::cmp::Reverse(v.version));
+        versions.truncate(200);
+        Ok(MetadataData {
+            current_version: response.data.current_version,
+            created_at: response.data.created_time,
+            updated_at: response.data.updated_time,
+            versions,
+            partial,
+        })
     }
     fn request(
         &self,
@@ -405,6 +519,86 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
     };
+
+    fn test_profile(url: &Url) -> Profile {
+        Profile {
+            id: "a".repeat(32),
+            provider: super::super::Provider::Vault,
+            name: "Fixture".into(),
+            address: format!("{}/", url.origin().ascii_serialization()),
+            namespace: "team".into(),
+            auth_mount: "userpass".into(),
+            kv_mount: "nested/kv".into(),
+            base_path: "apps".into(),
+            pinned: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn mounts_and_metadata_use_only_discovery_and_metadata_endpoints() {
+        let vault = Vault::loopback();
+        let (url, task) = server(
+            200,
+            "",
+            serde_json::json!({"data":{"secret":{
+            "nested/kv/":{"type":"kv","options":{"version":"2"}},
+            "legacy/":{"type":"kv","options":{"version":"1"}},
+            "database/":{"type":"database","options":{}}
+        },"auth":{"userpass/":{"type":"userpass"}}}})
+            .to_string(),
+        )
+        .await;
+        let (mounts, partial) = vault
+            .mounts(
+                &test_profile(&url),
+                "fixture-token",
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!partial);
+        assert_eq!(mounts.len(), 3);
+        assert_eq!(mounts.iter().filter(|m| m.supported).count(), 1);
+        assert_eq!(
+            mounts.iter().find(|m| m.supported).unwrap().path,
+            "nested/kv"
+        );
+        let request = task.await.unwrap().to_lowercase();
+        assert!(request.starts_with("get /v1/sys/internal/ui/mounts http/1.1"));
+        assert!(request.contains("x-vault-token: fixture-token"));
+        assert!(request.contains("x-vault-namespace: team"));
+        let versions: BTreeMap<_, _> = (1..=205)
+            .map(|n| {
+                (
+                    n.to_string(),
+                    serde_json::json!({"created_time":"time","deletion_time":"","destroyed":false}),
+                )
+            })
+            .collect();
+        let (url, task) = server(200, "", serde_json::json!({"data":{
+            "current_version":205,"created_time":"created","updated_time":"updated", "versions":versions,
+            "custom_metadata":{"sensitive":"never-forward-this"}
+        }}).to_string()).await;
+        let metadata = vault
+            .metadata(
+                &test_profile(&url),
+                "fixture-token",
+                "config",
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(metadata.partial);
+        assert_eq!(metadata.versions.len(), 200);
+        assert_eq!(metadata.versions[0].version, 205);
+        assert_eq!(metadata.versions[199].version, 6);
+        let serialized = serde_json::to_string(&metadata).unwrap();
+        assert!(!serialized.contains("sensitive"));
+        assert!(!serialized.contains("never-forward-this"));
+        let request = task.await.unwrap();
+        assert!(request.starts_with("GET /v1/nested/kv/metadata/apps/config HTTP/1.1"));
+        assert!(!request.contains("/data/"));
+    }
 
     async fn server(
         status: u16,

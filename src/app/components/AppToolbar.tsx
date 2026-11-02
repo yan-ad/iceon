@@ -20,7 +20,6 @@ import {
 import { useNavigationHistory } from "../layouts/use-navigation-history";
 import { WindowToolbar } from "../layouts/WindowFrame";
 import { getWindowLayout } from "../layouts/window-layout";
-import { CatalogRefreshButton } from "../catalog/CatalogForms";
 import { useWorkspaceRefresh } from "../cluster/WorkspaceRefresh";
 import { RestartUpdateButton } from "../updates/RestartUpdateButton";
 import { usePreferences } from "../preferences/PreferencesProvider";
@@ -69,8 +68,9 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
   }
   const layout = getWindowLayout();
   const draggable = layout.seamless && layout.platform !== "browser";
-  const isCatalog = useRouterState({ select: (state) => state.location.pathname.startsWith("/catalog") });
-  const isSecrets = useRouterState({ select: (state) => state.location.pathname === "/secrets" });
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const isCatalog = pathname.startsWith("/catalog");
+  const isSecrets = pathname === "/secrets" || pathname.startsWith("/secrets/");
   const workspaceRefresh = useWorkspaceRefresh();
   const { openPreferences } = usePreferences();
   const { clusterId } = useParams({ strict: false });
@@ -81,6 +81,16 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
     refresh.refresh();
   }, [refresh, clusterId, workspaceRefresh.refreshClusterCaches]);
   const catalog = useCatalog();
+  const registeredRefresh = workspaceRefresh.pageRefresh;
+  const pageRefresh = registeredRefresh && (pathname === registeredRefresh.scope || pathname.startsWith(`${registeredRefresh.scope}/`)) ? registeredRefresh : null;
+  const refreshLabel = isCatalog ? "Refresh catalog" : pageRefresh?.label ?? (refresh ? `Refresh ${refresh.section}` : null);
+  const refreshEnabled = isCatalog ? catalog.available && !catalog.busy && !catalog.loading : pageRefresh ? pageRefresh.enabled : !!refresh?.enabled;
+  const refreshPage = useCallback(() => {
+    if (!refreshEnabled) return;
+    if (isCatalog) void catalog.run("catalog_list");
+    else if (pageRefresh) pageRefresh.refresh();
+    else refreshWorkspace();
+  }, [refreshEnabled, isCatalog, catalog.run, pageRefresh, refreshWorkspace]);
   const clusterActions = workspaceRefresh.clusterActions?.clusterId === clusterId ? workspaceRefresh.clusterActions : null;
   const pageActions = workspaceRefresh.pageActions && workspaceRefresh.pageActions.clusterId === clusterId && workspaceRefresh.pageActions.section === refresh?.section ? workspaceRefresh.pageActions : null;
   const status = clusterActions?.status;
@@ -101,17 +111,16 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
   useEffect(() => {
     function onRefresh(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
-      if ((event.metaKey !== event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "r" && !event.isComposing && (refresh || isCatalog)) {
+      if (document.querySelector('[role="dialog"], dialog[open], [role="alertdialog"]')) return;
+      if ((event.metaKey !== event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "r" && !event.isComposing && refreshLabel) {
         event.preventDefault();
         if (event.repeat) return;
-        if (isCatalog) {
-          if (catalog.available && !catalog.busy && !catalog.loading) void catalog.run("catalog_list");
-        } else refreshWorkspace();
+        refreshPage();
       }
     }
     window.addEventListener("keydown", onRefresh);
     return () => window.removeEventListener("keydown", onRefresh);
-  }, [refresh, refreshWorkspace, isCatalog, catalog.available, catalog.busy, catalog.loading, catalog.run]);
+  }, [refreshLabel, refreshPage]);
 
   return (
     <>
@@ -139,9 +148,8 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
           isDisabled={!history.canGoForward}
           onClick={history.forward}
         />
-        {isCatalog && <CatalogRefreshButton />}
-        {refresh && <IconButton label={`Refresh ${refresh.section}`} tooltip={`Refresh ${refresh.section}`}
-          variant="ghost" icon={<Icon icon={IconRefresh} />} isDisabled={!refresh.enabled} onClick={refreshWorkspace} />}
+        {refreshLabel && <IconButton label={refreshLabel} tooltip={refreshLabel}
+          variant="ghost" icon={<Icon icon={IconRefresh} />} isDisabled={!refreshEnabled} onClick={refreshPage} />}
       </HStack>
       {clusterId && <ClusterSwitcher clusterId={clusterId} />}
       {isSecrets && <Text weight="semibold">Secrets</Text>}

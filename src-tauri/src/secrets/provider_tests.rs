@@ -30,6 +30,41 @@ impl Default for FakeProvider {
     }
 }
 impl SecretProvider for FakeProvider {
+    fn mounts<'a>(
+        &'a self,
+        _: &'a Profile,
+        _: &'a str,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<(Vec<Mount>, bool)>> {
+        Box::pin(async {
+            Ok((
+                vec![Mount {
+                    path: "secret".into(),
+                    kind: "kv".into(),
+                    version: Some(2),
+                    supported: true,
+                }],
+                false,
+            ))
+        })
+    }
+    fn metadata<'a>(
+        &'a self,
+        _: &'a Profile,
+        _: &'a str,
+        _: &'a str,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<MetadataData>> {
+        Box::pin(async {
+            Ok(MetadataData {
+                current_version: 7,
+                created_at: None,
+                updated_at: None,
+                versions: vec![],
+                partial: false,
+            })
+        })
+    }
     fn login<'a>(
         &'a self,
         profile: &'a Profile,
@@ -354,6 +389,7 @@ async fn connected_reads_use_injected_transport() {
         session_id: f.request.session_id.clone(),
         read_id,
         path: path.into(),
+        mount: None,
     };
     let listing = f.engine.list("main", request(1, "")).await.unwrap();
     assert!(listing.partial);
@@ -426,7 +462,7 @@ async fn cancelled_held_remember_rolls_back_token_before_completing() {
 impl Fixture {
     fn signed_out_auth_in_flight(&self) {
         let sessions = self.engine.sessions.lock().unwrap();
-        let session = sessions.get("main").unwrap();
+        let session = sessions.get(&self.request.session_id).unwrap();
         assert!(session.token.is_none());
         assert!(session.authenticating);
     }
@@ -501,5 +537,47 @@ async fn forget_serializes_with_held_remember_and_leaves_no_saved_token() {
     assert!(matches!(
         f.engine.resume("main", f.request.clone()).await,
         Err(Error::NotFound)
+    ));
+}
+
+#[tokio::test]
+async fn mount_metadata_workflow_never_reveals_values_and_returns_scoped_mount() {
+    let f = Fixture::new().await;
+    f.engine.login("main", f.login(false)).await.unwrap();
+    let request = |read_id, path: &str, mount| ReadRequest {
+        profile_id: f.request.profile_id.clone(),
+        session_id: f.request.session_id.clone(),
+        read_id,
+        path: path.into(),
+        mount,
+    };
+    assert!(matches!(
+        f.engine
+            .metadata("main", request(1, "config", Some("secret".into())))
+            .await,
+        Err(Error::InvalidInput)
+    ));
+    let mounts = f.engine.mounts("main", request(1, "", None)).await.unwrap();
+    assert_eq!(mounts.mounts[0].path, "secret");
+    let metadata = f
+        .engine
+        .metadata("main", request(2, "config", Some("secret".into())))
+        .await
+        .unwrap();
+    let serialized = serde_json::to_value(metadata).unwrap();
+    assert_eq!(serialized["mount"], "secret");
+    assert_eq!(serialized["currentVersion"], 7);
+    assert!(serialized.get("fields").is_none());
+    let listing = f
+        .engine
+        .list("main", request(3, "", Some("secret".into())))
+        .await
+        .unwrap();
+    assert_eq!(listing.mount, "secret");
+    assert!(matches!(
+        f.engine
+            .list("main", request(4, "", Some("undiscovered".into())))
+            .await,
+        Err(Error::InvalidInput)
     ));
 }

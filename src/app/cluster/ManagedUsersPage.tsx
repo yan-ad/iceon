@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Heading } from "@astryxdesign/core/Heading";
-import { Icon } from "@astryxdesign/core/Icon";
-import { IconButton } from "@astryxdesign/core/IconButton";
+import { AddButton } from "../components/AddButton";
 import { VStack } from "@astryxdesign/core/Stack";
 import { Table, proportional, type TableColumn } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { IconPlus, IconSearch } from "@tabler/icons-react";
+import { IconSearch } from "@tabler/icons-react";
 import { ContentError } from "../components/ContentError";
 import { ContentLoading } from "../components/ContentLoading";
 import { connectionMessage, errorCode, nextReadId, type SessionRequest } from "./api";
@@ -80,8 +79,7 @@ function ManagedUsersSession({ clusterId, sessionId }: SessionRequest) {
     <Text type="supporting" style={{ padding: "var(--spacing-3)" }}>Inspired by Permission Manager by SIGHUP (BSD-3-Clause). Managed users are ServiceAccounts, not generated credentials.</Text>
     </VStack>
     <TableActionOverlay label="Managed user actions">
-      <IconButton label="Create New User" tooltip="Create New User" icon={<Icon icon={IconPlus} />} variant="primary" size="lg" elevation="med"
-        style={{ borderRadius: "var(--radius-container)", minWidth: "calc(var(--spacing-10) + var(--spacing-1))", minHeight: "calc(var(--spacing-10) + var(--spacing-1))" }}
+      <AddButton label="Create New User" tooltip="Create New User"
         isDisabled={!canCreate || unavailable || !snapshot} onClick={() => setSelected({ name: "", namespace, uid: null, resourceVersion: null, assignments: [], clusterAccess: "none", clusterTemplate: null })} />
     </TableActionOverlay>
     {selected && snapshot && <ManagedUserEditor clusterId={clusterId} sessionId={sessionId} initial={selected} templates={snapshot.templates} onClose={changed => { setSelected(null); if (changed) refresh(); }} />}

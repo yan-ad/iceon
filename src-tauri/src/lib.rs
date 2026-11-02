@@ -710,6 +710,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             secrets::secrets_profiles,
             secrets::secrets_profile_save,
+            secrets::secrets_profile_update,
+            secrets::secrets_profile_pin,
+            secrets::secrets_mounts,
+            secrets::secrets_metadata,
             secrets::secrets_profile_remove,
             secrets::secrets_session_open,
             secrets::secrets_login,

@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { Icon } from "@astryxdesign/core/Icon";
-import { IconButton } from "@astryxdesign/core/IconButton";
+import { AddButton } from "../components/AddButton";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { YamlEditor } from "../components/YamlEditor";
-import { IconPlus } from "@tabler/icons-react";
 import { useCatalog } from "../catalog/CatalogProvider";
 import { nextReadId, type ResourceKind, type SessionRequest } from "./api";
 import { cancelResourceCreate, createMessage, createResource, creationNamespaced, type CreateCancelRequest, type CreateResult } from "./createApi";
@@ -32,7 +30,7 @@ function ScopedResourceCreate(props: Props) {
   const permissions = usePermissionChecks([check]);
   return <>
     {!props.onNotice && notice && <Text role="status">{notice}</Text>}
-    {permissions.decision(check) === "allowed" && <IconButton label={label} tooltip={label} icon={<Icon icon={IconPlus} />} variant="primary" size="lg" elevation="med"
+    {permissions.decision(check) === "allowed" && <AddButton label={label} tooltip={label}
       style={props.inline ? { pointerEvents: "auto", borderRadius: "var(--radius-container)" } : { position: "absolute", right: "var(--spacing-4)", bottom: "var(--spacing-4)", borderRadius: "var(--radius-container)" }}
       isDisabled={!cluster} onClick={() => { if (permissions.decision(check) === "allowed") { setNotice(null); setOpen(true); } }} />}
     {open && cluster && <CreateEditor {...props} label={label} clusterName={cluster.name} contextName={cluster.contextName}

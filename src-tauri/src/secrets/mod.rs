@@ -37,6 +37,52 @@ pub enum Error {
     TooLarge,
     UnsupportedAuth,
 }
+
+#[derive(Clone, Serialize)]
+pub struct Mount {
+    pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub version: Option<u64>,
+    pub supported: bool,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mounts {
+    pub profile_id: String,
+    pub session_id: String,
+    pub read_id: u64,
+    pub mounts: Vec<Mount>,
+    pub partial: bool,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretVersion {
+    pub version: u64,
+    pub created_at: String,
+    pub deletion_time: String,
+    pub destroyed: bool,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataData {
+    pub current_version: u64,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub versions: Vec<SecretVersion>,
+    pub partial: bool,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Metadata {
+    pub profile_id: String,
+    pub session_id: String,
+    pub read_id: u64,
+    pub path: String,
+    pub mount: String,
+    #[serde(flatten)]
+    pub data: MetadataData,
+}
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +93,20 @@ pub enum Provider {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Profile {
+    pub id: String,
+    pub provider: Provider,
+    pub name: String,
+    pub address: String,
+    pub namespace: String,
+    pub auth_mount: String,
+    pub kv_mount: String,
+    pub base_path: String,
+    #[serde(default)]
+    pub pinned: bool,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileUpdate {
     pub id: String,
     pub provider: Provider,
     pub name: String,
@@ -96,6 +156,8 @@ pub struct ReadRequest {
     pub session_id: String,
     pub read_id: u64,
     pub path: String,
+    #[serde(default)]
+    pub mount: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -130,6 +192,7 @@ pub struct Listing {
     pub session_id: String,
     pub read_id: u64,
     pub path: String,
+    pub mount: String,
     pub entries: Vec<Entry>,
     pub partial: bool,
 }
@@ -140,6 +203,7 @@ pub struct Reveal {
     pub session_id: String,
     pub read_id: u64,
     pub path: String,
+    pub mount: String,
     pub fields: Vec<Field>,
     pub version: u64,
     pub expires_at: u64,
@@ -216,6 +280,7 @@ struct Session {
     read: Option<(u64, CancellationToken)>,
     last_read: u64,
     touched: u64,
+    mounts: Vec<String>,
 }
 impl Session {
     fn clear(&mut self) {
@@ -224,6 +289,7 @@ impl Session {
         self.authenticating = false;
         self.epoch += 1;
         self.token = None;
+        self.mounts.clear();
         self.expires = None;
         if let Some((_, token)) = self.read.take() {
             token.cancel();
@@ -336,7 +402,30 @@ impl Engine {
         self.tasks.wait().await;
     }
     fn key(&self, p: &Profile) -> String {
-        let identity = serde_json::to_vec(p).unwrap_or_default();
+        // Pinning is presentation metadata, not a credential identity change.
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Identity<'a> {
+            id: &'a str,
+            provider: Provider,
+            name: &'a str,
+            address: &'a str,
+            namespace: &'a str,
+            auth_mount: &'a str,
+            kv_mount: &'a str,
+            base_path: &'a str,
+        }
+        let identity = serde_json::to_vec(&Identity {
+            id: &p.id,
+            provider: p.provider,
+            name: &p.name,
+            address: &p.address,
+            namespace: &p.namespace,
+            auth_mount: &p.auth_mount,
+            kv_mount: &p.kv_mount,
+            base_path: &p.base_path,
+        })
+        .unwrap_or_default();
         let mut hash = Sha256::new();
         hash.update(b"iceon-secrets-v1\0");
         hash.update(self.binding.as_bytes());
@@ -368,6 +457,7 @@ impl Engine {
             auth_mount: input.auth_mount,
             kv_mount: input.kv_mount,
             base_path: input.base_path,
+            pinned: false,
         };
         validate_profile(&p)?;
         let store = self.store.clone();
@@ -395,6 +485,49 @@ impl Engine {
         let store = self.store.clone();
         blocking(move || store.remove(&id)).await
     }
+    pub async fn update(&self, input: ProfileUpdate) -> Result<Profile> {
+        let _gate = self.credential_gate.lock().await;
+        let old = self.profile(&input.id).await?;
+        let profile = Profile {
+            id: old.id.clone(),
+            provider: input.provider,
+            name: input.name.trim().into(),
+            address: input.address,
+            namespace: input.namespace,
+            auth_mount: input.auth_mount,
+            kv_mount: input.kv_mount,
+            base_path: input.base_path,
+            pinned: old.pinned,
+        };
+        validate_profile(&profile)?;
+        let credentials = self.credentials.clone();
+        let key = self.key(&old);
+        blocking(move || credentials.delete(&key)).await?;
+        {
+            let mut sessions = self.sessions.lock().map_err(|_| Error::StoreUnavailable)?;
+            sessions.retain(|_, session| {
+                if session.profile.id == profile.id {
+                    session.clear();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        let store = self.store.clone();
+        let saved = profile.clone();
+        blocking(move || store.update(&saved)).await?;
+        Ok(profile)
+    }
+    pub async fn pin(&self, id: String, pinned: bool) -> Result<Profile> {
+        let _gate = self.credential_gate.lock().await;
+        let mut profile = self.profile(&id).await?;
+        profile.pinned = pinned;
+        let store = self.store.clone();
+        let saved = profile.clone();
+        blocking(move || store.update(&saved)).await?;
+        Ok(profile)
+    }
     pub async fn open(&self, window: &str, id: &str, owner: String) -> Result<SessionView> {
         if owner.is_empty()
             || owner.len() > 64
@@ -410,16 +543,22 @@ impl Engine {
             return Err(Error::Cancelled);
         }
         let mut sessions = self.sessions.lock().map_err(|_| Error::StoreUnavailable)?;
-        if let Some(s) = sessions.get(window)
+        if let Some(s) = sessions
+            .values()
+            .find(|s| s.window == window && s.profile.id == id)
             && s.owner == owner
             && s.profile.id == id
         {
             return Ok(s.view(self.credentials.kind()));
         }
-        if !sessions.contains_key(window) && sessions.len() >= 8 {
+        let previous = sessions
+            .iter()
+            .find(|(_, s)| s.window == window && s.profile.id == id)
+            .map(|(key, _)| key.clone());
+        if previous.is_none() && sessions.len() >= 32 {
             return Err(Error::Busy);
         }
-        if let Some(mut previous) = sessions.remove(window) {
+        if let Some(mut previous) = previous.and_then(|key| sessions.remove(&key)) {
             previous.clear();
         }
         let s = Session {
@@ -436,9 +575,10 @@ impl Engine {
             read: None,
             last_read: 0,
             touched: now(),
+            mounts: Vec::new(),
         };
         let view = s.view(self.credentials.kind());
-        sessions.insert(window.into(), s);
+        sessions.insert(s.id.clone(), s);
         Ok(view)
     }
     fn session<'a>(
@@ -446,7 +586,9 @@ impl Engine {
         window: &str,
         request: &SessionRequest,
     ) -> Result<&'a mut Session> {
-        let s = sessions.get_mut(window).ok_or(Error::StaleSession)?;
+        let s = sessions
+            .get_mut(&request.session_id)
+            .ok_or(Error::StaleSession)?;
         if s.window != window || s.id != request.session_id || s.profile.id != request.profile_id {
             return Err(Error::StaleSession);
         }
@@ -534,6 +676,55 @@ impl Engine {
         }
         result
     }
+    pub async fn mounts(&self, window: &str, r: ReadRequest) -> Result<Mounts> {
+        if !r.path.is_empty() || r.mount.is_some() {
+            return Err(Error::InvalidInput);
+        }
+        let work = self.begin_read(window, &r)?;
+        let result = self
+            .provider
+            .mounts(&work.profile, &work.token, &work.cancel)
+            .await;
+        self.finish_read_with_mounts(
+            window,
+            &r,
+            &work,
+            result.as_ref().map(|_| ()).map_err(|e| *e),
+            result.as_ref().ok().map(|(mounts, _)| mounts.as_slice()),
+        )?;
+        let (mounts, partial) = result?;
+        Ok(Mounts {
+            profile_id: r.profile_id,
+            session_id: r.session_id,
+            read_id: r.read_id,
+            mounts,
+            partial,
+        })
+    }
+    pub async fn metadata(&self, window: &str, r: ReadRequest) -> Result<Metadata> {
+        if r.path.is_empty() || r.mount.is_none() {
+            return Err(Error::InvalidInput);
+        }
+        let work = self.begin_read(window, &r)?;
+        let result = self
+            .provider
+            .metadata(&work.profile, &work.token, &r.path, &work.cancel)
+            .await;
+        self.finish_read(
+            window,
+            &r,
+            &work,
+            result.as_ref().map(|_| ()).map_err(|e| *e),
+        )?;
+        Ok(Metadata {
+            profile_id: r.profile_id,
+            session_id: r.session_id,
+            read_id: r.read_id,
+            path: r.path,
+            mount: work.profile.kv_mount,
+            data: result?,
+        })
+    }
 
     pub async fn resume(&self, window: &str, request: SessionRequest) -> Result<SessionView> {
         let work = self.begin_auth(window, &request)?;
@@ -581,22 +772,36 @@ impl Engine {
     }
     pub fn close(&self, window: &str, request: &SessionRequest) -> Result<()> {
         let mut sessions = self.sessions.lock().map_err(|_| Error::StoreUnavailable)?;
-        if !sessions.contains_key(window) {
+        if !sessions
+            .values()
+            .any(|s| s.window == window && s.profile.id == request.profile_id)
+        {
             return Ok(());
         }
         Self::session(&mut sessions, window, request)?.clear();
-        sessions.remove(window);
+        sessions.remove(&request.session_id);
         Ok(())
     }
     pub fn close_window(&self, window: &str) {
-        if let Ok(mut sessions) = self.sessions.lock()
-            && let Some(mut s) = sessions.remove(window)
-        {
-            s.clear();
+        if let Ok(mut sessions) = self.sessions.lock() {
+            sessions.retain(|_, s| {
+                if s.window == window {
+                    s.clear();
+                    false
+                } else {
+                    true
+                }
+            });
         }
     }
     fn begin_read(&self, window: &str, r: &ReadRequest) -> Result<ReadWork> {
-        if r.read_id == 0 || r.read_id > 9_007_199_254_740_991 || !valid_path(&r.path, true) {
+        if r.read_id == 0
+            || r.read_id > 9_007_199_254_740_991
+            || !valid_path(&r.path, true)
+            || r.mount
+                .as_ref()
+                .is_some_and(|mount| !valid_path(mount, false))
+        {
             return Err(Error::InvalidInput);
         }
         let request = SessionRequest {
@@ -615,6 +820,13 @@ impl Engine {
         if s.authenticating {
             return Err(Error::Busy);
         }
+        let mut profile = s.profile.clone();
+        if let Some(mount) = &r.mount {
+            if !s.mounts.contains(mount) {
+                return Err(Error::InvalidInput);
+            }
+            profile.kv_mount = mount.clone();
+        }
         let token = s.token.as_ref().ok_or(Error::AuthFailed)?.clone();
         if r.read_id <= s.last_read {
             return Err(Error::Cancelled);
@@ -627,7 +839,7 @@ impl Engine {
         s.last_read = r.read_id;
         s.touched = now();
         Ok(ReadWork {
-            profile: s.profile.clone(),
+            profile,
             token,
             epoch: s.epoch,
             cancel,
@@ -639,6 +851,16 @@ impl Engine {
         r: &ReadRequest,
         work: &ReadWork,
         result: Result<()>,
+    ) -> Result<()> {
+        self.finish_read_with_mounts(window, r, work, result, None)
+    }
+    fn finish_read_with_mounts(
+        &self,
+        window: &str,
+        r: &ReadRequest,
+        work: &ReadWork,
+        result: Result<()>,
+        mounts: Option<&[Mount]>,
     ) -> Result<()> {
         let request = SessionRequest {
             profile_id: r.profile_id.clone(),
@@ -657,6 +879,20 @@ impl Engine {
             s.clear();
             s.expired = true;
             return Err(Error::SessionExpired);
+        }
+        if result.is_ok()
+            && let Some(mounts) = mounts
+        {
+            s.mounts = mounts
+                .iter()
+                .filter(|m| {
+                    m.supported
+                        && m.kind == "kv"
+                        && m.version == Some(2)
+                        && valid_path(&m.path, false)
+                })
+                .map(|m| m.path.clone())
+                .collect();
         }
         result
     }
@@ -680,6 +916,7 @@ impl Engine {
             session_id: r.session_id,
             read_id: r.read_id,
             path: r.path,
+            mount: work.profile.kv_mount,
             entries,
             partial,
         })
@@ -707,6 +944,7 @@ impl Engine {
             session_id: r.session_id,
             read_id: r.read_id,
             path: r.path,
+            mount: work.profile.kv_mount,
             fields,
             version,
             expires_at: now() + 30_000,

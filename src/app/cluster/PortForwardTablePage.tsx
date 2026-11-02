@@ -1,7 +1,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Icon } from "@astryxdesign/core/Icon";
-import { IconButton } from "@astryxdesign/core/IconButton";
+import { AddButton } from "../components/AddButton";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -211,7 +211,7 @@ function PortForwardSession({ clusterId, sessionId }: PortForwardTablePageProps)
     {!forwards && !error && <ContentLoading label="Loading port forwards…" />}
     {forwards && (!error || items.length > 0) && <ForwardTable aria-label="Port forwards" aria-busy={pending || refreshing} data={items} columns={columns} idKey="id" density="compact" hasHover textOverflow="truncate" plugins={plugins}
       emptyState={pending || refreshing ? false : emptyState} />}
-    <TableActionOverlay label="Port forward actions"><IconButton label="Create port forward" tooltip="Create port forward" icon={<Icon icon={IconPlus} />} variant="primary" size="lg" elevation="med"
+    <TableActionOverlay label="Port forward actions"><AddButton label="Create port forward" tooltip="Create port forward"
       style={{ pointerEvents: "auto", borderRadius: "var(--radius-container)" }}
       isDisabled={busy} onClick={() => { setCreateError(null); setCreateOpen(true); }} /></TableActionOverlay>
     <Dialog isOpen={createOpen} onOpenChange={open => { if (!busy) setCreateOpen(open); }} purpose={busy ? "required" : "form"} width="min(32rem, 100%)">

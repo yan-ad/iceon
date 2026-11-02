@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
-import { Icon } from "@astryxdesign/core/Icon";
-import { IconButton } from "@astryxdesign/core/IconButton";
+import { AddButton } from "../components/AddButton";
 import { Selector } from "@astryxdesign/core/Selector";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { YamlEditor } from "../components/YamlEditor";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { IconPlus } from "@tabler/icons-react";
 import { useUpdateBlocker } from "../updates/UpdateProvider";
 import { TableActionOverlay } from "./TableToolbar";
 import { useCatalog } from "../catalog/CatalogProvider";
@@ -30,7 +28,7 @@ function ScopedHelmInstall(props: Props) {
   useEffect(() => { if (props.contextChart) setOpen(true); }, [props.contextChart]);
   return <>
     {notice && <Text role="status">{notice}</Text>}
-    <TableActionOverlay label="Helm actions"><IconButton label="Install Helm chart" tooltip="Install Helm chart" icon={<Icon icon={IconPlus} />} variant="primary" size="lg" elevation="med"
+    <TableActionOverlay label="Helm actions"><AddButton label="Install Helm chart" tooltip="Install Helm chart"
       style={{ pointerEvents: "auto", borderRadius: "var(--radius-container)" }}
       isDisabled={!cluster} onClick={() => { setNotice(null); setOpen(true); }} /></TableActionOverlay>
     {open && cluster && <InstallEditor {...props} clusterName={cluster.name} contextName={cluster.contextName}

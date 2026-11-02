@@ -4,7 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Button } from "@astryxdesign/core/Button";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { Icon } from "@astryxdesign/core/Icon";
-import { IconPlus, IconRefresh, IconFolder, IconFileUpload } from "@tabler/icons-react";
+import { IconFolder, IconFileUpload } from "@tabler/icons-react";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
@@ -12,25 +12,11 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Selector } from "@astryxdesign/core/Selector";
 import { useCatalog } from "./CatalogProvider";
-import { IconButton } from "@astryxdesign/core/IconButton";
+import { AddButton } from "../components/AddButton";
 import { chooseKubeconfig, filePickerError } from "./filePicker";
 import { bindFileDrop } from "./fileDrop";
 import { platformGuidance, platformOptions } from "./platformGuidance";
 import { getWindowLayout } from "../layouts/window-layout";
-
-export function CatalogRefreshButton() {
-  const { run, busy, available } = useCatalog();
-  return (
-    <IconButton
-      label="Refresh catalog"
-      tooltip="Refresh catalog"
-      icon={<Icon icon={IconRefresh} />}
-      variant="ghost"
-      isDisabled={busy || !available}
-      onClick={() => void run("catalog_list")}
-    />
-  );
-}
 
 export function CatalogForms() {
   const { run, busy, available, error, snapshot } = useCatalog();
@@ -129,14 +115,9 @@ export function CatalogForms() {
   return (
     <>
       <HStack gap={2} style={{ flexShrink: 0 }}>
-        <IconButton
+        <AddButton
           label="Add config"
           tooltip="Add config"
-          icon={<Icon icon={IconPlus} />}
-          variant="primary"
-          size="lg"
-          elevation="med"
-          style={{ borderRadius: "var(--radius-container)", minWidth: "calc(var(--spacing-10) + var(--spacing-1))", minHeight: "calc(var(--spacing-10) + var(--spacing-1))" }}
           isDisabled={disabled}
           onClick={open}
         />

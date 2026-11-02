@@ -25,6 +25,27 @@ impl Store {
         Self { directory }
     }
 
+    pub(super) fn update(&self, profile: &Profile) -> Result<()> {
+        validate_profile(profile)?;
+        validate_id(&profile.id)?;
+        let payload = serde_json::to_string(profile).map_err(|_| Error::InvalidInput)?;
+        if payload.len() > MAX_PAYLOAD {
+            return Err(Error::TooLarge);
+        }
+        self.access(false, |transaction, profiles| {
+            if !profiles.iter().any(|saved| saved.id == profile.id) {
+                return Err(Error::NotFound);
+            }
+            transaction
+                .execute(
+                    "UPDATE profiles SET payload = ?1 WHERE id = ?2",
+                    params![payload, profile.id],
+                )
+                .map_err(sql_error)?;
+            Ok(())
+        })
+    }
+
     pub(super) fn list(&self) -> Result<Vec<Profile>> {
         self.access(false, |_, profiles| Ok(profiles))
     }
@@ -345,8 +366,13 @@ fn load(connection: &Connection) -> Result<Vec<Profile>> {
         if payload.len() > MAX_PAYLOAD {
             return Err(Error::StoreUnavailable);
         }
-        let value: serde_json::Value =
+        let mut value: serde_json::Value =
             serde_json::from_str(&payload).map_err(|_| Error::StoreUnavailable)?;
+        if let Some(object) = value.as_object_mut() {
+            object
+                .entry("pinned")
+                .or_insert(serde_json::Value::Bool(false));
+        }
         let profile: Profile =
             serde_json::from_value(value.clone()).map_err(|_| Error::StoreUnavailable)?;
         // Reject unknown fields rather than silently accepting credential-bearing payloads.
@@ -367,6 +393,27 @@ mod tests {
     use super::super::{Provider, new_id};
     use super::*;
 
+    #[test]
+    fn legacy_payload_without_pin_loads_and_updates_without_schema_reset() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("secrets");
+        let store = Store::new(directory.clone());
+        let mut profile = profile();
+        store.insert(&profile).unwrap();
+        let connection = Connection::open(directory.join(DATABASE)).unwrap();
+        let mut legacy = serde_json::to_value(&profile).unwrap();
+        legacy.as_object_mut().unwrap().remove("pinned");
+        connection
+            .execute("UPDATE profiles SET payload = ?1", [legacy.to_string()])
+            .unwrap();
+        drop(connection);
+        assert!(!store.list().unwrap()[0].pinned);
+        profile.pinned = true;
+        store.update(&profile).unwrap();
+        let restart = Store::new(directory);
+        assert!(restart.list().unwrap() == vec![profile]);
+    }
+
     fn profile() -> Profile {
         Profile {
             id: new_id().unwrap(),
@@ -377,6 +424,7 @@ mod tests {
             auth_mount: "token".into(),
             kv_mount: "secret".into(),
             base_path: String::new(),
+            pinned: false,
         }
     }
 
@@ -437,7 +485,7 @@ mod tests {
             .query_row("SELECT payload FROM profiles LIMIT 1", [], |row| row.get(0))
             .unwrap();
         let object = serde_json::from_str::<serde_json::Value>(&payload).unwrap();
-        assert_eq!(object.as_object().unwrap().len(), 8);
+        assert_eq!(object.as_object().unwrap().len(), 9);
         for forbidden in ["token", "password", "credentials", "credential_key"] {
             assert!(object.get(forbidden).is_none());
         }

@@ -2,6 +2,38 @@ use super::*;
 use tauri::State;
 
 #[tauri::command]
+pub async fn secrets_profile_update(
+    engine: State<'_, Arc<Engine>>,
+    request: ProfileUpdate,
+) -> Result<Profile> {
+    engine.update(request).await
+}
+#[tauri::command]
+pub async fn secrets_profile_pin(
+    engine: State<'_, Arc<Engine>>,
+    profile_id: String,
+    pinned: bool,
+) -> Result<Profile> {
+    engine.pin(profile_id, pinned).await
+}
+#[tauri::command]
+pub async fn secrets_mounts(
+    window: tauri::WebviewWindow,
+    engine: State<'_, Arc<Engine>>,
+    request: ReadRequest,
+) -> Result<Mounts> {
+    engine.mounts(window.label(), request).await
+}
+#[tauri::command]
+pub async fn secrets_metadata(
+    window: tauri::WebviewWindow,
+    engine: State<'_, Arc<Engine>>,
+    request: ReadRequest,
+) -> Result<Metadata> {
+    engine.metadata(window.label(), request).await
+}
+
+#[tauri::command]
 pub async fn secrets_profiles(engine: State<'_, Arc<Engine>>) -> Result<Vec<Profile>> {
     engine.profiles().await
 }

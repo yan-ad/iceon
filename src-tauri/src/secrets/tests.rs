@@ -56,6 +56,7 @@ fn profile() -> Profile {
         auth_mount: "userpass".into(),
         kv_mount: "secret".into(),
         base_path: "apps".into(),
+        pinned: false,
     }
 }
 
@@ -112,6 +113,7 @@ fn read(request: &SessionRequest, read_id: u64) -> ReadRequest {
         session_id: request.session_id.clone(),
         read_id,
         path: "service/config".into(),
+        mount: None,
     }
 }
 
@@ -257,7 +259,8 @@ fn serialized_profiles_have_only_metadata_fields() {
             "namespace",
             "authMount",
             "kvMount",
-            "basePath"
+            "basePath",
+            "pinned"
         ])
     );
     assert_eq!(value["provider"], "vault");
@@ -376,7 +379,12 @@ async fn open_is_idempotent_only_for_same_window_owner_and_profile() {
     let other = engine.save(input()).await.unwrap();
     let replaced = open(&engine, &other, "a", "next-owner").await;
     assert_ne!(replaced.session_id, replacement.session_id);
-    assert!(pending.cancel.is_cancelled());
+    assert!(!pending.cancel.is_cancelled());
+    assert!(
+        engine
+            .finish_read("a", &read(&replacement, 1), &pending, Ok(()))
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -428,7 +436,7 @@ async fn open_validates_owner_and_limits_distinct_windows() {
             Err(Error::InvalidInput)
         ));
     }
-    for index in 0..8 {
+    for index in 0..32 {
         open(&engine, &p, &format!("w{index}"), "owner").await;
     }
     assert!(matches!(
@@ -490,7 +498,7 @@ async fn auth_errors_and_expired_tokens_leave_no_in_memory_token() {
             matches!(engine.finish_auth("w", &request, &work, Err(error)), Err(e) if e == error)
         );
         let sessions = engine.sessions.lock().unwrap();
-        let s = sessions.get("w").unwrap();
+        let s = sessions.values().find(|s| s.window == "w").unwrap();
         assert!(!s.authenticating);
         assert!(s.token.is_none());
         assert!(s.expires.is_none());
@@ -505,7 +513,8 @@ async fn auth_errors_and_expired_tokens_leave_no_in_memory_token() {
             .sessions
             .lock()
             .unwrap()
-            .get("w")
+            .values()
+            .find(|s| s.window == "w")
             .unwrap()
             .token
             .is_none()
@@ -526,7 +535,7 @@ async fn remembered_token_lookup_failures_do_not_contact_vault_or_connect() {
         Err(Error::CredentialStoreUnavailable)
     ));
     let sessions = engine.sessions.lock().unwrap();
-    let s = sessions.get("w").unwrap();
+    let s = sessions.values().find(|s| s.window == "w").unwrap();
     assert!(s.token.is_none());
     assert!(!s.authenticating);
 }
@@ -580,7 +589,8 @@ async fn read_replacement_and_exact_cancellation_enforce_monotonic_ids() {
             .sessions
             .lock()
             .unwrap()
-            .get("w")
+            .values()
+            .find(|s| s.window == "w")
             .unwrap()
             .read
             .is_none()
@@ -630,7 +640,8 @@ async fn expired_read_start_clears_token_expiry_and_active_work() {
         .sessions
         .lock()
         .unwrap()
-        .get_mut("w")
+        .values_mut()
+        .find(|s| s.window == "w")
         .unwrap()
         .expires = Some(0);
     assert!(matches!(
@@ -639,7 +650,7 @@ async fn expired_read_start_clears_token_expiry_and_active_work() {
     ));
     assert!(pending.cancel.is_cancelled());
     let sessions = engine.sessions.lock().unwrap();
-    let s = sessions.get("w").unwrap();
+    let s = sessions.values().find(|s| s.window == "w").unwrap();
     assert!(s.token.is_none());
     assert!(s.expires.is_none());
     assert!(s.read.is_none());
@@ -660,7 +671,8 @@ async fn expired_read_completion_clears_memory_for_local_and_remote_expiry() {
                 .sessions
                 .lock()
                 .unwrap()
-                .get_mut("w")
+                .values_mut()
+                .find(|s| s.window == "w")
                 .unwrap()
                 .expires = Some(0);
         }
@@ -669,7 +681,7 @@ async fn expired_read_completion_clears_memory_for_local_and_remote_expiry() {
             Err(Error::SessionExpired)
         ));
         let sessions = engine.sessions.lock().unwrap();
-        let s = sessions.get("w").unwrap();
+        let s = sessions.values().find(|s| s.window == "w").unwrap();
         assert!(s.token.is_none());
         assert!(s.expired);
         assert!(s.read.is_none());
@@ -688,7 +700,7 @@ async fn non_expiration_read_errors_release_slot_without_clearing_auth() {
         Err(Error::Network)
     ));
     let sessions = engine.sessions.lock().unwrap();
-    let s = sessions.get("w").unwrap();
+    let s = sessions.values().find(|s| s.window == "w").unwrap();
     assert!(s.token.is_some());
     assert!(s.read.is_none());
 }
@@ -771,7 +783,7 @@ async fn forget_failure_still_clears_memory_and_cancels_work() {
     ));
     assert!(pending.cancel.is_cancelled());
     let sessions = engine.sessions.lock().unwrap();
-    let s = sessions.get("w").unwrap();
+    let s = sessions.values().find(|s| s.window == "w").unwrap();
     assert!(s.token.is_none());
     assert!(s.expires.is_none());
     assert!(!s.expired);
@@ -819,7 +831,8 @@ fn synchronous_native_setup_starts_and_drains_expiry_task_without_tokio_context(
         .sessions
         .lock()
         .unwrap()
-        .get_mut("w")
+        .values_mut()
+        .find(|s| s.window == "w")
         .unwrap()
         .touched = 0;
 
@@ -887,7 +900,8 @@ async fn background_sweep_expires_idle_sessions_and_cancels_auth() {
         .sessions
         .lock()
         .unwrap()
-        .get_mut("w")
+        .values_mut()
+        .find(|s| s.window == "w")
         .unwrap()
         .touched = 0;
     engine.start();
@@ -896,7 +910,7 @@ async fn background_sweep_expires_idle_sessions_and_cancels_auth() {
         .unwrap();
     {
         let sessions = engine.sessions.lock().unwrap();
-        let s = sessions.get("w").unwrap();
+        let s = sessions.values().find(|s| s.window == "w").unwrap();
         assert!(s.expired);
         assert!(!s.authenticating);
         assert!(s.token.is_none());
@@ -920,5 +934,136 @@ async fn finished_auth_work_cannot_be_completed_twice() {
     assert!(matches!(
         engine.finish_auth("w", &request, &work, Ok(auth(None))),
         Err(Error::Cancelled)
+    ));
+}
+
+fn edit_profile(p: &Profile) -> ProfileUpdate {
+    ProfileUpdate {
+        id: p.id.clone(),
+        provider: p.provider,
+        name: "Edited".into(),
+        address: p.address.clone(),
+        namespace: p.namespace.clone(),
+        auth_mount: p.auth_mount.clone(),
+        kv_mount: p.kv_mount.clone(),
+        base_path: p.base_path.clone(),
+    }
+}
+
+#[tokio::test]
+async fn pin_preserves_credential_identity_and_active_sessions_across_restart() {
+    let (directory, engine, credentials, p) = fixture().await;
+    let request = open(&engine, &p, "w", "owner").await;
+    connect(&engine, "w", &request);
+    let work = engine.begin_read("w", &read(&request, 1)).unwrap();
+    let key = engine.key(&p);
+    credentials
+        .values
+        .lock()
+        .unwrap()
+        .insert(key.clone(), Zeroizing::new("remembered".into()));
+    credentials.fail.store(true, Ordering::SeqCst);
+    let pinned = engine.pin(p.id.clone(), true).await.unwrap();
+    assert!(pinned.pinned);
+    assert_eq!(engine.key(&pinned), key);
+    assert!(!work.cancel.is_cancelled());
+    assert!(credentials.values.lock().unwrap().contains_key(&key));
+    let restart = Engine::with_store(directory.path().to_path_buf(), credentials);
+    assert!(restart.profiles().await.unwrap()[0].pinned);
+    assert!(
+        engine
+            .finish_read("w", &read(&request, 1), &work, Ok(()))
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn edit_fails_closed_on_credentials_and_only_cancels_target_profile() {
+    let (directory, engine, credentials, p) = fixture().await;
+    let other = engine.save(input()).await.unwrap();
+    let a = open(&engine, &p, "w", "owner").await;
+    let b = open(&engine, &other, "w", "owner").await;
+    connect(&engine, "w", &a);
+    connect(&engine, "w", &b);
+    let a_work = engine.begin_read("w", &read(&a, 1)).unwrap();
+    let b_work = engine.begin_read("w", &read(&b, 1)).unwrap();
+    let pinned = engine.pin(p.id.clone(), true).await.unwrap();
+    credentials.fail.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        engine.update(edit_profile(&p)).await,
+        Err(Error::CredentialStoreUnavailable)
+    ));
+    assert!(engine.profile(&p.id).await.unwrap() == pinned);
+    assert!(!a_work.cancel.is_cancelled());
+    credentials.fail.store(false, Ordering::SeqCst);
+    let updated = engine.update(edit_profile(&p)).await.unwrap();
+    assert_eq!(updated.id, p.id);
+    assert!(updated.pinned);
+    assert_eq!(updated.name, "Edited");
+    assert!(a_work.cancel.is_cancelled());
+    assert!(!b_work.cancel.is_cancelled());
+    assert!(matches!(
+        engine.begin_auth("w", &a),
+        Err(Error::StaleSession)
+    ));
+    assert!(
+        engine
+            .finish_read("w", &read(&b, 1), &b_work, Ok(()))
+            .is_ok()
+    );
+    let restart = Engine::with_store(directory.path().to_path_buf(), credentials);
+    assert!(restart.profile(&p.id).await.unwrap() == updated);
+    engine.close_window("w");
+    assert!(engine.sessions.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn explicit_mounts_require_discovery_and_stale_discovery_cannot_populate_cache() {
+    let (_directory, engine, _, p) = fixture().await;
+    let request = open(&engine, &p, "w", "owner").await;
+    connect(&engine, "w", &request);
+    let mut selected = read(&request, 1);
+    selected.mount = Some("another".into());
+    assert!(matches!(
+        engine.begin_read("w", &selected),
+        Err(Error::InvalidInput)
+    ));
+    let mut discovery = read(&request, 1);
+    discovery.path.clear();
+    let work = engine.begin_read("w", &discovery).unwrap();
+    engine.cancel("w", cancel(&request, 1)).unwrap();
+    let mounts = vec![Mount {
+        path: "another".into(),
+        kind: "kv".into(),
+        version: Some(2),
+        supported: true,
+    }];
+    assert_eq!(
+        engine.finish_read_with_mounts("w", &discovery, &work, Ok(()), Some(&mounts)),
+        Err(Error::Cancelled)
+    );
+    selected.read_id = 2;
+    assert!(matches!(
+        engine.begin_read("w", &selected),
+        Err(Error::InvalidInput)
+    ));
+    discovery.read_id = 2;
+    let work = engine.begin_read("w", &discovery).unwrap();
+    engine
+        .finish_read_with_mounts("w", &discovery, &work, Ok(()), Some(&mounts))
+        .unwrap();
+    selected.read_id = 3;
+    let work = engine.begin_read("w", &selected).unwrap();
+    assert_eq!(work.profile.kv_mount, "another");
+    engine.finish_read("w", &selected, &work, Ok(())).unwrap();
+    engine
+        .disconnect("w", disconnect(&request, false))
+        .await
+        .unwrap();
+    connect(&engine, "w", &request);
+    selected.read_id = 4;
+    assert!(matches!(
+        engine.begin_read("w", &selected),
+        Err(Error::InvalidInput)
     ));
 }
