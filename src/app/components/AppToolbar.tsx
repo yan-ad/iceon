@@ -111,7 +111,10 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
   useEffect(() => {
     function onRefresh(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
-      if (document.querySelector('[role="dialog"], dialog[open], [role="alertdialog"]')) return;
+      // Cluster pages own their editor/confirmation refresh policy. Closed popup
+      // scaffolding must not block page-level shortcuts either.
+      if ((isCatalog || pageRefresh) && [...document.querySelectorAll('[role="dialog"], dialog[open], [role="alertdialog"]')]
+        .some(element => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden")) return;
       if ((event.metaKey !== event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "r" && !event.isComposing && refreshLabel) {
         event.preventDefault();
         if (event.repeat) return;
@@ -120,7 +123,7 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
     }
     window.addEventListener("keydown", onRefresh);
     return () => window.removeEventListener("keydown", onRefresh);
-  }, [refreshLabel, refreshPage]);
+  }, [refreshLabel, refreshPage, isCatalog, pageRefresh]);
 
   return (
     <>

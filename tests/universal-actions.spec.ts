@@ -19,12 +19,22 @@ test("Catalog refresh follows history and pauses while an import dialog is open"
   await expect(page.locator('.toolbar-history button').nth(2)).toHaveAccessibleName("Refresh catalog");
   const reads = () => page.evaluate(() => (window as any).__catalogReads as number);
   const before = await reads();
+  await page.evaluate(() => {
+    const popup = document.createElement("section");
+    popup.id = "closed-dialog-fixture";
+    popup.setAttribute("role", "dialog");
+    popup.hidden = true;
+    document.body.append(popup);
+  });
   await refresh.click();
   await expect.poll(reads).toBe(before + 1);
+  await page.keyboard.press("Control+r");
+  await expect.poll(reads).toBe(before + 2);
+  await page.evaluate(() => document.getElementById("closed-dialog-fixture")?.remove());
   await page.getByRole("button", { name: "Add config", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", ctrlKey: true, bubbles: true, cancelable: true })));
-  expect(await reads()).toBe(before + 1);
+  expect(await reads()).toBe(before + 2);
   await page.keyboard.press("Escape");
   await page.evaluate(() => {
     for (const overrides of [{ repeat: true }, { shiftKey: true }, { altKey: true }, { isComposing: true }]) {
@@ -34,9 +44,9 @@ test("Catalog refresh follows history and pauses while an import dialog is open"
     handled.preventDefault();
     window.dispatchEvent(handled);
   });
-  expect(await reads()).toBe(before + 1);
+  expect(await reads()).toBe(before + 2);
   await page.evaluate(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", ctrlKey: true, bubbles: true, cancelable: true })));
-  await expect.poll(reads).toBe(before + 2);
+  await expect.poll(reads).toBe(before + 3);
 });
 
 test("page refresh registrations retain independent owners and AddButton forwards its ref", async ({ page }) => {
