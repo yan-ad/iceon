@@ -313,7 +313,10 @@ test("subscriptions registered before a session survive context ownership and di
 });
 
 test("routine permission renewal keeps the mounted deployment and namespace readers", async ({ page }) => {
-  await page.clock.install();
+  await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
+  // Freeze before navigation: the running clock can overtake a timestamp sampled
+  // through another browser round-trip on a busy CI worker.
+  await page.clock.pauseAt(new Date("2026-01-01T00:01:00Z"));
   await page.addInitScript(() => {
     const state = { renewal: false, active: 0, completed: 0, reads: [] as string[] };
     Object.assign(window, { isTauri: true, __renewal: state, __TAURI_INTERNALS__: {
@@ -342,7 +345,6 @@ test("routine permission renewal keeps the mounted deployment and namespace read
   await installNamespaceSnapshotMock(page);
   await page.goto("/#/cluster/one?section=deployments");
   await expect.poll(() => page.evaluate(() => (window as any).__renewal.reads.includes("deployments") && (window as any).__renewal.reads.includes("namespaces"))).toBe(true);
-  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 100));
   const initial = await page.evaluate(() => {
     (window as any).__renewal.renewal = true;
     return [...(window as any).__renewal.reads];
