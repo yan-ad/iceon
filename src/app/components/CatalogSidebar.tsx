@@ -3,7 +3,7 @@ import { Divider } from "@astryxdesign/core/Divider";
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Text } from "@astryxdesign/core/Text";
 import { IconMenu2, IconPin } from "@tabler/icons-react";
-import { categories } from "../navigation";
+import { destinations } from "../navigation";
 import { useCatalog } from "../catalog/CatalogProvider";
 import { RecordIcon } from "../catalog/RecordIcon";
 import { pinKey } from "../catalog/api";
@@ -29,8 +29,8 @@ export function CatalogSidebar({ onNavigate, id = "catalog-sidebar" }: { onNavig
           aria-controls={mobile.mobileNavId} onClick={mobile.openMobileNav} />
       </SideNavSection>}
       <SideNavSection title="Navigation">
-        {categories.map(category => <NavLink key={category.path} to={category.path} label={category.label} icon={category.icon}
-          isSelected={pathname === category.path || pathname === "/catalog"} onClick={onNavigate} />)}
+        {destinations.map(category => <NavLink key={category.path} to={category.path} label={category.label} icon={category.icon}
+           isSelected={pathname === category.path || (category.path === "/catalog/clusters" && pathname === "/catalog")} onClick={onNavigate} />)}
       </SideNavSection>
       <Divider />
       <SideNavSection title="Pinned items">

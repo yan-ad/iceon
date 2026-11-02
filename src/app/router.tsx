@@ -10,6 +10,7 @@ import { CustomResourcesProvider } from "./cluster/CustomResourcesProvider";
 import { validDefinitionName } from "./cluster/customResourcesApi";
 import { RouteRestoration } from "./RouteRestoration";
 import { PermissionProvider } from "./cluster/PermissionProvider";
+import SecretsPage from "./pages/SecretsPage";
 
 const rootRoute = createRootRoute({
   component: () => <CatalogProvider><RouteRestoration /><WorkspaceRefreshProvider><PermissionProvider><CustomResourcesProvider><MainLayout /></CustomResourcesProvider></PermissionProvider></WorkspaceRefreshProvider></CatalogProvider>,
@@ -23,6 +24,7 @@ const catalogIndexRoute = createRoute({ getParentRoute: () => catalogRoute, path
 const generalRoute = createRoute({ getParentRoute: () => catalogRoute, path: "general", beforeLoad: () => { throw redirect({ to: "/catalog/clusters", replace: true }); } });
 const allRoute = createRoute({ getParentRoute: () => catalogRoute, path: "all", beforeLoad: () => { throw redirect({ to: "/catalog/clusters", replace: true }); } });
 const clustersRoute = createRoute({ getParentRoute: () => catalogRoute, path: "clusters", component: CatalogPage });
+const secretsRoute = createRoute({ getParentRoute: () => rootRoute, path: "secrets", component: SecretsPage });
 const webLinksRoute = createRoute({ getParentRoute: () => catalogRoute, path: "web-links", beforeLoad: () => { throw redirect({ to: "/catalog/clusters", replace: true }); } });
 const clusterWorkspaceRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -40,6 +42,7 @@ export const router = createRouter({
     homeRoute,
     catalogRoute.addChildren([catalogIndexRoute, allRoute, generalRoute, clustersRoute, webLinksRoute]),
     clusterWorkspaceRoute,
+    secretsRoute,
   ]),
   defaultPreload: "intent",
 });

@@ -142,7 +142,17 @@ unused starter CSS, not design authority. The active brand theme lives in
    navigation landmark. Collapsed mode keeps named category and pinned-entry
    icons usable, with labels available to assistive technology and tooltips.
    Clusters is navigation only. Pin actions belong to loaded list
-   entries and static cluster-navigation rows, including grouped sections.
+    entries and static cluster-navigation rows, including grouped sections.
+    Secrets is a separate main-sidebar destination at `/secrets`, alongside
+    Clusters, not a Catalog category or Preferences section. Its saved provider
+    connections and read-only session browser share a bounded page, with an
+    always-reachable bottom-right Add secret connection icon opening an Astryx
+    dialog. Vault KV v2 is the first provider; neither Secrets nor its connections
+    are pinnable through cluster pin menus. Browser preview shows a desktop-only
+    state without invoking secrets IPC. Rust owns provider sessions, verified HTTPS,
+    profile metadata persistence and OS credential storage; only explicitly revealed
+    values cross IPC. See [Secrets management](docs/secrets-management.md) for the
+    supported userpass/KV v2 workflow, limits, and remaining native verification.
 5. **Content:** one main landmark and an accessible, visually hidden page heading.
    No category title bar, discovery switch, or routine explanatory information
    block; the normal view begins with the filter and table. Keep actionable errors

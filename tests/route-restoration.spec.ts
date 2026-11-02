@@ -73,6 +73,13 @@ test("new Catalog window does not restore", async ({ page }) => {
   expect((await calls(page)).some(c => c.command === "route_history_get")).toBe(false);
 });
 
+test("restores a saved Secrets destination", async ({ page }) => {
+  await fixture(page, { path: "/secrets" });
+  await page.goto("/");
+  await expect(page).toHaveURL(/#\/secrets$/);
+  await expect(page.getByRole("heading", { name: "Secrets", exact: true })).toBeAttached();
+});
+
 test("navigation while history is loading is not overwritten", async ({ page }) => {
   await fixture(page, { path: "/catalog" }, true, true, 600);
   await page.goto("/");

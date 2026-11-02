@@ -13,6 +13,7 @@ mod pin_menu;
 mod preferences;
 mod project;
 mod route_history;
+mod secrets;
 mod tls;
 mod updates;
 mod window;
@@ -679,6 +680,9 @@ pub fn run() {
             app.manage(catalog.clone());
             app.manage(Arc::new(connection::ConnectionEngine::new(catalog)));
 
+            let secrets = secrets::Engine::new(app_data.join("secrets"));
+            secrets.start();
+            app.manage(secrets);
             let prefs = preferences::PreferencesEngine::new(app_data)
                 .map_err(|e| format!("preferences init failed: {e:?}"))?;
             app.manage(prefs.clone());
@@ -704,6 +708,17 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            secrets::secrets_profiles,
+            secrets::secrets_profile_save,
+            secrets::secrets_profile_remove,
+            secrets::secrets_session_open,
+            secrets::secrets_login,
+            secrets::secrets_resume,
+            secrets::secrets_disconnect,
+            secrets::secrets_list,
+            secrets::secrets_reveal,
+            secrets::secrets_cancel,
+            secrets::secrets_close,
             context_menu::row_context_menu_show,
             context_menu::row_context_menu_cancel,
             pin_menu::catalog_pin_menu_show,
@@ -812,6 +827,7 @@ pub fn run() {
             {
                 native_navigation::forget_window(app, label);
                 app.state::<Arc<pin_menu::PinMenus>>().clear_window(label);
+                app.state::<Arc<secrets::Engine>>().close_window(label);
             }
             if matches!(
                 event,
@@ -819,6 +835,9 @@ pub fn run() {
             ) {
                 app.state::<Arc<context_menu::ContextMenus>>().clear();
                 app.state::<Arc<pin_menu::PinMenus>>().clear();
+                let secrets = app.state::<Arc<secrets::Engine>>();
+                secrets.shutdown();
+                tauri::async_runtime::block_on(secrets.drain());
                 let engine = app.state::<Arc<connection::ConnectionEngine>>();
                 engine.shutdown();
                 tauri::async_runtime::block_on(engine.drain());

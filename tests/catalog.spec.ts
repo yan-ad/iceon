@@ -44,7 +44,7 @@ async function engineFixture(page: Page, options: { empty?: boolean; failList?: 
   await page.setViewportSize({ width: 1100, height: 700 });
 }
 
-test("Catalog home shows only clusters with unchanged columns and one navigation destination", async ({ page }, testInfo) => {
+test("Catalog home shows only clusters with unchanged columns and standalone Secrets navigation", async ({ page }, testInfo) => {
   await engineFixture(page);
   await page.goto("/");
   await expect(page).toHaveURL(/#\/catalog$/);
@@ -55,7 +55,7 @@ test("Catalog home shows only clusters with unchanged columns and one navigation
   await expect(table.getByRole("cell", { name: "Clusters", exact: true }).locator("svg")).toHaveCount(1);
   await expect(table.getByRole("cell", { name: "Disconnected", exact: true }).locator(".astryx-badge")).toHaveCount(1);
   const navigation = page.getByRole("navigation", { name: "Catalog navigation", exact: true });
-  await expect(navigation.getByRole("link")).toHaveCount(1);
+  await expect(navigation.getByRole("link")).toHaveCount(2);
   await expect(navigation.getByRole("link", { name: "Clusters", exact: true })).toHaveAttribute("href", "/#/catalog/clusters");
   for (const name of ["All Categories", "Web Links", "General"]) await expect(navigation.getByRole("link", { name, exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add web link", exact: true })).toHaveCount(0);

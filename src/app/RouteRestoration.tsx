@@ -15,7 +15,7 @@ function validRoute(value: unknown): value is SavedRoute {
   const route = value as SavedRoute;
   if (Object.keys(route).some(key => !["path", "section", "definition"].includes(key))) return false;
   if (typeof route.path !== "string") return false;
-  if (["/catalog", "/catalog/all", "/catalog/clusters"].includes(route.path)) return !route.section && !route.definition;
+  if (["/catalog", "/catalog/all", "/catalog/clusters", "/secrets"].includes(route.path)) return !route.section && !route.definition;
   if (!/^\/cluster\/[a-zA-Z0-9_-]{1,128}$/.test(route.path)) return false;
   if (route.section === "custom-resource-instances") return validDefinitionName(route.definition);
   return !route.definition && (!route.section || clusterDestinations.some(item => item.id === route.section));

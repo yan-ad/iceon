@@ -95,8 +95,11 @@ pub fn validate(route: &SavedRoute) -> Result<()> {
         route.path.as_str(),
         "/catalog" | "/catalog/all" | "/catalog/clusters"
     );
+    let secrets = route.path == "/secrets";
     let cluster = route.path.strip_prefix("/cluster/").is_some_and(valid_id);
-    if !catalog && !cluster || catalog && (route.section.is_some() || route.definition.is_some()) {
+    if !catalog && !secrets && !cluster
+        || (catalog || secrets) && (route.section.is_some() || route.definition.is_some())
+    {
         return Err(PreferencesError::InvalidInput);
     }
     if route
@@ -270,6 +273,34 @@ mod tests {
         assert_eq!(
             engine.route_history_get(),
             Err(PreferencesError::StoreCorrupt)
+        );
+    }
+
+    #[test]
+    fn secrets_history_contains_no_session_or_secret_path() {
+        assert!(
+            validate(&SavedRoute {
+                path: "/secrets".into(),
+                section: None,
+                definition: None
+            })
+            .is_ok()
+        );
+        assert!(
+            validate(&SavedRoute {
+                path: "/secrets".into(),
+                section: Some("private/path".into()),
+                definition: None
+            })
+            .is_err()
+        );
+        assert!(
+            validate(&SavedRoute {
+                path: "/secrets/profile-id".into(),
+                section: None,
+                definition: None
+            })
+            .is_err()
         );
     }
 

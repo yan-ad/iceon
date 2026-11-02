@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.0 (pending CI)
+
+### Secrets management
+
+- Add a standalone Secrets workspace beside Clusters, with a + action opening
+  Add secret connection. Catalog remains cluster-only; Secrets is not a Preferences
+  section and provider connections are not cluster pins.
+- Add provider-neutral Rust transport and credential-store interfaces, with Vault
+  userpass login and read-only KV v2 browsing as the first provider. Saving a profile
+  stores metadata only and does not authenticate. Secret values require explicit
+  Reveal and are hidden on blur, navigation, disposal, or after 30 seconds.
+- Remember only issued Vault tokens using macOS Keychain, Windows Credential
+  Manager, or Linux Secret Service. Passwords are not persisted; no plaintext
+  credential fallback is provided. Resume validates saved tokens before reading.
+- Bound requests and responses, require verified HTTPS, disable redirects, isolate
+  sessions by native window, and cancel stale authentication and reads. Add explicit
+  expiry, disconnect, forgetting, and profile removal cleanup. No remote secret
+  writes, automatic renewal, exports, or Kubernetes credential injection.
+- Document setup, policy requirements, supported limits and manual native checks in
+  `docs/secrets-management.md`.
+
+### Workspace fixes
+
+- Use Astryx empty states for resource and port-forward tables, with recovery
+  actions, scope-aware guidance and responsive horizontal-scroll behavior.
+- Use asynchronous native kubeconfig file selection instead of a blocking wrapper.
+
+### Verification and distribution
+
+- Local feature verification passed: 533 Rust tests, 70 navigation/UI fixture tests,
+  a final 26-case Secrets/route regression run, production build, formatting and
+  strict Clippy. Fixture tests do not establish live Vault or native credential-store
+  behavior; those manual checks remain outstanding on each supported OS.
+- The immutable `0.1.0` tag starts the existing gated macOS/Windows packaging and
+  signed-updater workflow. Publication still requires same-commit CI, package and
+  uploaded-artifact verification; a pushed tag is not proof of a published release.
+
 ## 0.0.8 (pending CI)
 
 ### Kubeconfig import

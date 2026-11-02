@@ -70,6 +70,7 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
   const layout = getWindowLayout();
   const draggable = layout.seamless && layout.platform !== "browser";
   const isCatalog = useRouterState({ select: (state) => state.location.pathname.startsWith("/catalog") });
+  const isSecrets = useRouterState({ select: (state) => state.location.pathname === "/secrets" });
   const workspaceRefresh = useWorkspaceRefresh();
   const { openPreferences } = usePreferences();
   const { clusterId } = useParams({ strict: false });
@@ -143,6 +144,7 @@ export function AppToolbar({ onSearch }: { onSearch: () => void }) {
           variant="ghost" icon={<Icon icon={IconRefresh} />} isDisabled={!refresh.enabled} onClick={refreshWorkspace} />}
       </HStack>
       {clusterId && <ClusterSwitcher clusterId={clusterId} />}
+      {isSecrets && <Text weight="semibold">Secrets</Text>}
       <StackItem
         size="fill"
         aria-hidden="true"

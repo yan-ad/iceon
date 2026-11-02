@@ -1,6 +1,6 @@
 [package]
 name = "iceon"
-version = "0.0.8"
+version = "0.1.0"
 description = "Iceon Kubernetes desktop workspace"
 authors = ["Yanuar"]
 edition = "2024"
@@ -55,6 +55,16 @@ process-wrap = { version = "=10.0.1", default-features = false, features = ["tok
 tauri-plugin-updater = "=2.14.0"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream"] }
 tauri-plugin-dialog = "2"
+zeroize = "1.8"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
