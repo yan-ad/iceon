@@ -6,11 +6,13 @@ type SearchWindow = Window & { __searchCalls: Call[]; __releaseSearch: () => voi
 
 async function fixture(page: Page, section: string, controlledClock = false) {
   page.on("pageerror", error => { throw error; });
-  await page.addInitScript(() => {
+  // Helm loads its own 500-row inventory; 500 extra clusters also mount hidden
+  // cluster-switcher menus unrelated to the table under test.
+  await page.addInitScript(({ catalogCount }) => {
     const calls: Call[] = [];
     const held: (() => void)[] = [];
     let lease = 0;
-    const catalog = Array.from({ length: 500 }, (_, index) => ({ id: index ? `cluster-${index}` : "one", name: `cluster-${index}`, contextName: "fixture",
+    const catalog = Array.from({ length: catalogCount }, (_, index) => ({ id: index ? `cluster-${index}` : "one", name: `cluster-${index}`, contextName: "fixture",
       source: "kubeconfig", labels: ["file=/fixtures/search.yaml"], color: "#476BA1", pinned: false, status: "disconnected" }));
     Object.assign(window, { isTauri: true, __searchCalls: calls, __releaseSearch: () => held.splice(0).forEach(resolve => resolve()),
       __TAURI_INTERNALS__: { invoke: async (command: string, args?: { request: Request }) => {
@@ -44,7 +46,7 @@ async function fixture(page: Page, section: string, controlledClock = false) {
         throw `Unexpected fixture command: ${command}`;
       } },
     });
-  });
+  }, { catalogCount: section === "helm-charts" ? 1 : 500 });
   await page.setViewportSize({ width: 1500, height: 900 });
   // React captures timer/performance APIs at module load. Install before it
   // loads so it cannot mix native callbacks with a subsequently paused clock.

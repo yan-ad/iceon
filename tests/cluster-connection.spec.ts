@@ -378,7 +378,9 @@ test("resource actions preserve empty and truncated states", async ({ page }) =>
   await expect(page.getByRole("table", { name: "Nodes", exact: true })).toContainText("No nodes were returned");
   await expect(page.getByRole("main")).toContainText("Results are limited; no continuation is available.");
   await section(page, "Namespaces");
-  await expect(page.getByRole("table", { name: "Namespaces", exact: true })).toContainText("No namespaces were returned");
+  const empty = page.getByRole("table", { name: "Namespaces", exact: true }).locator(".astryx-empty-state");
+  await expect(empty.getByRole("heading", { name: "No namespaces found", level: 2, exact: true })).toBeVisible();
+  await expect(empty.getByRole("button", { name: "Refresh", exact: true })).toBeEnabled();
 });
 
 async function clusterAction(page: Page, name: string) {

@@ -167,6 +167,11 @@ test("cluster-only catalog exposes no link activation or creation actions", asyn
   await expect(page.getByRole("row", { name: "Open cluster Development", exact: true })).toBeVisible();
   await expect(page.getByRole("row", { name: /^Open web link / })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add web link", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("navigation", { name: "Catalog navigation", exact: true }).getByRole("link")).toHaveCount(3);
+  const sidebar = page.getByRole("navigation", { name: "Catalog navigation", exact: true });
+  await expect(sidebar.getByRole("link")).toHaveCount(4);
+  for (const name of ["Clusters", "Secrets", "Development", "Staging"]) {
+    await expect(sidebar.getByRole("link", { name, exact: true })).toBeVisible();
+  }
+  await expect(sidebar.getByRole("link", { name: "Secrets", exact: true })).toHaveAttribute("href", "/#/secrets");
   expect((await calls(page)).some(call => /web_link/.test(call.command))).toBe(false);
 });

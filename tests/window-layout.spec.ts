@@ -163,7 +163,9 @@ test("categories cannot be pinned and there is only one sidebar", async ({ page 
   await page.goto("/");
   const sidebar = page.getByRole("navigation", { name: "Catalog navigation", exact: true });
   await expect(sidebar).toHaveCount(1);
-  await expect(sidebar.getByRole("link")).toHaveCount(1);
+  await expect(sidebar.getByRole("link")).toHaveCount(2);
+  await expect(sidebar.getByRole("link", { name: "Clusters", exact: true })).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: "Secrets", exact: true })).toHaveAttribute("href", "/#/secrets");
   await expect(page.getByRole("navigation", { name: "Apps", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Home", exact: true })).toHaveCount(0);
   for (const category of ["Clusters"]) {
@@ -174,7 +176,10 @@ test("categories cannot be pinned and there is only one sidebar", async ({ page 
   await expect(page.getByRole("heading", { name: "Desktop engine required", exact: true })).toBeVisible();
   await expect(page.getByRole("table", { name: "Clusters", exact: true })).toHaveCount(0);
   await page.reload();
-  await expect(sidebar.getByRole("link")).toHaveCount(1);
+  await expect(sidebar.getByRole("link")).toHaveCount(2);
+  await sidebar.getByRole("link", { name: "Secrets", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Secrets", exact: true })).toBeAttached();
+  await expect(page.getByRole("button", { name: /\b(?:Pin|Unpin)\b/ })).toHaveCount(0);
   await page.keyboard.press("Control+k");
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.keyboard.press("Escape");
