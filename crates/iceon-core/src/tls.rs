@@ -31,5 +31,6 @@ mod tests {
         let source = include_str!("../../iceon-ui/src/lib.rs");
         let startup = source.split("pub fn run() {").nth(1).unwrap().trim_start();
         assert!(startup.starts_with("iceon_core::tls::initialize();"));
+        assert!(startup.find("runtime.enter()").unwrap() < startup.find("CatalogEngine::").unwrap());
     }
 }

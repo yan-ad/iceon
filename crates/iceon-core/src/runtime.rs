@@ -46,6 +46,27 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     global_runtime().block_on(future)
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn entered_shared_runtime_supports_foreign_executor_timers() {
+        // Model GPUI's foreground executor: no Tokio runtime is initially entered,
+        // and a different executor polls the future while Tokio drives its timer.
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let runtime = super::handle();
+        let guard = runtime.enter();
+        futures::executor::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            })
+            .await
+            .expect("Tokio timers must work when polled by the foreground executor");
+        });
+        drop(guard);
+        assert!(tokio::runtime::Handle::try_current().is_err());
+    }
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     {

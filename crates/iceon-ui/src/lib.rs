@@ -869,6 +869,10 @@ impl Render for IceonApp {
 
 pub fn run() {
     iceon_core::tls::initialize();
+    // GPUI polls foreground futures on this thread, outside Tokio's executor.
+    // Keep its timers and I/O bound to the shared runtime for the entire app loop.
+    let runtime = iceon_core::runtime::handle();
+    let _runtime_guard = runtime.enter();
     let data_dir = iceon_core::runtime::app_data_dir();
     let home_dir = iceon_core::runtime::home_dir();
 
