@@ -955,10 +955,13 @@ mod tests {
             assert_eq!(response.headers()["cache-control"], "no-store");
             assert_eq!(response.headers()["x-content-type-options"], "nosniff");
             assert_eq!(
-                to_bytes(response.into_body(), RESPONSE_LIMIT)
-                    .await
-                    .unwrap(),
-                r#"{"error":"invalidRequest","ok":false}"#
+                serde_json::from_slice::<Value>(
+                    &to_bytes(response.into_body(), RESPONSE_LIMIT)
+                        .await
+                        .unwrap()
+                )
+                .unwrap(),
+                json!({"error": "invalidRequest", "ok": false})
             );
         }
         let mut duplicate = request("{}");

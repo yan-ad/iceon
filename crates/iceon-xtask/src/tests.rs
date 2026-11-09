@@ -4,32 +4,42 @@ use tempfile::{TempDir, tempdir_in};
 fn fixture() -> TempDir {
     let dir = tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
     let root = dir.path();
-    fs::create_dir(root.join("src-tauri")).unwrap();
     fs::write(
-        root.join("package.json"),
-        r#"{"name":"iceon","version":"0.1.0"}"#,
+        root.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"crates/iceon-app\", \"crates/iceon-core\", \"crates/iceon-ui\"]\n\n[workspace.package]\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .unwrap();
-    fs::write(
-        root.join("src-tauri/Cargo.toml"),
-        "[package]\nname = \"iceon\"\nversion = \"0.1.0\"\n",
-    )
-    .unwrap();
-    fs::write(
-        root.join("src-tauri/tauri.conf.json"),
-        r#"{"version":"0.1.0"}"#,
-    )
-    .unwrap();
-    fs::write(
-        root.join("src-tauri/Cargo.lock"),
-        "version = 4\n[[package]]\nname = \"iceon\"\nversion = \"0.1.0\"\n",
-    )
-    .unwrap();
-    fs::write(
-        root.join("bun.lock"),
-        "{\"workspaces\":{\"\":{\"name\":\"iceon\",},},}",
-    )
-    .unwrap();
+    let mut lock = String::from("version = 4\n");
+    for name in ["iceon-app", "iceon-core", "iceon-ui"] {
+        let member = root.join("crates").join(name);
+        fs::create_dir_all(member.join("src")).unwrap();
+        fs::write(
+            member.join("Cargo.toml"),
+            format!(
+                "[package]\nname = {name:?}\nversion.workspace = true\nedition.workspace = true\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            member.join(if name == "iceon-app" {
+                "src/main.rs"
+            } else {
+                "src/lib.rs"
+            }),
+            if name == "iceon-app" {
+                "fn main() {}\n"
+            } else {
+                ""
+            },
+        )
+        .unwrap();
+        lock.push_str(&format!(
+            "\n[[package]]\nname = {name:?}\nversion = \"0.1.0\"\n"
+        ));
+    }
+    // Registry dependencies are not part of the local release version bump.
+    lock.push_str("\n[[package]]\nname = \"iceon-core\"\nversion = \"9.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n");
+    fs::write(root.join("Cargo.lock"), lock).unwrap();
     dir
 }
 fn options() -> Options {
@@ -60,11 +70,7 @@ fn repository(root: &Path) {
     .unwrap();
     git(root, &["config", "branch.main.remote", "origin"]).unwrap();
     git(root, &["config", "branch.main.merge", "refs/heads/main"]).unwrap();
-    git(
-        root,
-        &["add", "--", "package.json", "bun.lock", "src-tauri"],
-    )
-    .unwrap();
+    git(root, &["add", "--", "Cargo.toml", "Cargo.lock", "crates"]).unwrap();
     git(root, &["commit", "-m", "fixture"]).unwrap();
     git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]).unwrap();
 }
@@ -93,14 +99,52 @@ fn stable_versions_and_bumps() {
 fn version_plan_and_lock_validation() {
     let d = fixture();
     let plan = version_plan(d.path(), "0.2.0", false).unwrap();
-    assert_eq!(plan.changes.len(), 4);
-    assert!(plan.changes.iter().all(|c| c.after.contains("0.2.0")));
+    assert_eq!(plan.old, Version::new(0, 1, 0));
+    assert_eq!(plan.new, Version::new(0, 2, 0));
+    assert_eq!(
+        plan.changes.iter().map(|c| c.path).collect::<Vec<_>>(),
+        ["Cargo.toml", "Cargo.lock"]
+    );
+    let manifest = doc(&plan.changes[0].after).unwrap();
+    assert_eq!(
+        manifest["workspace"]["package"]["version"].as_str(),
+        Some("0.2.0")
+    );
+    let lock = doc(&plan.changes[1].after).unwrap();
+    for entry in lock["package"].as_array_of_tables().unwrap() {
+        assert_eq!(
+            entry["version"].as_str(),
+            Some(if entry.get("source").is_some() {
+                "9.0.0"
+            } else {
+                "0.2.0"
+            })
+        );
+    }
     fs::write(
-        d.path().join("src-tauri/Cargo.lock"),
-        "[[package]]\nname=\"iceon\"\nversion=\"0.0.0\"",
+        d.path().join("Cargo.lock"),
+        read(d.path(), "Cargo.lock")
+            .unwrap()
+            .replace("0.1.0", "0.0.0"),
     )
     .unwrap();
-    assert!(version_plan(d.path(), "patch", false).is_err());
+    assert!(
+        version_plan(d.path(), "patch", false)
+            .err()
+            .unwrap()
+            .contains("Cargo.lock: version/name differs")
+    );
+    fs::write(
+        d.path().join("Cargo.lock"),
+        "[[package]]\nname=\"unrelated\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    assert!(
+        version_plan(d.path(), "patch", false)
+            .err()
+            .unwrap()
+            .contains("at least one local iceon workspace package")
+    );
 }
 #[test]
 fn dry_run_is_local_read_only_with_fake_remote() {
@@ -111,6 +155,7 @@ fn dry_run_is_local_read_only_with_fake_remote() {
     release(d.path(), &options()).unwrap();
     assert_eq!(git(d.path(), &["rev-parse", "HEAD"]).unwrap(), head);
     assert_eq!(git(d.path(), &["tag", "--list"]).unwrap(), "");
+    assert!(!d.path().join(".git/FETCH_HEAD").exists());
     clean(d.path()).unwrap();
     for change in plan.changes {
         assert_eq!(read(d.path(), change.path).unwrap(), change.before);
@@ -122,58 +167,94 @@ fn refuses_dirty_wrong_branch_existing_tag_and_wrong_remote() {
     repository(d.path());
     let mut o = options();
     o.branch = "other".into();
-    assert!(release(d.path(), &o).is_err());
+    assert!(
+        release(d.path(), &o)
+            .unwrap_err()
+            .contains("check out the intended release branch")
+    );
     fs::write(d.path().join("untracked"), "x").unwrap();
-    assert!(release(d.path(), &options()).is_err());
+    assert!(
+        release(d.path(), &options())
+            .unwrap_err()
+            .contains("working tree/index must be clean")
+    );
     fs::remove_file(d.path().join("untracked")).unwrap();
     git(d.path(), &["tag", "v0.1.1"]).unwrap();
-    assert!(release(d.path(), &options()).is_err());
+    assert!(
+        release(d.path(), &options())
+            .unwrap_err()
+            .contains("release tag already exists locally")
+    );
     git(d.path(), &["tag", "-d", "v0.1.1"]).unwrap();
     git(
         d.path(),
         &["remote", "set-url", "--push", "origin", "/different.git"],
     )
     .unwrap();
-    assert!(release(d.path(), &options()).is_err());
+    assert!(
+        release(d.path(), &options())
+            .unwrap_err()
+            .contains("remote must have exactly one identical fetch/push URL")
+    );
 }
 #[test]
-fn refuses_missing_updater_before_network_or_writes() {
+fn refuses_unapproved_publication_remote_before_network_or_writes() {
     let d = fixture();
     repository(d.path());
     let mut o = options();
     o.dry_run = false;
+    let head = git(d.path(), &["rev-parse", "HEAD"]).unwrap();
+    let plan = version_plan(d.path(), "patch", false).unwrap();
     let error = release(d.path(), &o).unwrap_err();
-    assert!(error.contains("createUpdaterArtifacts"));
+    assert!(
+        error
+            .contains("actual publication is restricted to the configured yan-ad/iceon repository"),
+        "{error}"
+    );
+    assert_eq!(git(d.path(), &["rev-parse", "HEAD"]).unwrap(), head);
+    assert_eq!(git(d.path(), &["tag", "--list"]).unwrap(), "");
+    assert!(!d.path().join(".git/FETCH_HEAD").exists());
+    for change in plan.changes {
+        assert_eq!(read(d.path(), change.path).unwrap(), change.before);
+    }
     clean(d.path()).unwrap();
 }
 #[test]
-fn bun_root_version_and_mismatch() {
+fn rejects_js_workspaces_and_locks() {
     let d = fixture();
-    fs::write(
-        d.path().join("bun.lock"),
-        r#"{"workspaces":{"":{"name":"iceon","version":"0.1.0"}}}"#,
-    )
-    .unwrap();
-    let plan = version_plan(d.path(), "patch", false).unwrap();
-    assert_eq!(plan.changes.len(), 5);
-    fs::write(
-        d.path().join("bun.lock"),
-        r#"{"workspaces":{"":{"name":"iceon","version":"0.0.0"}}}"#,
-    )
-    .unwrap();
-    assert!(version_plan(d.path(), "patch", false).is_err());
+    for path in [
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "bun.lock",
+        "bun.lockb",
+    ] {
+        fs::write(d.path().join(path), "{}").unwrap();
+        let error = version_plan(d.path(), "patch", false).err().unwrap();
+        assert!(
+            error.contains(&format!("unsupported JS/TS workspace/lock: {path}")),
+            "{error}"
+        );
+        fs::remove_file(d.path().join(path)).unwrap();
+    }
+    version_plan(d.path(), "patch", false).unwrap();
 }
 #[test]
-fn unsupported_locks_and_symlinks_fail_closed() {
+fn symlinked_cargo_version_files_fail_closed() {
     let d = fixture();
-    fs::write(d.path().join("package-lock.json"), "{}").unwrap();
-    assert!(version_plan(d.path(), "patch", false).is_err());
-    fs::remove_file(d.path().join("package-lock.json")).unwrap();
     #[cfg(unix)]
-    {
-        fs::rename(d.path().join("package.json"), d.path().join("actual.json")).unwrap();
-        std::os::unix::fs::symlink("actual.json", d.path().join("package.json")).unwrap();
-        assert!(version_plan(d.path(), "patch", false).is_err());
+    for path in ["Cargo.toml", "Cargo.lock"] {
+        let actual = format!("actual-{path}");
+        fs::rename(d.path().join(path), d.path().join(&actual)).unwrap();
+        std::os::unix::fs::symlink(&actual, d.path().join(path)).unwrap();
+        let error = version_plan(d.path(), "patch", false).err().unwrap();
+        assert!(
+            error.contains(&format!("{path}: symlink paths are not supported")),
+            "{error}"
+        );
+        fs::remove_file(d.path().join(path)).unwrap();
+        fs::rename(d.path().join(actual), d.path().join(path)).unwrap();
     }
 }
 #[test]
