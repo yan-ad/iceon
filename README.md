@@ -1,191 +1,163 @@
-<img width="64" height="64" alt="Iceon" src="src-tauri/icons/128x128.png" />
+# Iceon (`icekube`) — Pure-Rust GPUI Workspace (`crates/iceon-*`)
 
-# Iceon
+Iceon adalah aplikasi desktop Kubernetes & HashiCorp Vault KV v2 yang ditulis **100% dalam Rust murni** menggunakan [GPUI Kit](https://gpui-kit.com/) ([`gpui_kit` v0.9.0](https://docs.rs/gpui-kit/latest/gpui_kit/)), tanpa React, TypeScript/JavaScript, ataupun Tauri, dan diorganisasikan sebagai **Cargo Workspace** di bawah direktori `crates/iceon-*` (tanpa folder `src/` atau `src-tauri/` di root).
 
-> [!IMPORTANT]  
-> Iceon is in early development. Even patch releases may disrupt existing workflows;
-> use it with caution.
+## Struktur Workspace (`crates/iceon-*`)
 
-A desktop workspace for everyday Kubernetes work.
+- **`crates/iceon-core`** (`lib` crate `iceon_core`):
+  - `src/runtime.rs`: Shared multi-threaded Tokio runtime (`handle()`, `spawn()`, `spawn_blocking()`, `block_on()`) dan resolusi direktori data aplikasi (`app_data_dir()`, `home_dir()`).
+  - `src/catalog.rs` & `src/catalog/`: `CatalogEngine` — impor kubeconfig metadata-only (termasuk discovery otomatis `~/.kube/config`), penyimpanan SQLite, serta pin cluster dan section.
+  - `src/connection.rs` & `src/connection/`: `ConnectionEngine` — sesi koneksi cluster berbasis lease tunggal, RBAC `SelfSubjectAccessReview`, cache namespace, live watch Pod (`pod_sync`), detail & koleksi resource, aksi workload (`Scale`, `Restart`, `Suspend`, `Resume`, `Trigger`), aksi node (`Cordon`, `Uncordon`, `Drain`), port-forward Pod & Service, integrasi CLI Helm v3.17+/v4, Managed RBAC Users, dan Custom Resources (CRD).
+  - `src/secrets/mod.rs`: `secrets::Engine` — integrasi HashiCorp Vault KV v2 dengan penyimpanan kredensial di OS Keyring dan auto-expire reveal 30 detik.
+  - `src/preferences.rs` & `src/route_history.rs`: `PreferencesEngine` — penyimpanan preferensi aplikasi, proxy, Kubernetes, editor, terminal, dan riwayat rute di SQLite.
+  - `src/tls.rs`, `src/project.rs`, `src/dev_engine.rs`: Inisialisasi penyedia kriptografi `rustls` (`ring`) dan utilitas runtime.
+- **`crates/iceon-ui`** (`lib` crate `iceon_ui`):
+  - `src/lib.rs`: Shell utama `IceonApp`, custom `TitleBar`, navigasi Back/Forward, Quick Jump (`Search`), dan sidebar kolapsibel.
+  - `src/navigation.rs`: Definisi rute, pohon navigasi cluster, 41 definisi tabel `ResourceKind`, dan template YAML pembuatan resource.
+  - `src/catalog_view.rs`: Tabel cluster catalog, dialog file native GPUI untuk impor kubeconfig, pin/unpin, dan konfirmasi hapus.
+  - `src/cluster_view.rs`: Cluster Overview, Workloads Overview, Resource Table (dengan Live Watch Pod & modal Create YAML), Helm Charts/Releases & Install modal, Port Forwarding, Managed RBAC Users, dan Custom Resources.
+  - `src/inspector_view.rs`: Panel kanan resizable untuk inspeksi detail resource, Pod, dan Helm beserta editor YAML (`tree-sitter-yaml`) dengan server dry-run.
+  - `src/pod_dock_view.rs`: Panel bawah resizable untuk stream `Logs`, `Shell` (`exec`), `Attach`, dan daftar Port Forward aktif.
+  - `src/secrets_view.rs`: Workspace Vault KV v2.
+  - `src/preferences_view.rs`: Modal pengaturan 5 tab dengan pergantian tema langsung (`Theme::change`).
+- **`crates/iceon-app`** (`bin` crate `iceon-app` / binary `iceon`):
+  - `src/main.rs`: Entrypoint binary aplikasi desktop GPUI (`iceon_ui::run()`).
+- **`crates/iceon-xtask`** (`bin` crate `iceon-xtask`):
+  - `src/main.rs` & `src/verify_update.rs`: Utilitas rilis dan verifikasi tanda tangan update.
 
-Iceon brings cluster contexts, resource navigation, and troubleshooting into one
-place. Browse workloads in compact tables, inspect an object beside its list,
-and open Pod logs or a shell without leaving the workspace.
+## Konfigurasi Manifest Cargo (`Cargo.toml`)
 
-The goal is a familiar daily workspace where you can understand what is running,
-investigate a problem, and take the next action without constantly switching tools.
+Simpan berkas `Cargo.toml` berikut pada masing-masing direktori workspace sebelum menjalankan `cargo run`:
 
-[Iceon 0.0.8 downloads](https://github.com/yan-ad/iceon/releases/tag/0.0.8)
-for Apple Silicon macOS and Windows 32-bit x86, pending CI and publication.
-[Latest published release](https://github.com/yan-ad/iceon/releases/latest).
+### 1. Root `/Cargo.toml`
+```toml
+[workspace]
+resolver = "2"
+members = [
+    "crates/iceon-core",
+    "crates/iceon-ui",
+    "crates/iceon-app",
+    "crates/iceon-xtask",
+]
+default-members = ["crates/iceon-app"]
 
-## What you can do today
+[workspace.package]
+version = "0.1.8"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["you"]
 
-- Keep cluster contexts in a searchable Catalog, with pins
-  for the entries you use most. Importing a kubeconfig does not connect a cluster.
-- Navigate Kubernetes resources by category and namespace, filter dense tables,
-  and inspect supported resource details in a resizable side panel.
-- Read Pod logs, start exec or attach sessions, and manage local port forwards.
-  Available actions depend on the cluster's permissions and the selected resource.
-- Create resources from YAML and review supported resource deletions before
-  submitting them. Resource creation includes a server dry-run and confirmation.
-- Review permission-aware navigation and scoped actions. Access Control > Users
-  manages namespace-scoped ServiceAccounts and template-based grants with
-  exact-rule review, server dry-run, and confirmed create, edit, or delete.
-  This is not human identity-provider account CRUD and does not export tokens
-  or credentials. For scope and verification limits,
-  see [permission management](docs/permission-management.md).
-- Browse Helm charts and releases, and install charts.
-  Helm workflows require an optional local Helm binary.
-- Browse custom-resource definitions and read metadata-only custom-resource
-  lists. Custom-object details and editing are not available yet.
-- Check workload summaries, warning events, and current CPU and memory snapshots
-  where Metrics Server is available. Missing metrics remain unavailable.
-- Choose Light, Dark, or System appearance and collapse navigation when you need
-  more room for a table or inspector.
-
-Iceon is early in development. Detail coverage varies by resource kind. Loading,
-empty, failed, stale, and partial results have distinct states, so a retained list
-is not presented as a fresh or complete view of the cluster.
-
-## Local performance comparison
-
-Measured **2026-10-29**, using the installed **Iceon 0.0.6** and **Freelens 1.10.3**
-ARM64 apps—no rebuilds—on an Apple M4 Mac with 16 GiB RAM and macOS 27.0.1.
-The user confirmed matching connected Pods views: same cluster, namespace and Pod
-count, with optional inspectors, logs, terminals and forwards closed. Both apps
-ran concurrently, untouched, for three consecutive 60-second sampling windows.
-
-| Metric | Iceon 0.0.6 | Freelens 1.10.3 |
-| --- | ---: | ---: |
-| Median physical memory footprint, including attributed helpers | 148.5 MiB | 398.1 MiB |
-| Observed memory footprint range | 148.2–149.6 MiB | 322.1–402.3 MiB |
-| Mean CPU, 100% = one logical core | 0.53% | 0.47% |
-| 95th-percentile one-second CPU | 1.15% | 0.30% |
-| Installed app bundle, regular-file bytes | 13.7 MiB | 574.9 MiB |
-
-Iceon's median memory footprint was **62.7% lower in this session**. CPU was low
-for both and slightly higher for Iceon on average; this is not a CPU-efficiency
-win. Bundle size is storage, not speed, and excludes Iceon's OS-provided WebKit
-runtime while Freelens includes Electron.
-
-**This does not establish an overall performance winner.** Startup, refresh/API
-latency, search/scroll responsiveness, sustained load and battery use were not
-measured. This is one local session with different app uptimes and uncontrolled
-background work, not independent benchmark trials. Accessibility access was
-denied, so matching views were user-confirmed rather than inspected automatically;
-the exact Pod count was not retained. See the
-[methodology, per-window results and raw data](docs/benchmarks/2026-10-29-macos.md)
-and [read-only macOS sampler](tools/benchmarks/macos_apps.py) to reproduce or extend it.
-
-A [follow-up source optimization](docs/benchmarks/updater-render-optimization.md)
-removes redundant updater-context renders. It is not part of the installed-build
-measurements above, and native CPU savings have not been measured.
-
-## Install
-
-For **Apple Silicon Macs**, download `Iceon_0.0.8_aarch64.dmg` from the
-release page and drag `Iceon.app` to `/Applications`. Intel Macs and Linux
-installers are not included. Publication requires full CI and packaging checks.
-
-The app uses ad-hoc signing. It is not Developer ID signed or Apple notarized,
-so macOS may block it on first launch.
-
-Download the DMG and checksum file from the release page. Verify the download
-against the published SHA-256 checksum, then drag `Iceon.app` to `/Applications`.
-**Only if you trust the repository and downloaded release**, remove quarantine
-from this installed app before opening it:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Iceon.app
+[workspace.dependencies]
+iceon-core = { path = "crates/iceon-core" }
+iceon-ui = { path = "crates/iceon-ui" }
+gpui-kit = { version = "0.9.0", features = ["tree-sitter-yaml"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+log = "0.4"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+futures-util = "0.3"
+http = "1"
+k8s-openapi = { version = "0.27", default-features = false, features = ["latest"] }
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+kube = { version = "3.1", default-features = false, features = ["client", "config", "rustls-tls", "ws", "gzip"] }
+percent-encoding = "2.3"
+process-wrap = { version = "9.0.1", features = ["tokio1", "kill-on-drop"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+semver = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1.8", features = ["derive"] }
 ```
 
-A matching checksum detects corruption; it does not authenticate the publisher.
-Never disable Gatekeeper globally or remove quarantine from an untrusted download.
+### 2. `crates/iceon-core/Cargo.toml`
+```toml
+[package]
+name = "iceon-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
-For **Windows 32-bit x86**, use
-[`Iceon_0.0.8_x86-setup.exe`](https://github.com/yan-ad/iceon/releases/download/0.0.8/Iceon_0.0.8_x86-setup.exe).
-The installer targets the current user and downloads WebView2 if missing, so that
-step needs network access. It has no Authenticode certificate; SmartScreen may
-show an unknown publisher. CI verifies Windows x86 compilation and packaging;
-native installation and update smoke checks remain outstanding.
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+http.workspace = true
+k8s-openapi.workspace = true
+keyring.workspace = true
+kube.workspace = true
+log.workspace = true
+percent-encoding.workspace = true
+process-wrap.workspace = true
+reqwest.workspace = true
+rusqlite.workspace = true
+rustls.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
 
-If 0.0.3 crashes immediately on launch, manually install this patch: that crash
-occurs before its updater can download a fix.
+[dev-dependencies]
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rcgen = "0.13"
+tokio-tungstenite = "0.28"
+```
 
-Working 0.0.4–0.0.6 installations can update automatically to 0.0.8 after publication. Older 0.0.1/0.0.2
-installations need a manual install because they have no updater trust key. After bootstrap, Iceon
-checks GitHub for signed newer versions and downloads verified updates automatically.
-Installation and restart wait for **Restart to Update** and safe windows/backend work.
-Already-installed older binaries retain their previous automatic-restart policy
-until updated. It does not save or discard drafts
-for you. See [automatic updates](docs/automatic-updates.md) and
-[installation details](docs/releases.md) for the trust model and OS warnings.
+### 3. `crates/iceon-ui/Cargo.toml`
+```toml
+[package]
+name = "iceon-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
-## Where Iceon is heading
+[dependencies]
+gpui-kit.workspace = true
+iceon-core.workspace = true
+tokio.workspace = true
+```
 
-Future work aims to broaden familiar resource-table and detail workflows.
-Prometheus-backed historical metrics are also a future goal, not a current feature.
-Today's metrics are snapshots, not historical monitoring.
+### 4. `crates/iceon-app/Cargo.toml`
+```toml
+[package]
+name = "iceon-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
-## Project
+[[bin]]
+name = "iceon"
+path = "src/main.rs"
 
-Iceon is open source under the [GNU GPL v3 license](LICENSE).
-Created by [Yanuar](https://github.com/yan-ad). See the [changelog](CHANGELOG.md)
-for release notes.
+[dependencies]
+iceon-ui.workspace = true
+```
 
-For development, see the [project guide](AGENTS.md), [design direction](DESIGN.md),
-and [workspace behavior reference](docs/workspace-ui-reference.md).
+## Menjalankan Aplikasi & Unit Tests
 
-### Debugging the React UI in a browser
-
-Run `bun run tauri:inspect`, then open `http://127.0.0.1:1420` in your browser.
-The same command starts the desktop app, React DevTools integration, and a
-development-only Rust engine for the browser. Use `bun run dev:web` if you do
-not need a desktop window. Plain `bun run dev` remains a UI-only preview.
-
-The browser engine automatically discovers `~/.kube/config` on Catalog load and
-Refresh, using the same Rust discovery and validation as the desktop app. Discovery
-imports context metadata only; entering a cluster workspace can authenticate and
-connect, and confirmed operations affect the selected cluster. `KUBECONFIG` and
-directory scanning are not used.
-
-Browser development records/preferences are stored separately in `.iceon-dev/`,
-not the desktop app's data directory. The two engines do not share live sessions.
-Native file dialogs, window controls, menus, updater, and OS link opening remain
-desktop-only. Browser cluster sessions are single-tab owned and cleaned up on
-disconnect, tab disposal, or heartbeat expiry.
-
-The bridge is debug-only, loopback-only, and authenticated through Vite; its secret
-is never sent to the renderer. It is not a deployment backend. Stop the development
-command to stop its engine. Restart an already-running inspect command after
-updating these scripts.
-
-Vite and Tauri use the same literal IPv4 loopback address so an old preview and a
-new inspect server cannot silently split port 1420 across IPv4 and IPv6. If startup
-reports that the port is occupied, stop the previous development command first.
-
-For fixtures, set `ICEON_DEV_DISCOVERY_HOME=/absolute/fixture/home` to discover that
-home's `.kube/config`, or `ICEON_DEV_DATA_DIR=/absolute/dev/data` to change storage.
-`ICEON_DEV_PORT` selects a different loopback port for `dev:web`; Tauri's inspect
-URL stays on 1420. `bun run test:dev-engine` uses temporary homes, synthetic
-kubeconfigs, and port 1430; it never reads your real configuration or authenticates.
-
-The project uses [Tauri](https://tauri.app/) and [Astryx](https://astryx.atmeta.com/),
-with [Freelens](https://github.com/freelensapp/freelens) as a workflow reference.
-
-CI runs browser fixtures in eight Linux shards with two workers per runner.
-Each keeps a 480-second suite limit, a 10-minute test-step limit and a 20-minute
-job limit, with setup in separate steps. These are per-browser-job bounds, not
-an end-to-end release-time guarantee; packaging jobs have 90-minute limits.
-
-## Credits
-
-Inspired by Permission Manager by SIGHUP (BSD-3-Clause).
-[Permission Manager](https://github.com/sighupio/permission-manager), reviewed at
-[`fb6f65e161ac792ab290ffe680d6420caf834a43`](https://github.com/sighupio/permission-manager/tree/fb6f65e161ac792ab290ffe680d6420caf834a43),
-is a workflow reference, not a bundled service. Its root
-[license](https://github.com/sighupio/permission-manager/blob/fb6f65e161ac792ab290ffe680d6420caf834a43/LICENSE.md)
-states `Copyright (c) 2020, SIGHUP`. No upstream source, assets, or manifests were
-ported for this workflow; Iceon's implementation is original code under its
-existing GPL v3 license. This credit does not relicense Iceon or imply endorsement.
+```bash
+cargo run -p iceon-app
+cargo test --workspace
+```

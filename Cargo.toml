@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/iceon-core",
+    "crates/iceon-ui",
+    "crates/iceon-app",
+    "crates/iceon-xtask",
+]
+default-members = ["crates/iceon-app"]
+
+[workspace.package]
+version = "0.1.8"
+edition = "2024"
+license = "Apache-2.0"
+authors = ["you"]
+
+[workspace.dependencies]
+iceon-core = { path = "crates/iceon-core" }
+iceon-ui = { path = "crates/iceon-ui" }
+gpui-kit = { version = "0.9.0", features = ["tree-sitter-yaml"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+log = "0.4"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+dirs = "6"
+futures-util = "0.3"
+http = "1"
+k8s-openapi = { version = "0.27", default-features = false, features = ["latest"] }
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+kube = { version = "3.1", default-features = false, features = ["client", "config", "rustls-tls", "ws", "gzip"] }
+percent-encoding = "2.3"
+process-wrap = { version = "9.0.1", features = ["tokio1", "kill-on-drop"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+semver = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1.8", features = ["derive"] }

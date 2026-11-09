@@ -1,0 +1,10 @@
+[package]
+name = "iceon-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
+iceon-core.workspace = true
+tokio.workspace = true

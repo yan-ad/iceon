@@ -1,0 +1,12 @@
+[package]
+name = "iceon-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "iceon"
+path = "src/main.rs"
+
+[dependencies]
+iceon-ui.workspace = true
