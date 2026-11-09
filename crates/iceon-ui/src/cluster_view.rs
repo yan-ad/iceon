@@ -25,7 +25,7 @@ use crate::navigation::{
     normalize_destination, resource_view, yaml_scaffold,
 };
 use iceon_core::connection::{
-    ConnectionSnapshot, OpenRequest, ResourceItem, ResourceKind, ResourcePage, ResourceRequest,
+    ConnectionSnapshot, OpenRequest, ResourceItem, ResourceKind, ResourceRequest,
     SessionRequest,
     create::CreateRequest,
     custom_resources::{
@@ -33,7 +33,7 @@ use iceon_core::connection::{
     },
     delete::DeleteRequest,
     details::ResourceReference,
-    helm::{HelmPage, HelmRequest, HelmView, install::HelmInstallRequest},
+    helm::{HelmRequest, HelmView, install::HelmInstallRequest},
     namespace_cache::NamespaceRefreshRequest,
     pod_sync::PodSyncRequest,
     rbac::{RbacUsersRequest, RbacUsersResponse},

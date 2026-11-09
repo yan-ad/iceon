@@ -5,7 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::Input,
     scroll::ScrollableElement as _,
     switch::Switch,
     tab::{Tab, TabBar},

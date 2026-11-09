@@ -2,7 +2,7 @@
 //! mount discovery, directory browser, version metadata, and 30-second secret reveal.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -17,7 +17,7 @@ use gpui_kit::*;
 use crate::IceonApp;
 use crate::navigation::secrets_error_message;
 use iceon_core::secrets::{
-    DisconnectRequest, Entry, Field, LoginRequest, Metadata, Mount, Profile, ProfileInput,
+    Entry, Field, LoginRequest, Metadata, Mount, Profile, ProfileInput,
     Provider, ReadRequest, Reveal, SessionRequest, SessionView,
 };
 

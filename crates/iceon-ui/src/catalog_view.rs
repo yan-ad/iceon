@@ -2,10 +2,10 @@
 //! pin/unpin actions, and remove confirmation modal.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::Input,
     scroll::ScrollableElement as _,
     tag::Tag,
     v_flex, IconName,
@@ -20,7 +20,7 @@ use iceon_core::catalog::{CatalogSnapshot, ClusterSummary, PinRequest, RemoveReq
 impl IceonApp {
     pub(crate) fn render_catalog_view(
         &mut self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let query = self

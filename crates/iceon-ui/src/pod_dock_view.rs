@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,

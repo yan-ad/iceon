@@ -1,5 +1,4 @@
 use semver::Version;
-use serde_json::Value;
 use std::{
     env, fs,
     io::Read,
@@ -166,9 +165,6 @@ fn read(root: &Path, path: &str) -> Result<String> {
     }
     fs::read_to_string(full).map_err(|e| format!("{path}: {e}"))
 }
-fn json(text: &str) -> Result<Value> {
-    serde_json::from_str(text).map_err(|e| e.to_string())
-}
 fn doc(text: &str) -> Result<DocumentMut> {
     text.parse().map_err(|e| format!("invalid TOML: {e}"))
 }
@@ -179,9 +175,6 @@ fn equal(actual: Option<&str>, expected: &str, path: &str) -> Result<()> {
         ));
     }
     Ok(())
-}
-fn pretty(v: &Value) -> Result<String> {
-    Ok(serde_json::to_string_pretty(v).map_err(|e| e.to_string())? + "\n")
 }
 fn version_plan(root: &Path, bump: &str, allow_equal: bool) -> Result<VersionPlan> {
     for unsupported in [

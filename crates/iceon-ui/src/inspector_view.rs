@@ -2,7 +2,7 @@
 //! and `HelmDetail`, with actions for workloads, nodes, services, YAML editing, and related collections.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, Input},
@@ -980,7 +980,7 @@ impl IceonApp {
                         ),
                 )
             })
-            .when_some(self.inspector.Pod_actions(&detail.reference, cx), |el, pod_ui| {
+            .when_some(self.inspector.pod_actions(&detail.reference, cx), |el, pod_ui| {
                 el.child(pod_ui)
             })
     }
@@ -1471,7 +1471,7 @@ impl IceonApp {
 }
 
 impl InspectorState {
-    fn Pod_actions(
+    fn pod_actions(
         &self,
         _reference: &ResourceReference,
         _cx: &mut Context<IceonApp>,
