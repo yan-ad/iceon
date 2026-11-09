@@ -7,11 +7,13 @@ pub mod navigation;
 pub mod pod_dock_view;
 pub mod preferences_view;
 pub mod secrets_view;
+mod shell_header;
+mod sidebar_view;
 
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, TitleBar,
+    ActiveTheme as _, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{EditorState, Input, InputState},
@@ -35,7 +37,7 @@ use iceon_core::secrets;
 use cluster_view::OverviewSnapshot;
 use inspector_view::InspectorState;
 use navigation::{
-    CLUSTER_SECTIONS, NavigationHistory, Route, active_group_id, destination_label, pin_label,
+    NavigationHistory, Route, active_group_id, destination_label,
 };
 use pod_dock_view::PodDockTab;
 use preferences_view::PreferencesSection;
@@ -52,9 +54,11 @@ pub struct IceonApp {
     pub(crate) pending_remove_cluster: Option<ClusterSummary>,
 
     pub(crate) history: NavigationHistory,
+    pub(crate) cluster_select: Entity<shell_header::ClusterSelectState>,
+    pub(crate) cluster_select_items: Vec<shell_header::ClusterChoice>,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) cluster_sidebar_collapsed: bool,
-    pub(crate) expanded_cluster_group: String,
+    pub(crate) expanded_cluster_groups: Vec<String>,
 
     pub(crate) search_modal_open: bool,
     pub(crate) preferences_open: bool,
@@ -164,6 +168,12 @@ impl IceonApp {
         } else {
             Route::Catalog
         };
+        let (cluster_select, cluster_select_items) =
+            shell_header::create_cluster_select(&catalog_snapshot, &initial_route, window, cx);
+        let expanded_cluster_groups = match &initial_route {
+            Route::Cluster { section, .. } => vec![active_group_id(section).to_owned()],
+            _ => vec!["workloads".into(), "config".into()],
+        };
 
         let global_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Jump to cluster or section..."));
@@ -267,9 +277,11 @@ impl IceonApp {
             catalog_error: None,
             pending_remove_cluster: None,
             history: NavigationHistory::new(initial_route.clone()),
+            cluster_select,
+            cluster_select_items,
             sidebar_collapsed: false,
             cluster_sidebar_collapsed: false,
-            expanded_cluster_group: "workloads".into(),
+            expanded_cluster_groups,
             search_modal_open: false,
             preferences_open: false,
             preferences_section: PreferencesSection::App,
@@ -380,309 +392,13 @@ impl IceonApp {
                 section,
             } => {
                 let grp = active_group_id(&section);
-                self.expanded_cluster_group = grp.to_string();
+                if !self.expanded_cluster_groups.iter().any(|id| id == grp) {
+                    self.expanded_cluster_groups.push(grp.to_owned());
+                }
                 self.open_cluster_workspace(cluster_id, section, window, cx);
             }
         }
         cx.notify();
-    }
-
-    fn render_title_bar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let can_back = self.history.can_go_back();
-        let can_forward = self.history.can_go_forward();
-        let active_route = self.history.current().clone();
-
-        TitleBar::new().child(
-            h_flex()
-                .w_full()
-                .pr_3()
-                .items_center()
-                .justify_between()
-                .child(
-                    h_flex()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            Button::new("nav-toggle-sidebar")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::PanelLeft)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.sidebar_collapsed = !this.sidebar_collapsed;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("nav-back-btn")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::ArrowLeft)
-                                .disabled(!can_back)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(prev) = this.history.go_back() {
-                                        this.navigate(prev, false, window, cx);
-                                    }
-                                })),
-                        )
-                        .child(
-                            Button::new("nav-forward-btn")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::ArrowRight)
-                                .disabled(!can_forward)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(next) = this.history.go_forward() {
-                                        this.navigate(next, false, window, cx);
-                                    }
-                                })),
-                        )
-                        .child(
-                            div()
-                                .ml_2()
-                                .text_xs()
-                                .font_semibold()
-                                .child("Iceon · Pure Rust GPUI"),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            Button::new("open-search-palette-btn")
-                                .xsmall()
-                                .outline()
-                                .icon(IconName::Search)
-                                .label("Quick Jump")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.search_modal_open = !this.search_modal_open;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("titlebar-catalog-btn")
-                                .xsmall()
-                                .when(matches!(active_route, Route::Catalog), |b| b.primary())
-                                .when(!matches!(active_route, Route::Catalog), |b| b.ghost())
-                                .label("Catalog")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.navigate(Route::Catalog, true, window, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("titlebar-secrets-btn")
-                                .xsmall()
-                                .when(matches!(active_route, Route::Secrets), |b| b.primary())
-                                .when(!matches!(active_route, Route::Secrets), |b| b.ghost())
-                                .label("Vault Secrets")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.navigate(Route::Secrets, true, window, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("titlebar-preferences-btn")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::Settings)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_preferences(window, cx);
-                                })),
-                        ),
-                ),
-        )
-    }
-
-    fn render_primary_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let route = self.history.current().clone();
-        let pins = self.catalog_snapshot.pinned_items.clone();
-        let clusters = self.catalog_snapshot.clusters.clone();
-
-        v_flex()
-            .w(px(210.0))
-            .h_full()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
-            .text_color(cx.theme().sidebar_foreground)
-            .p_2p5()
-            .gap_3()
-            .child(
-                v_flex()
-                    .gap_1()
-                    .child(
-                        div()
-                            .px_2()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("WORKSPACES"),
-                    )
-                    .child(
-                        Button::new("sidebar-catalog-item")
-                            .small()
-                            .w_full()
-                            .when(matches!(route, Route::Catalog), |b| b.primary())
-                            .when(!matches!(route, Route::Catalog), |b| b.ghost())
-                            .icon(IconName::LayoutDashboard)
-                            .label("Clusters Catalog")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.navigate(Route::Catalog, true, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("sidebar-secrets-item")
-                            .small()
-                            .w_full()
-                            .when(matches!(route, Route::Secrets), |b| b.primary())
-                            .when(!matches!(route, Route::Secrets), |b| b.ghost())
-                            .icon(IconName::Globe)
-                            .label("Vault Secrets")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.navigate(Route::Secrets, true, window, cx);
-                            })),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .gap_1()
-                    .overflow_y_scrollbar()
-                    .child(
-                        div()
-                            .px_2()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("PINNED DESTINATIONS"),
-                    )
-                    .children(pins.into_iter().enumerate().map(|(idx, pin)| {
-                        let (label, section) = pin_label(&pin, &clusters);
-                        let cid = pin.id.clone();
-                        let active = matches!(
-                            &route,
-                            Route::Cluster {
-                                cluster_id,
-                                section: active_sec
-                            } if cluster_id == &cid && active_sec == &section
-                        );
-                        Button::new(SharedString::from(format!("sidebar-pin-{idx}")))
-                            .xsmall()
-                            .w_full()
-                            .when(active, |b| b.primary())
-                            .when(!active, |b| b.ghost())
-                            .icon(IconName::Star)
-                            .label(label)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.navigate(
-                                    Route::Cluster {
-                                        cluster_id: cid.clone(),
-                                        section: section.clone(),
-                                    },
-                                    true,
-                                    window,
-                                    cx,
-                                );
-                            }))
-                    })),
-            )
-    }
-
-    fn render_cluster_sidebar(
-        &self,
-        cluster_id: &str,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let active_dest = self.active_cluster_section.clone();
-        let active_grp = active_group_id(&active_dest);
-        let expanded_grp = self.expanded_cluster_group.clone();
-        let cid = cluster_id.to_string();
-
-        v_flex()
-            .w(px(210.0))
-            .h_full()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
-            .text_color(cx.theme().sidebar_foreground)
-            .p_2p5()
-            .gap_1()
-            .overflow_y_scrollbar()
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("CLUSTER NAVIGATION"),
-            )
-            .children(CLUSTER_SECTIONS.iter().map(|group| {
-                let grp_id = group.id;
-                let default_dest = group.default_child;
-                let cid_group = cid.clone();
-                let is_active_group = active_grp == grp_id;
-                let is_expanded = expanded_grp == grp_id || is_active_group;
-
-                v_flex()
-                    .gap_0p5()
-                    .child(
-                        Button::new(SharedString::from(format!("cluster-nav-grp-{grp_id}")))
-                            .small()
-                            .w_full()
-                            .when(
-                                group.children.is_empty() && active_dest == default_dest,
-                                |b| b.primary(),
-                            )
-                            .when(
-                                !group.children.is_empty() || active_dest != default_dest,
-                                |b| b.ghost(),
-                            )
-                            .label(group.label)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.expanded_cluster_group = grp_id.to_string();
-                                this.navigate(
-                                    Route::Cluster {
-                                        cluster_id: cid_group.clone(),
-                                        section: default_dest.to_string(),
-                                    },
-                                    true,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    )
-                    .when(is_expanded && !group.children.is_empty(), |el| {
-                        el.child(
-                            v_flex()
-                                .pl_3()
-                                .gap_0p5()
-                                .children(group.children.iter().map(|child| {
-                                    let child_id = child.id;
-                                    let cid_child = cid.clone();
-                                    let selected = active_dest == child_id;
-                                    Button::new(SharedString::from(format!(
-                                        "cluster-nav-child-{child_id}"
-                                    )))
-                                    .xsmall()
-                                    .w_full()
-                                    .when(selected, |b| b.primary())
-                                    .when(!selected, |b| b.ghost())
-                                    .label(child.label)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.navigate(
-                                            Route::Cluster {
-                                                cluster_id: cid_child.clone(),
-                                                section: child_id.to_string(),
-                                            },
-                                            true,
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                                })),
-                        )
-                    })
-            }))
     }
 
     fn render_search_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -817,18 +533,18 @@ impl Render for IceonApp {
             .child(
                 h_flex()
                     .flex_1()
+                    .min_h_0()
                     .w_full()
                     .overflow_hidden()
-                    .when(!self.sidebar_collapsed, |el| {
-                        el.child(self.render_primary_sidebar(cx))
-                    })
+                    .child(self.render_primary_sidebar(cx))
                     .when_some(
-                        active_cluster_id.filter(|_| !self.cluster_sidebar_collapsed),
+                        active_cluster_id.filter(|_| !self.sidebar_collapsed && !self.cluster_sidebar_collapsed),
                         |el, cid| el.child(self.render_cluster_sidebar(&cid, cx)),
                     )
                     .child(
                         v_flex()
                             .flex_1()
+                            .min_w_0()
                             .h_full()
                             .overflow_hidden()
                             .child(match current_route {

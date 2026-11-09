@@ -74,6 +74,163 @@ impl Route {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn all_cluster_destinations_normalize_and_select_their_group() {
+        let mut destinations = HashSet::new();
+        for group in CLUSTER_SECTIONS {
+            assert!(
+                destinations.insert(group.id),
+                "duplicate group: {}",
+                group.id
+            );
+        }
+        for group in CLUSTER_SECTIONS {
+            assert_eq!(normalize_destination(group.id), group.default_child);
+            assert_eq!(active_group_id(group.id), group.id);
+            assert_eq!(active_group_id(group.default_child), group.id);
+            assert_eq!(
+                normalize_destination(group.default_child),
+                group.default_child
+            );
+            assert_eq!(destination_label(group.id), group.label);
+            if group.children.is_empty() {
+                assert_eq!(group.default_child, group.id);
+            } else {
+                assert!(group
+                    .children
+                    .iter()
+                    .any(|child| child.id == group.default_child));
+            }
+            for child in group.children {
+                assert!(
+                    destinations.insert(child.id),
+                    "duplicate destination: {}",
+                    child.id
+                );
+                assert_eq!(normalize_destination(child.id), child.id);
+                assert_eq!(active_group_id(child.id), group.id);
+                assert_eq!(
+                    destination_label(child.id),
+                    format!("{} · {}", group.label, child.label),
+                );
+            }
+        }
+        for destination in destinations {
+            let route = Route::Cluster {
+                cluster_id: "local-id".into(),
+                section: normalize_destination(destination),
+            };
+            let saved = route.to_saved_route();
+            iceon_core::route_history::validate(&saved).unwrap();
+            assert_eq!(Route::from_saved_route(saved), route);
+        }
+    }
+
+    #[test]
+    fn resource_views_have_unique_ids_and_kinds_and_known_destinations() {
+        let mut ids = HashSet::new();
+        for (index, view) in RESOURCE_VIEWS.iter().enumerate() {
+            assert!(ids.insert(view.id), "duplicate resource view: {}", view.id);
+            assert!(RESOURCE_VIEWS[..index]
+                .iter()
+                .all(|other| other.kind != view.kind));
+            assert_eq!(normalize_destination(view.id), view.id);
+            let group = CLUSTER_SECTIONS
+                .iter()
+                .find(|group| {
+                    group.id == view.id || group.children.iter().any(|child| child.id == view.id)
+                })
+                .expect("resource view must have a navigation destination");
+            assert_eq!(active_group_id(view.id), group.id);
+            assert_eq!(resource_view(view.id).unwrap().kind, view.kind);
+            assert_eq!(resource_view_by_kind(view.kind).unwrap().id, view.id);
+        }
+    }
+
+    #[test]
+    fn resource_labels_are_human_readable() {
+        for (id, expected) in [
+            ("daemon-sets", "Daemon Sets"),
+            ("stateful-sets", "Stateful Sets"),
+            ("replica-sets", "Replica Sets"),
+            ("replication-controllers", "Replication Controllers"),
+            ("cron-jobs", "Cron Jobs"),
+            ("config-maps", "Config Maps"),
+            ("resource-quotas", "Resource Quotas"),
+            ("limit-ranges", "Limit Ranges"),
+            ("horizontal-pod-autoscalers", "Horizontal Pod Autoscalers"),
+            ("vertical-pod-autoscalers", "Vertical Pod Autoscalers"),
+            ("pod-disruption-budgets", "Pod Disruption Budgets"),
+            ("priority-classes", "Priority Classes"),
+            ("runtime-classes", "Runtime Classes"),
+            ("mutating-webhook-configs", "Mutating Webhook Configs"),
+            ("validating-webhook-configs", "Validating Webhook Configs"),
+            (
+                "validating-admission-policies",
+                "Validating Admission Policies",
+            ),
+            (
+                "validating-admission-policy-bindings",
+                "Validating Admission Policy Bindings",
+            ),
+            ("endpoint-slices", "Endpoint Slices"),
+            ("ingress-classes", "Ingress Classes"),
+            ("network-policies", "Network Policies"),
+            ("persistent-volume-claims", "Persistent Volume Claims"),
+            ("persistent-volumes", "Persistent Volumes"),
+            ("storage-classes", "Storage Classes"),
+            ("service-accounts", "Service Accounts"),
+            ("cluster-roles", "Cluster Roles"),
+            ("cluster-role-bindings", "Cluster Role Bindings"),
+            ("role-bindings", "Role Bindings"),
+            ("pod-security-policies", "Pod Security Policies"),
+        ] {
+            let group = CLUSTER_SECTIONS
+                .iter()
+                .find(|group| group.children.iter().any(|child| child.id == id))
+                .unwrap();
+            let child = group.children.iter().find(|child| child.id == id).unwrap();
+            assert_eq!(child.label, expected, "sidebar label for {id}");
+            assert_eq!(
+                resource_view(id).unwrap().label,
+                expected,
+                "view label for {id}"
+            );
+            assert_eq!(
+                destination_label(id),
+                format!("{} · {expected}", group.label)
+            );
+        }
+        assert_eq!(destination_label("overview"), "Overview");
+        assert_eq!(
+            destination_label("workloads-overview"),
+            "Workloads · Overview"
+        );
+        assert_eq!(
+            destination_label("custom-resource-definitions"),
+            "Custom Resources · Definitions"
+        );
+        assert_eq!(
+            resource_view("custom-resource-definitions").unwrap().label,
+            "Custom Resource Definitions"
+        );
+    }
+
+    #[test]
+    fn dynamic_and_unknown_destinations_keep_existing_routing() {
+        let destination = "crd:widgets.example.com";
+        assert_eq!(normalize_destination(destination), destination);
+        assert_eq!(active_group_id(destination), "custom-resources");
+        assert_eq!(destination_label(destination), "CRD · widgets.example.com");
+        for unknown in ["", "unknown-section", "crd:"] {
+            assert_eq!(normalize_destination(unknown), "overview");
+            assert_eq!(active_group_id(&normalize_destination(unknown)), "overview");
+        }
+        assert_eq!(destination_label("unknown-section"), "Overview");
+        assert!(resource_view("unknown-section").is_none());
+    }
 
     #[test]
     fn routes_round_trip_through_validated_core_history() {
@@ -274,19 +431,19 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "daemon-sets",
-                label: "DaemonSets",
+                label: "Daemon Sets",
             },
             NavChild {
                 id: "stateful-sets",
-                label: "StatefulSets",
+                label: "Stateful Sets",
             },
             NavChild {
                 id: "replica-sets",
-                label: "ReplicaSets",
+                label: "Replica Sets",
             },
             NavChild {
                 id: "replication-controllers",
-                label: "ReplicationControllers",
+                label: "Replication Controllers",
             },
             NavChild {
                 id: "jobs",
@@ -294,7 +451,7 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "cron-jobs",
-                label: "CronJobs",
+                label: "Cron Jobs",
             },
         ],
     },
@@ -305,7 +462,7 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
         children: &[
             NavChild {
                 id: "config-maps",
-                label: "ConfigMaps",
+                label: "Config Maps",
             },
             NavChild {
                 id: "secrets",
@@ -313,31 +470,31 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "resource-quotas",
-                label: "ResourceQuotas",
+                label: "Resource Quotas",
             },
             NavChild {
                 id: "limit-ranges",
-                label: "LimitRanges",
+                label: "Limit Ranges",
             },
             NavChild {
                 id: "horizontal-pod-autoscalers",
-                label: "HorizontalPodAutoscalers",
+                label: "Horizontal Pod Autoscalers",
             },
             NavChild {
                 id: "vertical-pod-autoscalers",
-                label: "VerticalPodAutoscalers",
+                label: "Vertical Pod Autoscalers",
             },
             NavChild {
                 id: "pod-disruption-budgets",
-                label: "PodDisruptionBudgets",
+                label: "Pod Disruption Budgets",
             },
             NavChild {
                 id: "priority-classes",
-                label: "PriorityClasses",
+                label: "Priority Classes",
             },
             NavChild {
                 id: "runtime-classes",
-                label: "RuntimeClasses",
+                label: "Runtime Classes",
             },
             NavChild {
                 id: "leases",
@@ -345,19 +502,19 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "mutating-webhook-configs",
-                label: "MutatingWebhookConfigs",
+                label: "Mutating Webhook Configs",
             },
             NavChild {
                 id: "validating-webhook-configs",
-                label: "ValidatingWebhookConfigs",
+                label: "Validating Webhook Configs",
             },
             NavChild {
                 id: "validating-admission-policies",
-                label: "ValidatingAdmissionPolicies",
+                label: "Validating Admission Policies",
             },
             NavChild {
                 id: "validating-admission-policy-bindings",
-                label: "ValidatingAdmissionPolicyBindings",
+                label: "Validating Admission Policy Bindings",
             },
         ],
     },
@@ -372,7 +529,7 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "endpoint-slices",
-                label: "EndpointSlices",
+                label: "Endpoint Slices",
             },
             NavChild {
                 id: "endpoints",
@@ -384,11 +541,11 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "ingress-classes",
-                label: "IngressClasses",
+                label: "Ingress Classes",
             },
             NavChild {
                 id: "network-policies",
-                label: "NetworkPolicies",
+                label: "Network Policies",
             },
             NavChild {
                 id: "port-forwarding",
@@ -403,15 +560,15 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
         children: &[
             NavChild {
                 id: "persistent-volume-claims",
-                label: "PersistentVolumeClaims",
+                label: "Persistent Volume Claims",
             },
             NavChild {
                 id: "persistent-volumes",
-                label: "PersistentVolumes",
+                label: "Persistent Volumes",
             },
             NavChild {
                 id: "storage-classes",
-                label: "StorageClasses",
+                label: "Storage Classes",
             },
         ],
     },
@@ -453,11 +610,11 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "service-accounts",
-                label: "ServiceAccounts",
+                label: "Service Accounts",
             },
             NavChild {
                 id: "cluster-roles",
-                label: "ClusterRoles",
+                label: "Cluster Roles",
             },
             NavChild {
                 id: "roles",
@@ -465,15 +622,15 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
             },
             NavChild {
                 id: "cluster-role-bindings",
-                label: "ClusterRoleBindings",
+                label: "Cluster Role Bindings",
             },
             NavChild {
                 id: "role-bindings",
-                label: "RoleBindings",
+                label: "Role Bindings",
             },
             NavChild {
                 id: "pod-security-policies",
-                label: "PodSecurityPolicies",
+                label: "Pod Security Policies",
             },
         ],
     },
@@ -609,7 +766,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "daemon-sets",
-        label: "DaemonSets",
+        label: "Daemon Sets",
         kind: ResourceKind::DaemonSets,
         namespaced: true,
         columns: &[
@@ -625,7 +782,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "stateful-sets",
-        label: "StatefulSets",
+        label: "Stateful Sets",
         kind: ResourceKind::StatefulSets,
         namespaced: true,
         columns: &[
@@ -641,7 +798,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "replica-sets",
-        label: "ReplicaSets",
+        label: "Replica Sets",
         kind: ResourceKind::ReplicaSets,
         namespaced: true,
         columns: &[
@@ -658,7 +815,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "replication-controllers",
-        label: "ReplicationControllers",
+        label: "Replication Controllers",
         kind: ResourceKind::ReplicationControllers,
         namespaced: true,
         columns: &[
@@ -690,7 +847,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "cron-jobs",
-        label: "CronJobs",
+        label: "Cron Jobs",
         kind: ResourceKind::CronJobs,
         namespaced: true,
         columns: &[
@@ -708,7 +865,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "config-maps",
-        label: "ConfigMaps",
+        label: "Config Maps",
         kind: ResourceKind::ConfigMaps,
         namespaced: true,
         columns: &[
@@ -740,7 +897,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "resource-quotas",
-        label: "ResourceQuotas",
+        label: "Resource Quotas",
         kind: ResourceKind::ResourceQuotas,
         namespaced: true,
         columns: &[
@@ -754,7 +911,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "limit-ranges",
-        label: "LimitRanges",
+        label: "Limit Ranges",
         kind: ResourceKind::LimitRanges,
         namespaced: true,
         columns: &[
@@ -768,7 +925,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "horizontal-pod-autoscalers",
-        label: "HorizontalPodAutoscalers",
+        label: "Horizontal Pod Autoscalers",
         kind: ResourceKind::HorizontalPodAutoscalers,
         namespaced: true,
         columns: &[
@@ -786,7 +943,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "vertical-pod-autoscalers",
-        label: "VerticalPodAutoscalers",
+        label: "Vertical Pod Autoscalers",
         kind: ResourceKind::VerticalPodAutoscalers,
         namespaced: true,
         columns: &[
@@ -801,7 +958,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "pod-disruption-budgets",
-        label: "PodDisruptionBudgets",
+        label: "Pod Disruption Budgets",
         kind: ResourceKind::PodDisruptionBudgets,
         namespaced: true,
         columns: &[
@@ -819,7 +976,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "priority-classes",
-        label: "PriorityClasses",
+        label: "Priority Classes",
         kind: ResourceKind::PriorityClasses,
         namespaced: false,
         columns: &[
@@ -834,7 +991,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "runtime-classes",
-        label: "RuntimeClasses",
+        label: "Runtime Classes",
         kind: ResourceKind::RuntimeClasses,
         namespaced: false,
         columns: &[
@@ -863,7 +1020,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "mutating-webhook-configs",
-        label: "MutatingWebhookConfigs",
+        label: "Mutating Webhook Configs",
         kind: ResourceKind::MutatingWebhookConfigurations,
         namespaced: false,
         columns: &[
@@ -877,7 +1034,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "validating-webhook-configs",
-        label: "ValidatingWebhookConfigs",
+        label: "Validating Webhook Configs",
         kind: ResourceKind::ValidatingWebhookConfigurations,
         namespaced: false,
         columns: &[
@@ -891,7 +1048,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "validating-admission-policies",
-        label: "ValidatingAdmissionPolicies",
+        label: "Validating Admission Policies",
         kind: ResourceKind::ValidatingAdmissionPolicies,
         namespaced: false,
         columns: &[
@@ -906,7 +1063,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "validating-admission-policy-bindings",
-        label: "ValidatingAdmissionPolicyBindings",
+        label: "Validating Admission Policy Bindings",
         kind: ResourceKind::ValidatingAdmissionPolicyBindings,
         namespaced: false,
         columns: &[
@@ -940,7 +1097,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "endpoint-slices",
-        label: "EndpointSlices",
+        label: "Endpoint Slices",
         kind: ResourceKind::EndpointSlices,
         namespaced: true,
         columns: &[
@@ -988,7 +1145,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "ingress-classes",
-        label: "IngressClasses",
+        label: "Ingress Classes",
         kind: ResourceKind::IngressClasses,
         namespaced: false,
         columns: &[
@@ -1004,7 +1161,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "network-policies",
-        label: "NetworkPolicies",
+        label: "Network Policies",
         kind: ResourceKind::NetworkPolicies,
         namespaced: true,
         columns: &[
@@ -1019,7 +1176,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "persistent-volume-claims",
-        label: "PersistentVolumeClaims",
+        label: "Persistent Volume Claims",
         kind: ResourceKind::PersistentVolumeClaims,
         namespaced: true,
         columns: &[
@@ -1036,7 +1193,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "persistent-volumes",
-        label: "PersistentVolumes",
+        label: "Persistent Volumes",
         kind: ResourceKind::PersistentVolumes,
         namespaced: false,
         columns: &[
@@ -1052,7 +1209,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "storage-classes",
-        label: "StorageClasses",
+        label: "Storage Classes",
         kind: ResourceKind::StorageClasses,
         namespaced: false,
         columns: &[
@@ -1087,7 +1244,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "service-accounts",
-        label: "ServiceAccounts",
+        label: "Service Accounts",
         kind: ResourceKind::ServiceAccounts,
         namespaced: true,
         columns: &[
@@ -1101,7 +1258,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "cluster-roles",
-        label: "ClusterRoles",
+        label: "Cluster Roles",
         kind: ResourceKind::ClusterRoles,
         namespaced: false,
         columns: &[
@@ -1128,7 +1285,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "cluster-role-bindings",
-        label: "ClusterRoleBindings",
+        label: "Cluster Role Bindings",
         kind: ResourceKind::ClusterRoleBindings,
         namespaced: false,
         columns: &[
@@ -1142,7 +1299,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "role-bindings",
-        label: "RoleBindings",
+        label: "Role Bindings",
         kind: ResourceKind::RoleBindings,
         namespaced: true,
         columns: &[
@@ -1157,7 +1314,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "pod-security-policies",
-        label: "PodSecurityPolicies",
+        label: "Pod Security Policies",
         kind: ResourceKind::PodSecurityPolicies,
         namespaced: false,
         columns: &[
@@ -1171,7 +1328,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
     },
     ResourceView {
         id: "custom-resource-definitions",
-        label: "CustomResourceDefinitions",
+        label: "Custom Resource Definitions",
         kind: ResourceKind::CustomResourceDefinitions,
         namespaced: false,
         columns: &[
