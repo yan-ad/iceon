@@ -3,11 +3,11 @@
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
-    badge::Badge,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, Input},
     scroll::ScrollableElement as _,
+    tag::Tag,
     tab::{Tab, TabBar},
     v_flex, IconName,
 };
@@ -258,7 +258,7 @@ impl IceonApp {
                     mode: EditMode::Read,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(edit_res) => {
                         this.inspector.edit_resource_version = Some(edit_res.resource_version);
@@ -313,7 +313,7 @@ impl IceonApp {
                             yaml: Some(yaml),
                         })
                         .await;
-                    let _ = this.update(cx, |this, cx| {
+                    let _ = this.update_in(cx, |this, window, cx| {
                         match res {
                             Ok(()) => {
                                 this.inspector.status_banner =
@@ -352,7 +352,7 @@ impl IceonApp {
                     mode,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(edit_res) => {
                         this.inspector.edit_resource_version = Some(edit_res.resource_version);
@@ -407,7 +407,7 @@ impl IceonApp {
                     replicas,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(out) => {
                         this.inspector.status_banner =
@@ -455,7 +455,7 @@ impl IceonApp {
                     action,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(_) => {
                         this.inspector.status_banner =
@@ -533,7 +533,7 @@ impl IceonApp {
                     plan_id,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(outcome) => {
                         this.inspector.drain_result = Some(outcome);
@@ -730,7 +730,7 @@ impl IceonApp {
                             .text_xs()
                             .child(div().font_semibold().child(format!("Rev #{}", rev.revision)))
                             .child(div().child(rev.chart))
-                            .child(Badge::new().secondary().child(rev.status))
+                            .child(Tag::secondary().child(rev.status))
                     }))
                     .into_any_element()
             } else if let Some(detail) = self.inspector.detail.clone() {
@@ -1011,7 +1011,7 @@ impl IceonApp {
                                     .text_color(cx.theme().muted_foreground)
                                     .child("Status"),
                             )
-                            .child(Badge::new().secondary().child(detail.item.status.clone())),
+                            .child(Tag::secondary().child(detail.item.status.clone())),
                     )
                     .child(
                         h_flex()
@@ -1119,7 +1119,7 @@ impl IceonApp {
                                             "{} ({})",
                                             c.name, c.kind
                                         )))
-                                        .child(Badge::new().secondary().child(c.state)),
+                                        .child(Tag::secondary().child(c.state)),
                                 )
                                 .child(
                                     div()
@@ -1386,7 +1386,7 @@ impl IceonApp {
                                 h_flex()
                                     .gap_1p5()
                                     .items_center()
-                                    .child(Badge::new().secondary().child(item.status.clone()))
+                                    .child(Tag::secondary().child(item.status.clone()))
                                     .child(
                                         Button::new(SharedString::from(format!(
                                             "col-item-{:?}-{}",

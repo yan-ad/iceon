@@ -67,7 +67,13 @@ fn overview_and_catalog_pin_share_one_identity_and_upgrade_old_duplicates() {
 
 #[test]
 fn section_ids_match_static_navigation_and_request_contract() {
-    let navigation = include_str!("../../../src/app/cluster/navigation.ts");
+    let navigation = include_str!("../../../iceon-ui/src/navigation.rs")
+        .split_once("pub const CLUSTER_SECTIONS: &[NavSection] = &[")
+        .unwrap()
+        .1
+        .split_once("\n];")
+        .unwrap()
+        .0;
     let ids: HashSet<_> = navigation
         .split("id: \"")
         .skip(1)

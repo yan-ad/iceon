@@ -3,12 +3,12 @@
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
-    badge::Badge,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
     scroll::ScrollableElement as _,
     switch::Switch,
+    tag::Tag,
     v_flex, IconName,
 };
 use gpui_kit::prelude::*;
@@ -501,12 +501,12 @@ impl IceonApp {
                                             )
                                             .child(match session.status {
                                                 "connected" => {
-                                                    Badge::new().success().child("Connected")
+                                                    Tag::success().child("Connected")
                                                 }
                                                 "expired" => {
-                                                    Badge::new().warning().child("Expired")
+                                                    Tag::warning().child("Expired")
                                                 }
-                                                _ => Badge::new().secondary().child("Signed Out"),
+                                                _ => Tag::secondary().child("Signed Out"),
                                             })
                                             .child(
                                                 div()

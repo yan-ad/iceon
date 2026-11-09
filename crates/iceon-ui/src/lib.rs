@@ -186,17 +186,17 @@ impl IceonApp {
 
         let create_yaml_editor = cx.new(|cx| {
             EditorState::new(window, cx)
-                .code_editor("yaml")
+                .language("yaml")
                 .line_number(true)
         });
         let inspector_yaml_editor = cx.new(|cx| {
             EditorState::new(window, cx)
-                .code_editor("yaml")
+                .language("yaml")
                 .line_number(true)
         });
         let helm_values_editor = cx.new(|cx| {
             EditorState::new(window, cx)
-                .code_editor("yaml")
+                .language("yaml")
                 .line_number(true)
         });
 
@@ -868,7 +868,7 @@ impl Render for IceonApp {
 }
 
 pub fn run() {
-    iceon_core::tls::install_default_provider();
+    iceon_core::tls::initialize();
     let data_dir = iceon_core::runtime::app_data_dir();
     let home_dir = iceon_core::runtime::home_dir();
 

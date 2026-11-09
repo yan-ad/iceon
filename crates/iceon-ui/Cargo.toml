@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 iceon-core.workspace = true
+jiff.workspace = true
 tokio.workspace = true

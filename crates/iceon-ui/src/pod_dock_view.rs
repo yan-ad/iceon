@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, StyledExt as _,
-    badge::Badge,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
     scroll::ScrollableElement as _,
+    tag::Tag,
     v_flex, IconName,
 };
 use gpui_kit::prelude::*;
@@ -69,7 +69,7 @@ impl IceonApp {
                     shell: (mode == PodStreamMode::Shell).then(|| "/bin/sh".into()),
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(snap) => {
                         let stream_id = snap.stream_id.clone();
@@ -347,8 +347,7 @@ impl IceonApp {
                             }))
                             .when(!forwards.is_empty(), |el| {
                                 el.child(
-                                    Badge::new()
-                                        .success()
+                                    Tag::success()
                                         .child(format!("{} Port Forward(s)", forwards.len())),
                                 )
                             }),

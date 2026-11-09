@@ -20,7 +20,7 @@ const MAX_ENTRIES: usize = 1000;
 const MAX_NAME: usize = 256;
 const MAX_PATH: usize = 4096;
 
-// Static destinations in src/app/cluster/navigation.ts; dynamic custom-resource instances
+// Static destinations in iceon-ui/src/navigation.rs; dynamic custom-resource instances
 // are deliberately not catalog pin targets.
 pub const SECTIONS: &[&str] = &[
     "overview",

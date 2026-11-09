@@ -4,7 +4,7 @@
 use iceon_core::catalog::{CatalogError, ClusterSummary, PinTarget};
 use iceon_core::connection::{ConnectionError, ResourceItem, ResourceKind};
 use iceon_core::preferences::PreferencesError;
-use iceon_core::route_history::{SavedPage, SavedRoute};
+use iceon_core::route_history::SavedRoute;
 use iceon_core::secrets;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,37 +21,125 @@ impl Route {
     pub fn to_saved_route(&self) -> SavedRoute {
         match self {
             Self::Catalog => SavedRoute {
-                page: SavedPage::Catalog,
-                cluster_id: None,
+                path: "/catalog".into(),
                 section: None,
+                definition: None,
             },
             Self::Secrets => SavedRoute {
-                page: SavedPage::Secrets,
-                cluster_id: None,
+                path: "/secrets".into(),
                 section: None,
+                definition: None,
             },
             Self::Cluster {
                 cluster_id,
                 section,
-            } => SavedRoute {
-                page: SavedPage::Cluster,
-                cluster_id: Some(cluster_id.clone()),
-                section: Some(section.clone()),
-            },
+            } => {
+                // The UI uses a compact CRD destination, while persisted history
+                // keeps the validated definition separate from the section.
+                let definition = section.strip_prefix("crd:");
+                SavedRoute {
+                    path: format!("/cluster/{cluster_id}"),
+                    section: Some(if definition.is_some() {
+                        "custom-resource-instances".into()
+                    } else {
+                        section.clone()
+                    }),
+                    definition: definition.map(str::to_owned),
+                }
+            }
         }
     }
 
     pub fn from_saved_route(saved: SavedRoute) -> Self {
-        match saved.page {
-            SavedPage::Catalog => Self::Catalog,
-            SavedPage::Secrets => Self::Secrets,
-            SavedPage::Cluster => match saved.cluster_id {
-                Some(cluster_id) => Self::Cluster {
-                    cluster_id,
-                    section: saved.section.unwrap_or_else(|| "overview".into()),
-                },
-                None => Self::Catalog,
+        if iceon_core::route_history::validate(&saved).is_err() {
+            return Self::Catalog;
+        }
+        if saved.path == "/secrets" {
+            Self::Secrets
+        } else if let Some(cluster_id) = saved.path.strip_prefix("/cluster/") {
+            let section = match saved.definition {
+                Some(definition) => format!("crd:{definition}"),
+                None => saved.section.unwrap_or_else(|| "overview".into()),
+            };
+            Self::Cluster {
+                cluster_id: cluster_id.to_owned(),
+                section,
+            }
+        } else {
+            Self::Catalog
+        }
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    #[test]
+    fn routes_round_trip_through_validated_core_history() {
+        for route in [
+            Route::Catalog,
+            Route::Secrets,
+            Route::Cluster {
+                cluster_id: "local-id".into(),
+                section: "pods".into(),
             },
+            Route::Cluster {
+                cluster_id: "local-id".into(),
+                section: "crd:widgets.example.com".into(),
+            },
+        ] {
+            let saved = route.to_saved_route();
+            iceon_core::route_history::validate(&saved).unwrap();
+            assert_eq!(Route::from_saved_route(saved), route);
+        }
+    }
+
+    #[test]
+    fn restores_catalog_aliases_and_default_cluster_section() {
+        for path in ["/catalog", "/catalog/all", "/catalog/clusters"] {
+            assert_eq!(
+                Route::from_saved_route(SavedRoute {
+                    path: path.into(),
+                    section: None,
+                    definition: None,
+                }),
+                Route::Catalog,
+            );
+        }
+        assert_eq!(
+            Route::from_saved_route(SavedRoute {
+                path: "/cluster/local-id".into(),
+                section: None,
+                definition: None,
+            }),
+            Route::Cluster {
+                cluster_id: "local-id".into(),
+                section: "overview".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn invalid_history_falls_back_to_catalog() {
+        for saved in [
+            SavedRoute {
+                path: "/cluster/../private".into(),
+                section: None,
+                definition: None,
+            },
+            SavedRoute {
+                path: "/secrets".into(),
+                section: Some("private/path".into()),
+                definition: None,
+            },
+            SavedRoute {
+                path: "/cluster/local-id".into(),
+                section: Some("custom-resource-instances".into()),
+                definition: None,
+            },
+        ] {
+            assert_eq!(Route::from_saved_route(saved), Route::Catalog);
         }
     }
 }

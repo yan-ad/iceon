@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, StyledExt as _,
-    badge::Badge,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, Input},
     resizable::{h_resizable, resizable_panel, v_resizable},
     scroll::ScrollableElement as _,
+    tag::Tag,
     switch::Switch,
     v_flex, IconName,
 };
@@ -118,7 +118,7 @@ impl IceonApp {
                 })
                 .await;
 
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match connected {
                     Ok(snap) => {
                         let is_connected = snap.status == "connected";
@@ -419,7 +419,7 @@ impl IceonApp {
                     group: None,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(snap) => {
                         let sync_id = snap.sync_id.clone();
@@ -543,7 +543,7 @@ impl IceonApp {
                     read_id,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(out) => {
                         if dry_run {
@@ -596,7 +596,7 @@ impl IceonApp {
                     read_id,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(_) => {
                         this.refresh_active_cluster_view(window, cx);
@@ -691,7 +691,7 @@ impl IceonApp {
                     dry_run,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(out) => {
                         if dry_run {
@@ -825,7 +825,7 @@ impl IceonApp {
                     plan_id,
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.rbac_active_plan = None;
                 match res {
                     Ok(_) => {
@@ -1047,10 +1047,10 @@ impl IceonApp {
                             .gap_2()
                             .child(div().text_sm().font_semibold().child(context_name))
                             .child(match status {
-                                "connected" => Badge::new().success().child("Connected"),
-                                "connecting" => Badge::new().warning().child("Connecting"),
-                                "error" => Badge::new().danger().child("Error"),
-                                _ => Badge::new().secondary().child("Disconnected"),
+                                "connected" => Tag::success().child("Connected"),
+                                "connecting" => Tag::warning().child("Connecting"),
+                                "error" => Tag::danger().child("Error"),
+                                _ => Tag::secondary().child("Disconnected"),
                             })
                             .when_some(api_version, |el, ver| {
                                 el.child(
@@ -1326,9 +1326,9 @@ impl IceonApp {
                             .gap_2()
                             .items_center()
                             .child(if kind_type == "Warning" {
-                                Badge::new().warning().child("Warning")
+                                Tag::warning().child("Warning")
                             } else {
-                                Badge::new().secondary().child(kind_type)
+                                Tag::secondary().child(kind_type)
                             })
                             .child(div().font_medium().child(ev.status.clone()))
                             .child(
@@ -1616,7 +1616,7 @@ impl IceonApp {
                                                 )))
                                                 .xsmall()
                                                 .ghost()
-                                                .icon(IconName::Trash)
+                                                .icon(IconName::Delete)
                                                 .on_click(cx.listener(move |this, _, window, cx| {
                                                     this.delete_resource_row(
                                                         kind,
@@ -1763,7 +1763,7 @@ impl IceonApp {
                                             .child(item.namespace.unwrap_or_else(|| "repo".into())),
                                     )
                                     .when_some(item.status, |el, st| {
-                                        el.child(Badge::new().secondary().child(st))
+                                        el.child(Tag::secondary().child(st))
                                     }),
                             )
                             .child(
@@ -1847,7 +1847,7 @@ impl IceonApp {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Badge::new().success().child(fwd.status))
+                            .child(Tag::success().child(fwd.status))
                             .child(
                                 Button::new(SharedString::from(format!("stop-fwd-{id}")))
                                     .xsmall()
@@ -1957,8 +1957,7 @@ impl IceonApp {
                                     u.namespace, u.name
                                 )))
                                 .child(
-                                    Badge::new()
-                                        .secondary()
+                                    Tag::secondary()
                                         .child(format!("{} assignment(s)", u.assignments.len())),
                                 )
                         })),

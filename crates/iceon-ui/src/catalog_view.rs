@@ -3,11 +3,11 @@
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
-    badge::Badge,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
     scroll::ScrollableElement as _,
+    tag::Tag,
     v_flex, IconName,
 };
 use gpui_kit::prelude::*;
@@ -271,10 +271,10 @@ impl IceonApp {
                                     .cloned()
                                     .unwrap_or_else(|| cluster.source.clone());
                                 let status_badge = match cluster.status {
-                                    "connected" => Badge::new().success().child("Connected"),
-                                    "connecting" => Badge::new().warning().child("Connecting"),
-                                    "error" => Badge::new().danger().child("Error"),
-                                    _ => Badge::new().secondary().child("Disconnected"),
+                                    "connected" => Tag::success().child("Connected"),
+                                    "connecting" => Tag::warning().child("Connecting"),
+                                    "error" => Tag::danger().child("Error"),
+                                    _ => Tag::secondary().child("Disconnected"),
                                 };
 
                                 h_flex()
@@ -376,7 +376,7 @@ impl IceonApp {
                                                 )))
                                                 .xsmall()
                                                 .ghost()
-                                                .icon(IconName::Trash)
+                                                .icon(gpui_kit::assets::IconName::Trash)
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.pending_remove_cluster =
                                                         Some(remove_target.clone());
@@ -409,7 +409,7 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let rx = window.prompt_for_paths(PathPromptOptions {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,

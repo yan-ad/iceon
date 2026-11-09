@@ -28,8 +28,8 @@ mod tests {
 
     #[test]
     fn provider_initialization_precedes_app_startup() {
-        let source = include_str!("lib.rs");
+        let source = include_str!("../../iceon-ui/src/lib.rs");
         let startup = source.split("pub fn run() {").nth(1).unwrap().trim_start();
-        assert!(startup.starts_with("tls::initialize();"));
+        assert!(startup.starts_with("iceon_core::tls::initialize();"));
     }
 }
