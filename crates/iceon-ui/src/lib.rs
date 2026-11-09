@@ -8,7 +8,9 @@ pub mod pod_dock_view;
 pub mod preferences_view;
 pub mod secrets_view;
 mod shell_header;
+mod shell_theme;
 mod sidebar_view;
+mod native_menu;
 
 use std::sync::Arc;
 
@@ -44,6 +46,7 @@ use preferences_view::PreferencesSection;
 use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
+    pub(crate) shell_focus: FocusHandle,
     pub(crate) catalog: Arc<CatalogEngine>,
     pub(crate) connection: Arc<ConnectionEngine>,
     pub(crate) preferences_engine: Arc<PreferencesEngine>,
@@ -146,6 +149,8 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let shell_focus = cx.focus_handle();
+        window.focus(&shell_focus, cx);
         let (preferences_revision, preferences_draft) = match preferences_engine.snapshot() {
             Ok(snap) => (snap.revision, snap.preferences),
             Err(_) => (1, Preferences::default()),
@@ -269,6 +274,7 @@ impl IceonApp {
         });
 
         let mut app = Self {
+            shell_focus,
             catalog,
             connection,
             preferences_engine,
@@ -519,15 +525,17 @@ impl IceonApp {
 
 impl Render for IceonApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_menus(window, cx);
         let current_route = self.history.current().clone();
         let active_cluster_id = match &current_route {
             Route::Cluster { cluster_id, .. } => Some(cluster_id.clone()),
             _ => None,
         };
 
-        v_flex()
+        self.menu_action_surface(cx)
+            .flex()
+            .flex_col()
             .size_full()
-            .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(window, cx))
             .child(
@@ -546,6 +554,7 @@ impl Render for IceonApp {
                             .flex_1()
                             .min_w_0()
                             .h_full()
+                            .bg(cx.theme().background)
                             .overflow_hidden()
                             .child(match current_route {
                                 Route::Catalog => {
@@ -603,12 +612,35 @@ pub fn run() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            native_menu::init(cx);
+            let shutdown_connection = connection.clone();
+            let shutdown_secrets = secrets_engine.clone();
+            cx.on_app_quit(move |_| {
+                shutdown_connection.shutdown();
+                shutdown_secrets.shutdown();
+                let connection = shutdown_connection.clone();
+                let secrets = shutdown_secrets.clone();
+                async move {
+                    let _ = tokio::time::timeout(std::time::Duration::from_millis(750), async {
+                        tokio::join!(connection.drain(), secrets.drain());
+                    }).await;
+                }
+            }).detach();
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            }).detach();
             let catalog = catalog.clone();
             let connection = connection.clone();
             let preferences_engine = preferences_engine.clone();
             let secrets_engine = secrets_engine.clone();
-            gpui_kit::open_window(TitleBar::window_options(), cx, move |window, cx| {
-                cx.new(|cx| {
+            let options = WindowOptions {
+                window_background: shell_theme::background_appearance(),
+                ..TitleBar::window_options()
+            };
+            gpui_kit::open_window(options, cx, move |window, cx| {
+                let app = cx.new(|cx| {
                     IceonApp::new(
                         catalog,
                         connection,
@@ -617,8 +649,11 @@ pub fn run() {
                         window,
                         cx,
                     )
-                })
+                });
+                native_menu::register_window(&app, window, cx);
+                app
             })
             .expect("failed to open Iceon GPUI window");
+            cx.activate(true);
         });
 }

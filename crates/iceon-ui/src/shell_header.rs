@@ -212,15 +212,24 @@ impl IceonApp {
             self.cluster_select_items = items;
         }
 
-        TitleBar::new().child(
+        TitleBar::new()
+        .bg(cx.theme().tokens.title_bar)
+        .text_color(cx.theme().sidebar_foreground)
+        .child(
             h_flex()
                 .w_full()
                 .min_w_0()
                 .pr_3()
                 .gap_3()
                 .items_center()
+                .when(!cfg!(target_os = "macos"), |bar| {
+                    bar.child(
+                        div().w(px(280.0)).h_full()
+                            .child(crate::native_menu::create_menu_bar(cx))
+                    )
+                })
                 .justify_between()
-                .text_color(cx.theme().foreground)
+                .text_color(cx.theme().sidebar_foreground)
                 .child(
                     h_flex()
                         .flex_1()
@@ -229,6 +238,7 @@ impl IceonApp {
                         .gap_1p5()
                         .child(
                             Button::new("nav-toggle-sidebar")
+                                .text_color(cx.theme().sidebar_foreground)
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::PanelLeft)
@@ -241,6 +251,7 @@ impl IceonApp {
                         )
                         .child(
                             Button::new("nav-back-btn")
+                                .text_color(cx.theme().sidebar_foreground)
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::ArrowLeft)
@@ -255,6 +266,7 @@ impl IceonApp {
                         )
                         .child(
                             Button::new("nav-forward-btn")
+                                .text_color(cx.theme().sidebar_foreground)
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::ArrowRight)
@@ -305,6 +317,7 @@ impl IceonApp {
                         .gap_1p5()
                         .child(
                             Button::new("open-search-palette-btn")
+                                .text_color(cx.theme().sidebar_foreground)
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::Search)
@@ -317,6 +330,7 @@ impl IceonApp {
                         )
                         .child(
                             Button::new("titlebar-preferences-btn")
+                                .text_color(cx.theme().sidebar_foreground)
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::Settings)

@@ -9,7 +9,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement as _,
     switch::Switch,
     tab::{Tab, TabBar},
-    theme::{Theme, ThemeMode},
+    theme::ThemeMode,
     v_flex, IconName,
 };
 use gpui_kit::prelude::*;
@@ -158,7 +158,7 @@ impl IceonApp {
             AppTheme::Light => ThemeMode::Light,
             AppTheme::Dark | AppTheme::System => ThemeMode::Dark,
         };
-        Theme::change(mode, window, cx);
+        crate::shell_theme::apply(mode, window, cx);
     }
 
     pub(crate) fn render_preferences_modal(
