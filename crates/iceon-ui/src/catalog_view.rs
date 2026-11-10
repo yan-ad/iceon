@@ -156,9 +156,10 @@ impl IceonApp {
                             .child(
                                 Button::new("catalog-refresh-btn")
                                     .small()
-                                    .outline()
-                                    .icon(IconName::Undo2)
-                                    .label("Refresh")
+                                    .ghost()
+                                    .icon(IconName::RefreshCw)
+                                    .tooltip("Refresh catalog")
+                                    .accessibility_label("Refresh catalog")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.refresh_catalog(cx);
                                     })),

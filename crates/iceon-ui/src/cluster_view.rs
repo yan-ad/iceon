@@ -43,19 +43,27 @@ pub(crate) fn create_status_select(
     cx: &mut Context<IceonApp>,
 ) -> Entity<NamespaceSelectState> {
     let select = cx.new(|cx| {
-        SelectState::new(SearchableVec::new(Vec::<NamespaceChoice>::new()), None, window, cx)
+        SelectState::new(
+            SearchableVec::new(Vec::<NamespaceChoice>::new()),
+            None,
+            window,
+            cx,
+        )
     });
     cx.subscribe_in(
         &select,
         window,
         |this, _, event: &SelectEvent<SearchableVec<NamespaceChoice>>, window, cx| {
-            let SelectEvent::Confirm(Some(status)) = event else { return; };
+            let SelectEvent::Confirm(Some(status)) = event else {
+                return;
+            };
             this.selected_status_filter = (status != "All").then(|| status.clone());
             this.current_continue_token = None;
             this.continue_token_history.clear();
             this.reload_active_section(window, cx);
         },
-    ).detach();
+    )
+    .detach();
     select
 }
 
@@ -144,14 +152,29 @@ const RESOURCE_AGE_WIDTH: f32 = 76.0;
 const RESOURCE_STATUS_WIDTH: f32 = 148.0;
 
 fn resource_table_min_width(kind: ResourceKind) -> f32 {
-    RESOURCE_NAME_WIDTH + RESOURCE_AGE_WIDTH + RESOURCE_STATUS_WIDTH + RESOURCE_ACTIONS_WIDTH
-        + if namespaced_kind(kind) { RESOURCE_NAMESPACE_WIDTH } else { 0.0 }
-        + columns_for_kind(kind).iter().map(|column| column.width).sum::<f32>()
+    RESOURCE_NAME_WIDTH
+        + RESOURCE_AGE_WIDTH
+        + RESOURCE_STATUS_WIDTH
+        + RESOURCE_ACTIONS_WIDTH
+        + if namespaced_kind(kind) {
+            RESOURCE_NAMESPACE_WIDTH
+        } else {
+            0.0
+        }
+        + columns_for_kind(kind)
+            .iter()
+            .map(|column| column.width)
+            .sum::<f32>()
 }
 
 // Shared cell geometry: padding is inside each column; only internal vertical rules.
 fn table_cell(width: f32, flexible: bool, separator: bool, border: Hsla) -> Div {
-    h_flex().h_full().items_center().px_3().flex_shrink_0().overflow_hidden()
+    h_flex()
+        .h_full()
+        .items_center()
+        .px_3()
+        .flex_shrink_0()
+        .overflow_hidden()
         .when(flexible, |cell| cell.flex_1().min_w(px(width)))
         .when(!flexible, |cell| cell.w(px(width)))
         .when(separator, |cell| cell.border_r_1().border_color(border))
@@ -950,8 +973,6 @@ impl IceonApp {
                 sync_id,
             });
         }
-
-
     }
 
     pub(crate) fn reload_active_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1806,37 +1827,48 @@ impl IceonApp {
                         v_flex()
                             .min_w_0()
                             .gap_0p5()
-                            .child(h_flex()
-                            .gap_2()
-                            .items_center()
                             .child(
-                                div()
-                                    .text_base()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(destination_label(section)),
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(destination_label(section)),
+                                    )
+                                    .when_some(session.clone(), |el, s| {
+                                        el.child(
+                                            match s.status {
+                                                "connected" => Tag::success().small(),
+                                                "connecting" => Tag::warning().small(),
+                                                _ => Tag::secondary().small(),
+                                            }
+                                            .child(
+                                                format!(
+                                                    "{} {}",
+                                                    s.status,
+                                                    s.api_version.unwrap_or_default()
+                                                ),
+                                            ),
+                                        )
+                                    })
+                                    .when(self.active_pod_sync_id.is_some(), |el| {
+                                        el.child(Tag::success().small().child("LIVE WATCH"))
+                                    }),
                             )
-                            .when_some(session.clone(), |el, s| {
-                                el.child(
-                                    match s.status {
-                                        "connected" => Tag::success().small(),
-                                        "connecting" => Tag::warning().small(),
-                                        _ => Tag::secondary().small(),
-                                    }
-                                    .child(format!(
-                                        "{} {}",
-                                        s.status,
-                                        s.api_version.unwrap_or_default()
-                                    )),
-                                )
-                            })
-                            .when(self.active_pod_sync_id.is_some(), |el| {
-                                el.child(Tag::success().small().child("LIVE WATCH"))
-                            }),)
                             .when_some(active_kind, |el, kind| {
                                 let count = self.filtered_resource_items(kind, cx).len();
-                                el.child(div().text_size(px(11.0)).text_color(cx.theme().muted_foreground)
-                                    .child(format!("Showing {count} {kind:?} items (Page {})", self.continue_token_history.len() + 1)))
-                            })
+                                el.child(
+                                    div()
+                                        .text_size(px(11.0))
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "Showing {count} {kind:?} items (Page {})",
+                                            self.continue_token_history.len() + 1
+                                        )),
+                                )
+                            }),
                     )
                     .child(
                         h_flex()
@@ -1914,9 +1946,72 @@ impl IceonApp {
                                         this.reload_active_section(window, cx);
                                     })),
                             )
-                            .when_some(active_kind, |el, kind| el.child(self.render_resource_pagination(kind, cx))),
+                            .when_some(active_kind, |el, kind| {
+                                el.child(self.render_resource_pagination(kind, cx))
+                            }),
                     ),
             )
+    }
+
+    fn render_resource_pagination(
+        &mut self,
+        kind: ResourceKind,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let next_token = self
+            .resource_page
+            .as_ref()
+            .filter(|page| page.kind == kind)
+            .and_then(|page| page.continue_token.clone());
+        let has_prev = !self.continue_token_history.is_empty();
+
+        h_flex()
+            .gap_1()
+            .items_center()
+            .when(has_prev, |row| {
+                row.child(
+                    Button::new("tbl-first-page-btn")
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::ChevronLeft)
+                        .tooltip("First page")
+                        .accessibility_label("First page")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.continue_token_history.clear();
+                            this.current_continue_token = None;
+                            this.load_resource_table(kind, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("tbl-prev-page-btn")
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::ChevronLeft)
+                        .tooltip("Previous page")
+                        .accessibility_label("Previous page")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.current_continue_token =
+                                this.continue_token_history.pop().flatten();
+                            this.load_resource_table(kind, window, cx);
+                        })),
+                )
+            })
+            .when_some(next_token, |row, token| {
+                row.child(
+                    Button::new("tbl-next-page-btn")
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::ChevronRight)
+                        .tooltip("Next page")
+                        .accessibility_label("Next page")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let previous = this.current_continue_token.take();
+                            this.continue_token_history.push(previous);
+                            this.current_continue_token = Some(token.clone());
+                            this.load_resource_table(kind, window, cx);
+                        })),
+                )
+            })
     }
 
     fn render_cluster_section_body(
@@ -2402,7 +2497,14 @@ impl IceonApp {
                 })
                 .collect()
         };
-        items.into_iter().filter(|item| self.selected_status_filter.as_ref().is_none_or(|status| item.status.eq_ignore_ascii_case(status))).collect()
+        items
+            .into_iter()
+            .filter(|item| {
+                self.selected_status_filter
+                    .as_ref()
+                    .is_none_or(|status| item.status.eq_ignore_ascii_case(status))
+            })
+            .collect()
     }
 
     fn render_resource_table_body(
@@ -2411,7 +2513,12 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let items = self.filtered_resource_items(kind, cx);
-        let query = self.resource_filter_input.read(cx).value().trim().to_lowercase();
+        let query = self
+            .resource_filter_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
         let cols = columns_for_kind(kind);
         let show_ns = namespaced_kind(kind);
         let active_status = self.selected_status_filter.clone();
@@ -2461,12 +2568,70 @@ impl IceonApp {
                                     .h(px(40.0))
                                     .items_center()
                                     .flex_shrink_0()
-                                    .child(table_cell(RESOURCE_NAME_WIDTH, true, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Name"))
-                                    .when(show_ns, |el| el.child(table_cell(RESOURCE_NAMESPACE_WIDTH, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Namespace")))
-                                    .children(cols.iter().map(|c| table_cell(c.width, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child(c.header)))
-                                    .child(table_cell(RESOURCE_AGE_WIDTH, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Age"))
-                                    .child(table_cell(RESOURCE_STATUS_WIDTH, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Status"))
-                                    .child(table_cell(RESOURCE_ACTIONS_WIDTH, false, false, cx.theme().border).justify_end().text_xs().font_weight(FontWeight::SEMIBOLD).child("Actions")),
+                                    .child(
+                                        table_cell(
+                                            RESOURCE_NAME_WIDTH,
+                                            true,
+                                            true,
+                                            cx.theme().border,
+                                        )
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Name"),
+                                    )
+                                    .when(show_ns, |el| {
+                                        el.child(
+                                            table_cell(
+                                                RESOURCE_NAMESPACE_WIDTH,
+                                                false,
+                                                true,
+                                                cx.theme().border,
+                                            )
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Namespace"),
+                                        )
+                                    })
+                                    .children(cols.iter().map(|c| {
+                                        table_cell(c.width, false, true, cx.theme().border)
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(c.header)
+                                    }))
+                                    .child(
+                                        table_cell(
+                                            RESOURCE_AGE_WIDTH,
+                                            false,
+                                            true,
+                                            cx.theme().border,
+                                        )
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Age"),
+                                    )
+                                    .child(
+                                        table_cell(
+                                            RESOURCE_STATUS_WIDTH,
+                                            false,
+                                            true,
+                                            cx.theme().border,
+                                        )
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Status"),
+                                    )
+                                    .child(
+                                        table_cell(
+                                            RESOURCE_ACTIONS_WIDTH,
+                                            false,
+                                            false,
+                                            cx.theme().border,
+                                        )
+                                        .justify_end()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Actions"),
+                                    ),
                             )
                             .child(
                                 v_virtual_list(
@@ -2477,7 +2642,15 @@ impl IceonApp {
                                         visible_range
                                             .filter_map(|idx| {
                                                 let item = shared_items.get(idx)?.clone();
-                                                Some(div().w_full().h(px(42.0)).child(this.render_resource_row(kind, item, idx, show_ns, cols, cx)).into_any_element())
+                                                Some(
+                                                    div()
+                                                        .w_full()
+                                                        .h(px(42.0))
+                                                        .child(this.render_resource_row(
+                                                            kind, item, idx, show_ns, cols, cx,
+                                                        ))
+                                                        .into_any_element(),
+                                                )
                                             })
                                             .collect()
                                     },
@@ -3688,26 +3861,24 @@ impl IceonApp {
 
 fn row_status_tag(status: &str) -> Tag {
     let normalized = status.to_ascii_lowercase();
-    let tag = if normalized.contains("fail")
-        || normalized.contains("error")
-        || normalized.contains("crash")
-    {
-        Tag::danger()
-    } else if normalized.contains("pending")
-        || normalized.contains("wait")
-        || normalized.contains("warn")
-        || normalized.contains("notready")
-        || normalized.contains("not ready")
-    {
-        Tag::warning()
-    } else if normalized.contains("running")
-        || normalized.contains("ready")
-        || normalized.contains("complete")
-        || normalized.contains("succeed")
-    {
-        Tag::success()
-    } else {
-        Tag::secondary()
+    let tag = match normalized.as_str() {
+        "running" => Tag::color(ColorName::Green),
+        "pending" | "waiting" | "schedulingdisabled" => Tag::color(ColorName::Amber),
+        "succeeded" | "success" | "complete" | "completed" | "ready" => {
+            Tag::color(ColorName::Emerald)
+        }
+        "failed" | "error" | "crash" | "replicafailure" => Tag::color(ColorName::Red),
+        "terminating" | "warning" | "notready" | "not ready" => Tag::color(ColorName::Orange),
+        "active" | "available" | "progressing" => Tag::color(ColorName::Blue),
+        "suspended" | "paused" => Tag::color(ColorName::Violet),
+        "lost" => Tag::color(ColorName::Rose),
+        _ if normalized.contains("fail") || normalized.contains("error") => {
+            Tag::color(ColorName::Red)
+        }
+        _ if normalized.contains("pending") || normalized.contains("wait") => {
+            Tag::color(ColorName::Amber)
+        }
+        _ => Tag::secondary(),
     };
     tag.small().child(status.to_owned())
 }
