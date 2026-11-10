@@ -2,7 +2,7 @@
 //! backed by `PreferencesEngine` with live GPUI theme updates via `Theme::change`.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -10,7 +10,7 @@ use gpui_kit::component::{
     switch::Switch,
     tab::{Tab, TabBar},
     theme::ThemeMode,
-    v_flex, IconName,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -44,10 +44,12 @@ impl IceonApp {
 
     pub(crate) fn sync_preferences_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let draft = self.preferences_draft.clone();
-        self.pref_timezone_input
-            .update(cx, |s, cx| s.set_value(draft.app.timezone.clone(), window, cx));
-        self.pref_proxy_input
-            .update(cx, |s, cx| s.set_value(draft.proxy.https_proxy.clone(), window, cx));
+        self.pref_timezone_input.update(cx, |s, cx| {
+            s.set_value(draft.app.timezone.clone(), window, cx)
+        });
+        self.pref_proxy_input.update(cx, |s, cx| {
+            s.set_value(draft.proxy.https_proxy.clone(), window, cx)
+        });
         self.pref_helm_path_input.update(cx, |s, cx| {
             s.set_value(draft.kubernetes.helm_binary_path.clone(), window, cx)
         });
@@ -255,315 +257,291 @@ impl IceonApp {
                     .gap_3()
                     .overflow_y_scrollbar()
                     .child(match section {
-                        PreferencesSection::App => v_flex()
-                            .gap_3()
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(div().text_sm().child("Theme"))
-                                    .child(
-                                        h_flex()
-                                            .gap_1p5()
-                                            .children(
-                                                [
-                                                    (AppTheme::System, "System"),
-                                                    (AppTheme::Dark, "Dark"),
-                                                    (AppTheme::Light, "Light"),
-                                                ]
-                                                .into_iter()
-                                                .map(|(mode, label)| {
-                                                    let active = draft.app.theme == mode;
-                                                    Button::new(SharedString::from(format!(
-                                                        "pref-theme-{label}"
-                                                    )))
-                                                    .xsmall()
-                                                    .when(active, |b| b.primary())
-                                                    .when(!active, |b| b.outline())
-                                                    .label(label)
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.preferences_draft.app.theme = mode;
-                                                            this.apply_theme(
-                                                                mode,
-                                                                Some(window),
-                                                                cx,
-                                                            );
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                                }),
-                                            ),
+                    PreferencesSection::App => v_flex()
+                        .gap_3()
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .justify_between()
+                                .child(div().text_sm().child("Theme"))
+                                .child(
+                                    h_flex().gap_1p5().children(
+                                        [
+                                            (AppTheme::System, "System"),
+                                            (AppTheme::Dark, "Dark"),
+                                            (AppTheme::Light, "Light"),
+                                        ]
+                                        .into_iter()
+                                        .map(
+                                            |(mode, label)| {
+                                                let active = draft.app.theme == mode;
+                                                Button::new(SharedString::from(format!(
+                                                    "pref-theme-{label}"
+                                                )))
+                                                .xsmall()
+                                                .when(active, |b| b.primary())
+                                                .when(!active, |b| b.outline())
+                                                .label(label)
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.preferences_draft.app.theme = mode;
+                                                        this.apply_theme(mode, Some(window), cx);
+                                                        cx.notify();
+                                                    },
+                                                ))
+                                            },
+                                        ),
                                     ),
-                            )
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().child("Timezone"))
-                                    .child(Input::new(&self.pref_timezone_input).small()),
-                            )
-                            .child(
-                                Switch::new("pref-persistent-search")
-                                    .label("Keep search queries across resource navigation")
-                                    .checked(draft.app.persistent_search)
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.preferences_draft.app.persistent_search = *checked;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Switch::new("pref-restore-last-page")
-                                    .label("Restore last visited page on startup")
-                                    .checked(draft.app.restore_last_page)
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.preferences_draft.app.restore_last_page = *checked;
-                                        cx.notify();
-                                    })),
-                            )
-                            .into_any_element(),
-                        PreferencesSection::Proxy => v_flex()
-                            .gap_3()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().child("HTTPS Proxy URL"))
-                                    .child(Input::new(&self.pref_proxy_input).small()),
-                            )
-                            .child(
-                                Switch::new("pref-allow-untrusted-cas")
-                                    .label("Allow untrusted Certificate Authorities (recorded preference)")
-                                    .checked(draft.proxy.allow_untrusted_cas)
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.preferences_draft.proxy.allow_untrusted_cas = *checked;
-                                        cx.notify();
-                                    })),
-                            )
-                            .into_any_element(),
-                        PreferencesSection::Kubernetes => v_flex()
-                            .gap_3()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().child("Custom Helm Binary Path"))
-                                    .child(Input::new(&self.pref_helm_path_input).small()),
-                            )
-                            .child(
-                                Switch::new("pref-helm-server-side")
-                                    .label("Use server-side dry-run for Helm operations")
-                                    .checked(draft.kubernetes.helm_server_side)
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.preferences_draft.kubernetes.helm_server_side =
-                                            *checked;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Switch::new("pref-discover-default-kubeconfig")
-                                    .label("Auto-discover ~/.kube/config in Catalog")
-                                    .checked(draft.kubernetes.discover_default_kubeconfig)
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.preferences_draft
-                                            .kubernetes
-                                            .discover_default_kubeconfig = *checked;
-                                        cx.notify();
-                                    })),
-                            )
-                            .into_any_element(),
-                        PreferencesSection::Editor => v_flex()
-                            .gap_3()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().child("Font Family"))
-                                    .child(Input::new(&self.pref_editor_font_family_input).small()),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_1()
-                                            .child(div().text_xs().child("Font Size (10-50)"))
-                                            .child(
-                                                Input::new(&self.pref_editor_font_size_input)
-                                                    .small(),
-                                            ),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_1()
-                                            .child(div().text_xs().child("Tab Size (1-16)"))
-                                            .child(
-                                                Input::new(&self.pref_editor_tab_size_input)
-                                                    .small(),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(div().text_sm().child("Line Numbers"))
-                                    .child(
-                                        h_flex()
-                                            .gap_1p5()
-                                            .children(
-                                                [
-                                                    (LineNumbers::On, "On"),
-                                                    (LineNumbers::Off, "Off"),
-                                                    (LineNumbers::Relative, "Relative"),
-                                                ]
-                                                .into_iter()
-                                                .map(|(ln, label)| {
-                                                    let active = draft.editor.line_numbers == ln;
-                                                    Button::new(SharedString::from(format!(
-                                                        "pref-ln-{label}"
-                                                    )))
-                                                    .xsmall()
-                                                    .when(active, |b| b.primary())
-                                                    .when(!active, |b| b.outline())
-                                                    .label(label)
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            this.preferences_draft
-                                                                .editor
-                                                                .line_numbers = ln;
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                                }),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(
-                                        Switch::new("pref-editor-minimap")
-                                            .label("Show Minimap")
-                                            .checked(draft.editor.minimap)
-                                            .on_click(cx.listener(
-                                                |this, checked: &bool, _, cx| {
-                                                    this.preferences_draft.editor.minimap =
-                                                        *checked;
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().text_xs().child("Timezone"))
+                                .child(Input::new(&self.pref_timezone_input).small()),
+                        )
+                        .child(
+                            Switch::new("pref-persistent-search")
+                                .label("Keep search queries across resource navigation")
+                                .checked(draft.app.persistent_search)
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.preferences_draft.app.persistent_search = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Switch::new("pref-restore-last-page")
+                                .label("Restore last visited page on startup")
+                                .checked(draft.app.restore_last_page)
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.preferences_draft.app.restore_last_page = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                    PreferencesSection::Proxy => v_flex()
+                        .gap_3()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().text_xs().child("HTTPS Proxy URL"))
+                                .child(Input::new(&self.pref_proxy_input).small()),
+                        )
+                        .child(
+                            Switch::new("pref-allow-untrusted-cas")
+                                .label(
+                                    "Allow untrusted Certificate Authorities (recorded preference)",
+                                )
+                                .checked(draft.proxy.allow_untrusted_cas)
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.preferences_draft.proxy.allow_untrusted_cas = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                    PreferencesSection::Kubernetes => v_flex()
+                        .gap_3()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().text_xs().child("Custom Helm Binary Path"))
+                                .child(Input::new(&self.pref_helm_path_input).small()),
+                        )
+                        .child(
+                            Switch::new("pref-helm-server-side")
+                                .label("Use server-side dry-run for Helm operations")
+                                .checked(draft.kubernetes.helm_server_side)
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.preferences_draft.kubernetes.helm_server_side = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Switch::new("pref-discover-default-kubeconfig")
+                                .label("Auto-discover ~/.kube/config in Catalog")
+                                .checked(draft.kubernetes.discover_default_kubeconfig)
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.preferences_draft
+                                        .kubernetes
+                                        .discover_default_kubeconfig = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                    PreferencesSection::Editor => v_flex()
+                        .gap_3()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().text_xs().child("Font Family"))
+                                .child(Input::new(&self.pref_editor_font_family_input).small()),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_1()
+                                        .child(div().text_xs().child("Font Size (10-50)"))
+                                        .child(
+                                            Input::new(&self.pref_editor_font_size_input).small(),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_1()
+                                        .child(div().text_xs().child("Tab Size (1-16)"))
+                                        .child(
+                                            Input::new(&self.pref_editor_tab_size_input).small(),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .justify_between()
+                                .child(div().text_sm().child("Line Numbers"))
+                                .child(
+                                    h_flex().gap_1p5().children(
+                                        [
+                                            (LineNumbers::On, "On"),
+                                            (LineNumbers::Off, "Off"),
+                                            (LineNumbers::Relative, "Relative"),
+                                        ]
+                                        .into_iter()
+                                        .map(
+                                            |(ln, label)| {
+                                                let active = draft.editor.line_numbers == ln;
+                                                Button::new(SharedString::from(format!(
+                                                    "pref-ln-{label}"
+                                                )))
+                                                .xsmall()
+                                                .when(active, |b| b.primary())
+                                                .when(!active, |b| b.outline())
+                                                .label(label)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.preferences_draft.editor.line_numbers = ln;
                                                     cx.notify();
-                                                },
-                                            )),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .gap_1p5()
-                                            .children(
-                                                [
-                                                    (MinimapSide::Left, "Left"),
-                                                    (MinimapSide::Right, "Right"),
-                                                ]
-                                                .into_iter()
-                                                .map(|(side, label)| {
-                                                    let active = draft.editor.minimap_side == side;
-                                                    Button::new(SharedString::from(format!(
-                                                        "pref-minimap-{label}"
-                                                    )))
-                                                    .xsmall()
-                                                    .when(active, |b| b.primary())
-                                                    .when(!active, |b| b.outline())
-                                                    .label(label)
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            this.preferences_draft
-                                                                .editor
-                                                                .minimap_side = side;
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                                }),
-                                            ),
+                                                }))
+                                            },
+                                        ),
                                     ),
-                            )
-                            .into_any_element(),
-                        PreferencesSection::Terminal => v_flex()
-                            .gap_3()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().child("Terminal Font Family"))
-                                    .child(
-                                        Input::new(&self.pref_terminal_font_family_input).small(),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .justify_between()
+                                .child(
+                                    Switch::new("pref-editor-minimap")
+                                        .label("Show Minimap")
+                                        .checked(draft.editor.minimap)
+                                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                            this.preferences_draft.editor.minimap = *checked;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    h_flex().gap_1p5().children(
+                                        [
+                                            (MinimapSide::Left, "Left"),
+                                            (MinimapSide::Right, "Right"),
+                                        ]
+                                        .into_iter()
+                                        .map(
+                                            |(side, label)| {
+                                                let active = draft.editor.minimap_side == side;
+                                                Button::new(SharedString::from(format!(
+                                                    "pref-minimap-{label}"
+                                                )))
+                                                .xsmall()
+                                                .when(active, |b| b.primary())
+                                                .when(!active, |b| b.outline())
+                                                .label(label)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.preferences_draft.editor.minimap_side =
+                                                        side;
+                                                    cx.notify();
+                                                }))
+                                            },
+                                        ),
                                     ),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_1()
-                                            .child(div().text_xs().child("Font Size (10-50)"))
-                                            .child(
-                                                Input::new(&self.pref_terminal_font_size_input)
-                                                    .small(),
-                                            ),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap_1()
-                                            .child(div().text_xs().child("Default Shell Path"))
-                                            .child(
-                                                Input::new(&self.pref_terminal_shell_input).small(),
-                                            ),
+                                ),
+                        )
+                        .into_any_element(),
+                    PreferencesSection::Terminal => v_flex()
+                        .gap_3()
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .child(div().text_xs().child("Terminal Font Family"))
+                                .child(Input::new(&self.pref_terminal_font_family_input).small()),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_1()
+                                        .child(div().text_xs().child("Font Size (10-50)"))
+                                        .child(
+                                            Input::new(&self.pref_terminal_font_size_input).small(),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap_1()
+                                        .child(div().text_xs().child("Default Shell Path"))
+                                        .child(Input::new(&self.pref_terminal_shell_input).small()),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .justify_between()
+                                .child(div().text_sm().child("Terminal Theme"))
+                                .child(
+                                    h_flex().gap_1p5().children(
+                                        [
+                                            (TerminalTheme::Match, "Match App"),
+                                            (TerminalTheme::Dark, "Dark"),
+                                            (TerminalTheme::Light, "Light"),
+                                        ]
+                                        .into_iter()
+                                        .map(
+                                            |(tt, label)| {
+                                                let active = draft.terminal.theme == tt;
+                                                Button::new(SharedString::from(format!(
+                                                    "pref-term-theme-{label}"
+                                                )))
+                                                .xsmall()
+                                                .when(active, |b| b.primary())
+                                                .when(!active, |b| b.outline())
+                                                .label(label)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.preferences_draft.terminal.theme = tt;
+                                                    cx.notify();
+                                                }))
+                                            },
+                                        ),
                                     ),
-                            )
-                            .child(
-                                h_flex()
-                                    .items_center()
-                                    .justify_between()
-                                    .child(div().text_sm().child("Terminal Theme"))
-                                    .child(
-                                        h_flex()
-                                            .gap_1p5()
-                                            .children(
-                                                [
-                                                    (TerminalTheme::Match, "Match App"),
-                                                    (TerminalTheme::Dark, "Dark"),
-                                                    (TerminalTheme::Light, "Light"),
-                                                ]
-                                                .into_iter()
-                                                .map(|(tt, label)| {
-                                                    let active = draft.terminal.theme == tt;
-                                                    Button::new(SharedString::from(format!(
-                                                        "pref-term-theme-{label}"
-                                                    )))
-                                                    .xsmall()
-                                                    .when(active, |b| b.primary())
-                                                    .when(!active, |b| b.outline())
-                                                    .label(label)
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            this.preferences_draft
-                                                                .terminal
-                                                                .theme = tt;
-                                                            cx.notify();
-                                                        },
-                                                    ))
-                                                }),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                Switch::new("pref-term-copy-on-select")
-                                    .label("Copy selection to clipboard automatically")
-                                    .checked(draft.terminal.copy_on_select)
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        this.preferences_draft.terminal.copy_on_select = *checked;
-                                        cx.notify();
-                                    })),
-                            )
-                            .into_any_element(),
-                    }),
+                                ),
+                        )
+                        .child(
+                            Switch::new("pref-term-copy-on-select")
+                                .label("Copy selection to clipboard automatically")
+                                .checked(draft.terminal.copy_on_select)
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    this.preferences_draft.terminal.copy_on_select = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                }),
             )
             .child(
                 h_flex()

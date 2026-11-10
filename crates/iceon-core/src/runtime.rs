@@ -1,10 +1,9 @@
 //! Shared Tokio async runtime and platform directory paths for the pure-Rust GPUI workspace.
-use std::{
-    future::Future,
-    path::PathBuf,
-    sync::OnceLock,
+use std::{future::Future, path::PathBuf, sync::OnceLock};
+use tokio::{
+    runtime::{Builder, Handle, Runtime},
+    task::JoinHandle,
 };
-use tokio::{runtime::{Builder, Handle, Runtime}, task::JoinHandle};
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
@@ -84,8 +83,8 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 pub fn app_data_dir() -> PathBuf {
-    if let Some(override_dir) = std::env::var_os("ICEON_DATA_DIR")
-        .or_else(|| std::env::var_os("ICEON_DEV_DATA_DIR"))
+    if let Some(override_dir) =
+        std::env::var_os("ICEON_DATA_DIR").or_else(|| std::env::var_os("ICEON_DEV_DATA_DIR"))
     {
         let path = PathBuf::from(override_dir);
         if path.is_absolute() {

@@ -98,153 +98,533 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
     use ResourceKind::*;
     match kind {
         Nodes => &[
-            ColumnDef { header: "Roles", key: "roles", width: 140.0 },
-            ColumnDef { header: "Version", key: "version", width: 120.0 },
-            ColumnDef { header: "Schedulable", key: "schedulable", width: 100.0 },
+            ColumnDef {
+                header: "Roles",
+                key: "roles",
+                width: 140.0,
+            },
+            ColumnDef {
+                header: "Version",
+                key: "version",
+                width: 120.0,
+            },
+            ColumnDef {
+                header: "Schedulable",
+                key: "schedulable",
+                width: 100.0,
+            },
         ],
         Pods => &[
-            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
-            ColumnDef { header: "Restarts", key: "restarts", width: 80.0 },
-            ColumnDef { header: "Controlled By", key: "controlledBy", width: 150.0 },
-            ColumnDef { header: "Node", key: "node", width: 140.0 },
-            ColumnDef { header: "QoS", key: "qos", width: 100.0 },
+            ColumnDef {
+                header: "Ready",
+                key: "ready",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Restarts",
+                key: "restarts",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Controlled By",
+                key: "controlledBy",
+                width: 150.0,
+            },
+            ColumnDef {
+                header: "Node",
+                key: "node",
+                width: 140.0,
+            },
+            ColumnDef {
+                header: "QoS",
+                key: "qos",
+                width: 100.0,
+            },
         ],
         Deployments | StatefulSets | ReplicaSets | ReplicationControllers => &[
-            ColumnDef { header: "Desired", key: "desired", width: 80.0 },
-            ColumnDef { header: "Replicas", key: "replicas", width: 80.0 },
-            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
-            ColumnDef { header: "Available", key: "available", width: 90.0 },
+            ColumnDef {
+                header: "Desired",
+                key: "desired",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Replicas",
+                key: "replicas",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Ready",
+                key: "ready",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Available",
+                key: "available",
+                width: 90.0,
+            },
         ],
         DaemonSets => &[
-            ColumnDef { header: "Desired", key: "desired", width: 80.0 },
-            ColumnDef { header: "Scheduled", key: "scheduled", width: 90.0 },
-            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
-            ColumnDef { header: "Available", key: "available", width: 90.0 },
+            ColumnDef {
+                header: "Desired",
+                key: "desired",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Scheduled",
+                key: "scheduled",
+                width: 90.0,
+            },
+            ColumnDef {
+                header: "Ready",
+                key: "ready",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Available",
+                key: "available",
+                width: 90.0,
+            },
         ],
         Jobs => &[
-            ColumnDef { header: "Completions", key: "completions", width: 100.0 },
-            ColumnDef { header: "Active", key: "active", width: 80.0 },
-            ColumnDef { header: "Failed", key: "failed", width: 80.0 },
+            ColumnDef {
+                header: "Completions",
+                key: "completions",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Active",
+                key: "active",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Failed",
+                key: "failed",
+                width: 80.0,
+            },
         ],
         CronJobs => &[
-            ColumnDef { header: "Schedule", key: "schedule", width: 130.0 },
-            ColumnDef { header: "Suspend", key: "suspend", width: 80.0 },
-            ColumnDef { header: "Active", key: "active", width: 80.0 },
-            ColumnDef { header: "Last Schedule", key: "lastSchedule", width: 160.0 },
+            ColumnDef {
+                header: "Schedule",
+                key: "schedule",
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Suspend",
+                key: "suspend",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Active",
+                key: "active",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Last Schedule",
+                key: "lastSchedule",
+                width: 160.0,
+            },
         ],
         Services => &[
-            ColumnDef { header: "Type", key: "type", width: 110.0 },
-            ColumnDef { header: "Cluster IP", key: "clusterIP", width: 130.0 },
-            ColumnDef { header: "Ports", key: "ports", width: 150.0 },
+            ColumnDef {
+                header: "Type",
+                key: "type",
+                width: 110.0,
+            },
+            ColumnDef {
+                header: "Cluster IP",
+                key: "clusterIP",
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Ports",
+                key: "ports",
+                width: 150.0,
+            },
         ],
         Endpoints => &[
-            ColumnDef { header: "Subsets", key: "subsets", width: 85.0 },
-            ColumnDef { header: "Ready", key: "readyAddresses", width: 85.0 },
-            ColumnDef { header: "Not Ready", key: "notReadyAddresses", width: 95.0 },
-            ColumnDef { header: "Ports", key: "ports", width: 85.0 },
+            ColumnDef {
+                header: "Subsets",
+                key: "subsets",
+                width: 85.0,
+            },
+            ColumnDef {
+                header: "Ready",
+                key: "readyAddresses",
+                width: 85.0,
+            },
+            ColumnDef {
+                header: "Not Ready",
+                key: "notReadyAddresses",
+                width: 95.0,
+            },
+            ColumnDef {
+                header: "Ports",
+                key: "ports",
+                width: 85.0,
+            },
         ],
         EndpointSlices => &[
-            ColumnDef { header: "Address Type", key: "addressType", width: 110.0 },
-            ColumnDef { header: "Endpoints", key: "endpoints", width: 95.0 },
-            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
-            ColumnDef { header: "Ports", key: "ports", width: 80.0 },
+            ColumnDef {
+                header: "Address Type",
+                key: "addressType",
+                width: 110.0,
+            },
+            ColumnDef {
+                header: "Endpoints",
+                key: "endpoints",
+                width: 95.0,
+            },
+            ColumnDef {
+                header: "Ready",
+                key: "ready",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Ports",
+                key: "ports",
+                width: 80.0,
+            },
         ],
         Ingresses => &[
-            ColumnDef { header: "Class", key: "class", width: 120.0 },
-            ColumnDef { header: "Rules", key: "rules", width: 80.0 },
-            ColumnDef { header: "TLS", key: "tls", width: 80.0 },
+            ColumnDef {
+                header: "Class",
+                key: "class",
+                width: 120.0,
+            },
+            ColumnDef {
+                header: "Rules",
+                key: "rules",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "TLS",
+                key: "tls",
+                width: 80.0,
+            },
         ],
         IngressClasses => &[
-            ColumnDef { header: "Controller", key: "controller", width: 220.0 },
-            ColumnDef { header: "Params Kind", key: "parametersKind", width: 120.0 },
+            ColumnDef {
+                header: "Controller",
+                key: "controller",
+                width: 220.0,
+            },
+            ColumnDef {
+                header: "Params Kind",
+                key: "parametersKind",
+                width: 120.0,
+            },
         ],
         NetworkPolicies => &[
-            ColumnDef { header: "Policy Types", key: "policyTypes", width: 140.0 },
-            ColumnDef { header: "Ingress", key: "ingressRules", width: 80.0 },
-            ColumnDef { header: "Egress", key: "egressRules", width: 80.0 },
+            ColumnDef {
+                header: "Policy Types",
+                key: "policyTypes",
+                width: 140.0,
+            },
+            ColumnDef {
+                header: "Ingress",
+                key: "ingressRules",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Egress",
+                key: "egressRules",
+                width: 80.0,
+            },
         ],
         PersistentVolumes => &[
-            ColumnDef { header: "Capacity", key: "capacity", width: 100.0 },
-            ColumnDef { header: "Access Modes", key: "accessModes", width: 130.0 },
-            ColumnDef { header: "Storage Class", key: "storageClass", width: 130.0 },
-            ColumnDef { header: "Claim", key: "claim", width: 140.0 },
+            ColumnDef {
+                header: "Capacity",
+                key: "capacity",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Access Modes",
+                key: "accessModes",
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Storage Class",
+                key: "storageClass",
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Claim",
+                key: "claim",
+                width: 140.0,
+            },
         ],
         PersistentVolumeClaims => &[
-            ColumnDef { header: "Storage Class", key: "storageClass", width: 130.0 },
-            ColumnDef { header: "Capacity", key: "capacity", width: 100.0 },
-            ColumnDef { header: "Requested", key: "requested", width: 100.0 },
-            ColumnDef { header: "Access Modes", key: "accessModes", width: 130.0 },
+            ColumnDef {
+                header: "Storage Class",
+                key: "storageClass",
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Capacity",
+                key: "capacity",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Requested",
+                key: "requested",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Access Modes",
+                key: "accessModes",
+                width: 130.0,
+            },
         ],
         StorageClasses => &[
-            ColumnDef { header: "Provisioner", key: "provisioner", width: 200.0 },
-            ColumnDef { header: "Reclaim", key: "reclaim", width: 100.0 },
-            ColumnDef { header: "Binding Mode", key: "bindingMode", width: 140.0 },
+            ColumnDef {
+                header: "Provisioner",
+                key: "provisioner",
+                width: 200.0,
+            },
+            ColumnDef {
+                header: "Reclaim",
+                key: "reclaim",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Binding Mode",
+                key: "bindingMode",
+                width: 140.0,
+            },
         ],
         HorizontalPodAutoscalers => &[
-            ColumnDef { header: "Target", key: "target", width: 140.0 },
-            ColumnDef { header: "Min", key: "min", width: 65.0 },
-            ColumnDef { header: "Max", key: "max", width: 65.0 },
-            ColumnDef { header: "Current", key: "current", width: 75.0 },
-            ColumnDef { header: "Desired", key: "desired", width: 75.0 },
+            ColumnDef {
+                header: "Target",
+                key: "target",
+                width: 140.0,
+            },
+            ColumnDef {
+                header: "Min",
+                key: "min",
+                width: 65.0,
+            },
+            ColumnDef {
+                header: "Max",
+                key: "max",
+                width: 65.0,
+            },
+            ColumnDef {
+                header: "Current",
+                key: "current",
+                width: 75.0,
+            },
+            ColumnDef {
+                header: "Desired",
+                key: "desired",
+                width: 75.0,
+            },
         ],
         VerticalPodAutoscalers => &[
-            ColumnDef { header: "Target", key: "target", width: 150.0 },
-            ColumnDef { header: "Kind", key: "targetKind", width: 110.0 },
-            ColumnDef { header: "Update Mode", key: "updateMode", width: 110.0 },
+            ColumnDef {
+                header: "Target",
+                key: "target",
+                width: 150.0,
+            },
+            ColumnDef {
+                header: "Kind",
+                key: "targetKind",
+                width: 110.0,
+            },
+            ColumnDef {
+                header: "Update Mode",
+                key: "updateMode",
+                width: 110.0,
+            },
         ],
         PodDisruptionBudgets => &[
-            ColumnDef { header: "Min Avail", key: "minAvailable", width: 90.0 },
-            ColumnDef { header: "Max Unavail", key: "maxUnavailable", width: 95.0 },
-            ColumnDef { header: "Allowed", key: "allowedDisruptions", width: 80.0 },
-            ColumnDef { header: "Healthy", key: "currentHealthy", width: 80.0 },
+            ColumnDef {
+                header: "Min Avail",
+                key: "minAvailable",
+                width: 90.0,
+            },
+            ColumnDef {
+                header: "Max Unavail",
+                key: "maxUnavailable",
+                width: 95.0,
+            },
+            ColumnDef {
+                header: "Allowed",
+                key: "allowedDisruptions",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Healthy",
+                key: "currentHealthy",
+                width: 80.0,
+            },
         ],
         ResourceQuotas => &[
-            ColumnDef { header: "CPU Used", key: "cpuUsed", width: 90.0 },
-            ColumnDef { header: "CPU Hard", key: "cpuHard", width: 90.0 },
-            ColumnDef { header: "Mem Used", key: "memoryUsed", width: 95.0 },
-            ColumnDef { header: "Mem Hard", key: "memoryHard", width: 95.0 },
+            ColumnDef {
+                header: "CPU Used",
+                key: "cpuUsed",
+                width: 90.0,
+            },
+            ColumnDef {
+                header: "CPU Hard",
+                key: "cpuHard",
+                width: 90.0,
+            },
+            ColumnDef {
+                header: "Mem Used",
+                key: "memoryUsed",
+                width: 95.0,
+            },
+            ColumnDef {
+                header: "Mem Hard",
+                key: "memoryHard",
+                width: 95.0,
+            },
         ],
         LimitRanges => &[
-            ColumnDef { header: "Limits", key: "limits", width: 75.0 },
-            ColumnDef { header: "Types", key: "types", width: 150.0 },
-            ColumnDef { header: "Default CPU", key: "defaultCpu", width: 100.0 },
-            ColumnDef { header: "Default Mem", key: "defaultMemory", width: 100.0 },
+            ColumnDef {
+                header: "Limits",
+                key: "limits",
+                width: 75.0,
+            },
+            ColumnDef {
+                header: "Types",
+                key: "types",
+                width: 150.0,
+            },
+            ColumnDef {
+                header: "Default CPU",
+                key: "defaultCpu",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Default Mem",
+                key: "defaultMemory",
+                width: 100.0,
+            },
         ],
         PriorityClasses => &[
-            ColumnDef { header: "Value", key: "value", width: 95.0 },
-            ColumnDef { header: "Global Default", key: "globalDefault", width: 110.0 },
-            ColumnDef { header: "Preemption", key: "preemptionPolicy", width: 140.0 },
+            ColumnDef {
+                header: "Value",
+                key: "value",
+                width: 95.0,
+            },
+            ColumnDef {
+                header: "Global Default",
+                key: "globalDefault",
+                width: 110.0,
+            },
+            ColumnDef {
+                header: "Preemption",
+                key: "preemptionPolicy",
+                width: 140.0,
+            },
         ],
         RuntimeClasses => &[
-            ColumnDef { header: "Handler", key: "handler", width: 150.0 },
-            ColumnDef { header: "Overhead CPU", key: "overheadCpu", width: 110.0 },
-            ColumnDef { header: "Overhead Mem", key: "overheadMemory", width: 110.0 },
+            ColumnDef {
+                header: "Handler",
+                key: "handler",
+                width: 150.0,
+            },
+            ColumnDef {
+                header: "Overhead CPU",
+                key: "overheadCpu",
+                width: 110.0,
+            },
+            ColumnDef {
+                header: "Overhead Mem",
+                key: "overheadMemory",
+                width: 110.0,
+            },
         ],
         Leases => &[
-            ColumnDef { header: "Holder", key: "holder", width: 200.0 },
-            ColumnDef { header: "Duration (s)", key: "durationSeconds", width: 95.0 },
-            ColumnDef { header: "Renewed", key: "renewed", width: 165.0 },
+            ColumnDef {
+                header: "Holder",
+                key: "holder",
+                width: 200.0,
+            },
+            ColumnDef {
+                header: "Duration (s)",
+                key: "durationSeconds",
+                width: 95.0,
+            },
+            ColumnDef {
+                header: "Renewed",
+                key: "renewed",
+                width: 165.0,
+            },
         ],
         Events => &[
-            ColumnDef { header: "Reason", key: "reason", width: 130.0 },
-            ColumnDef { header: "Object", key: "involvedObject", width: 170.0 },
-            ColumnDef { header: "Count", key: "count", width: 65.0 },
-            ColumnDef { header: "Message", key: "message", width: 280.0 },
+            ColumnDef {
+                header: "Reason",
+                key: "reason",
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Object",
+                key: "involvedObject",
+                width: 170.0,
+            },
+            ColumnDef {
+                header: "Count",
+                key: "count",
+                width: 65.0,
+            },
+            ColumnDef {
+                header: "Message",
+                key: "message",
+                width: 280.0,
+            },
         ],
-        Roles | ClusterRoles => &[ColumnDef { header: "Rules", key: "rules", width: 90.0 }],
+        Roles | ClusterRoles => &[ColumnDef {
+            header: "Rules",
+            key: "rules",
+            width: 90.0,
+        }],
         RoleBindings | ClusterRoleBindings => &[
-            ColumnDef { header: "Role Ref", key: "roleRef", width: 170.0 },
-            ColumnDef { header: "Subjects", key: "subjects", width: 90.0 },
+            ColumnDef {
+                header: "Role Ref",
+                key: "roleRef",
+                width: 170.0,
+            },
+            ColumnDef {
+                header: "Subjects",
+                key: "subjects",
+                width: 90.0,
+            },
         ],
         ServiceAccounts => &[
-            ColumnDef { header: "Secrets", key: "secrets", width: 85.0 },
-            ColumnDef { header: "Automount", key: "automountToken", width: 95.0 },
+            ColumnDef {
+                header: "Secrets",
+                key: "secrets",
+                width: 85.0,
+            },
+            ColumnDef {
+                header: "Automount",
+                key: "automountToken",
+                width: 95.0,
+            },
         ],
         CustomResourceDefinitions => &[
-            ColumnDef { header: "Group", key: "group", width: 180.0 },
-            ColumnDef { header: "Kind", key: "kind", width: 140.0 },
-            ColumnDef { header: "Scope", key: "scope", width: 100.0 },
-            ColumnDef { header: "Versions", key: "versions", width: 120.0 },
+            ColumnDef {
+                header: "Group",
+                key: "group",
+                width: 180.0,
+            },
+            ColumnDef {
+                header: "Kind",
+                key: "kind",
+                width: 140.0,
+            },
+            ColumnDef {
+                header: "Scope",
+                key: "scope",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Versions",
+                key: "versions",
+                width: 120.0,
+            },
         ],
         _ => &[],
     }
@@ -373,9 +753,10 @@ impl IceonApp {
     }
 
     pub(crate) fn stop_active_pod_sync(&mut self) {
-        if let (Some(sync_id), Some(session)) =
-            (self.active_pod_sync_id.take(), self.cluster_session.as_ref())
-        {
+        if let (Some(sync_id), Some(session)) = (
+            self.active_pod_sync_id.take(),
+            self.cluster_session.as_ref(),
+        ) {
             let _ = self.connection.pod_sync_close(PodSyncRequest {
                 cluster_id: session.cluster_id.clone(),
                 session_id: session.session_id.clone(),
@@ -428,7 +809,12 @@ impl IceonApp {
             self.load_resource_table(kind, window, cx);
             if kind == ResourceKind::Pods
                 && self.current_continue_token.is_none()
-                && self.resource_filter_input.read(cx).value().trim().is_empty()
+                && self
+                    .resource_filter_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .is_empty()
                 && self.selected_status_filter.is_none()
             {
                 self.start_pod_sync(window, cx);
@@ -527,7 +913,12 @@ impl IceonApp {
         }
         let read_id = self.next_operation_id();
         let query_str = {
-            let q = self.resource_filter_input.read(cx).value().trim().to_string();
+            let q = self
+                .resource_filter_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_string();
             (!q.is_empty()).then_some(q)
         };
         let req = ResourceRequest {
@@ -639,12 +1030,7 @@ impl IceonApp {
         .detach();
     }
 
-    fn load_helm_section(
-        &mut self,
-        view: HelmView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn load_helm_section(&mut self, view: HelmView, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -881,12 +1267,7 @@ impl IceonApp {
         .detach();
     }
 
-    fn submit_helm_install(
-        &mut self,
-        dry_run: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn submit_helm_install(&mut self, dry_run: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(chart), Some(version)) = (
             self.helm_install_chart.clone(),
             self.helm_install_version.clone(),
@@ -896,8 +1277,18 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let release_name = self.helm_release_name_input.read(cx).value().trim().to_string();
-        let namespace = self.helm_namespace_input.read(cx).value().trim().to_string();
+        let release_name = self
+            .helm_release_name_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let namespace = self
+            .helm_namespace_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         let values_yaml = self.helm_values_editor.read(cx).value().to_string();
         let req = HelmInstallRequest {
             cluster_id: session.cluster_id,
@@ -912,8 +1303,7 @@ impl IceonApp {
         };
         let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res: std::result::Result<HelmInstallResult, _> =
-                connection.helm_install(req).await;
+            let res: std::result::Result<HelmInstallResult, _> = connection.helm_install(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(installed) => {
@@ -1102,8 +1492,8 @@ impl IceonApp {
         let section = self.active_cluster_section.clone();
         let active_kind = section_to_resource_kind(&section);
         let has_inspector = self.inspector.target.is_some();
-        let has_pod_dock =
-            self.pod_dock_open && (!self.pod_dock_tabs.is_empty() || !self.port_forwards.is_empty());
+        let has_pod_dock = self.pod_dock_open
+            && (!self.pod_dock_tabs.is_empty() || !self.port_forwards.is_empty());
 
         v_flex()
             .size_full()
@@ -1216,13 +1606,11 @@ impl IceonApp {
                             .items_center()
                             .when(active_kind.is_some(), |el| {
                                 el.child(
-                                    div()
-                                        .w(px(210.0))
-                                        .child(
-                                            Input::new(&self.resource_filter_input)
-                                                .small()
-                                                .cleanable(true),
-                                        ),
+                                    div().w(px(210.0)).child(
+                                        Input::new(&self.resource_filter_input)
+                                            .small()
+                                            .cleanable(true),
+                                    ),
                                 )
                                 .child(
                                     Button::new("apply-resource-filter-btn")
@@ -1470,7 +1858,11 @@ impl IceonApp {
 
         let cards = [
             ("Nodes", "nodes", count_breakdown(&snap.nodes)),
-            ("Namespaces", "namespaces", count_breakdown(&snap.namespaces)),
+            (
+                "Namespaces",
+                "namespaces",
+                count_breakdown(&snap.namespaces),
+            ),
             ("Pods", "pods", count_breakdown(&snap.pods)),
             (
                 "Deployments",
@@ -1638,18 +2030,9 @@ impl IceonApp {
                                                     .unwrap_or_default(),
                                             ),
                                     )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_xs()
-                                            .truncate()
-                                            .child(
-                                                ev.columns
-                                                    .get("message")
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                            ),
-                                    ),
+                                    .child(div().flex_1().text_xs().truncate().child(
+                                        ev.columns.get("message").cloned().unwrap_or_default(),
+                                    )),
                             )
                             .child(
                                 Button::new(SharedString::from(format!("ov-ev-insp-{idx}")))
@@ -1841,11 +2224,12 @@ impl IceonApp {
                     })
                     .child(div().w(px(110.0)).child(row_status_tag(&item.status)))
                     .children(cols.iter().map(|c| {
-                        div()
-                            .w(px(c.width))
-                            .text_xs()
-                            .truncate()
-                            .child(item.columns.get(c.key).cloned().unwrap_or_else(|| "-".into()))
+                        div().w(px(c.width)).text_xs().truncate().child(
+                            item.columns
+                                .get(c.key)
+                                .cloned()
+                                .unwrap_or_else(|| "-".into()),
+                        )
                     }))
                     .child(
                         h_flex()
@@ -1859,11 +2243,7 @@ impl IceonApp {
                                     .outline()
                                     .label("Inspect")
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_resource_inspector(
-                                            reference.clone(),
-                                            window,
-                                            cx,
-                                        );
+                                        this.open_resource_inspector(reference.clone(), window, cx);
                                     })),
                             ),
                     )
@@ -2139,11 +2519,7 @@ impl IceonApp {
             )
     }
 
-    fn render_helm_body(
-        &self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_helm_body(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let items = self
             .helm_page
             .as_ref()
@@ -2350,42 +2726,37 @@ impl IceonApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(format!("Custom Resource Definitions ({})", defs.len())),
                     )
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .flex_wrap()
-                            .children(defs.into_iter().enumerate().map(|(idx, def)| {
-                                let crd_name = def.name.clone();
-                                let crd_uid = def.uid.clone();
-                                let inspect_ref = ResourceReference {
-                                    kind: ResourceKind::CustomResourceDefinitions,
-                                    name: def.name.clone(),
-                                    namespace: None,
-                                    uid: def.uid.clone(),
-                                };
-                                h_flex()
-                                    .gap_0p5()
-                                    .items_center()
-                                    .child(
-                                        Button::new(SharedString::from(format!("crd-select-{idx}")))
-                                            .xsmall()
-                                            .outline()
-                                            .label(def.name)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if let Some(uid) = crd_uid.clone() {
-                                                    this.load_crd_instances_only(
-                                                        crd_name.clone(),
-                                                        uid,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "crd-inspect-{idx}"
-                                        )))
+                    .child(h_flex().gap_1p5().flex_wrap().children(
+                        defs.into_iter().enumerate().map(|(idx, def)| {
+                            let crd_name = def.name.clone();
+                            let crd_uid = def.uid.clone();
+                            let inspect_ref = ResourceReference {
+                                kind: ResourceKind::CustomResourceDefinitions,
+                                name: def.name.clone(),
+                                namespace: None,
+                                uid: def.uid.clone(),
+                            };
+                            h_flex()
+                                .gap_0p5()
+                                .items_center()
+                                .child(
+                                    Button::new(SharedString::from(format!("crd-select-{idx}")))
+                                        .xsmall()
+                                        .outline()
+                                        .label(def.name)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if let Some(uid) = crd_uid.clone() {
+                                                this.load_crd_instances_only(
+                                                    crd_name.clone(),
+                                                    uid,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("crd-inspect-{idx}")))
                                         .xsmall()
                                         .ghost()
                                         .label("Spec")
@@ -2396,9 +2767,9 @@ impl IceonApp {
                                                 cx,
                                             );
                                         })),
-                                    )
-                            })),
-                    ),
+                                )
+                        }),
+                    )),
             )
             .when_some(instances, |el, page: CustomResourcePage| {
                 el.child(

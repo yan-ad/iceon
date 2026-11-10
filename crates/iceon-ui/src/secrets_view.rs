@@ -2,14 +2,14 @@
 //! mount discovery, directory browser, version metadata, and 30-second secret reveal.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
     scroll::ScrollableElement as _,
     switch::Switch,
     tag::Tag,
-    v_flex, IconName,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -17,8 +17,8 @@ use gpui_kit::*;
 use crate::IceonApp;
 use crate::navigation::secrets_error_message;
 use iceon_core::secrets::{
-    Entry, Field, LoginRequest, Metadata, Mount, Profile, ProfileInput,
-    Provider, ReadRequest, Reveal, SessionRequest, SessionView,
+    Entry, Field, LoginRequest, Metadata, Mount, Profile, ProfileInput, Provider, ReadRequest,
+    Reveal, SessionRequest, SessionView,
 };
 
 const WINDOW_ID: &str = "main";
@@ -51,11 +51,7 @@ impl SecretsWorkspaceState {
 }
 
 impl IceonApp {
-    pub(crate) fn load_secrets_profiles(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn load_secrets_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let engine = self.secrets.clone();
         self.secrets_state.loading = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -77,11 +73,7 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn save_secrets_profile(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn save_secrets_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = ProfileInput {
             provider: Provider::Vault,
             name: self.secret_name_input.read(cx).value().trim().to_string(),
@@ -189,15 +181,16 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn login_secrets_session(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn login_secrets_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.secrets_state.session.clone() else {
             return;
         };
-        let username = self.secret_username_input.read(cx).value().trim().to_string();
+        let username = self
+            .secret_username_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         let password = self.secret_password_input.read(cx).value().to_string();
         let remember = self.secrets_state.remember_credentials;
         let engine = self.secrets.clone();
@@ -232,11 +225,7 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn resume_secrets_session(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn resume_secrets_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.secrets_state.session.clone() else {
             return;
         };

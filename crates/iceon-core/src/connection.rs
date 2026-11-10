@@ -681,11 +681,10 @@ impl ConnectionEngine {
             // Saved metadata may have been removed/reimported during configuration preparation.
             let catalog = self.catalog.clone();
             let id = request.cluster_id.clone();
-            let latest =
-                crate::runtime::spawn_blocking(move || catalog.connection_target(&id))
-                    .await
-                    .map_err(|_| ConnectionError::StoreUnavailable)?
-                    .map_err(map_catalog_error)?;
+            let latest = crate::runtime::spawn_blocking(move || catalog.connection_target(&id))
+                .await
+                .map_err(|_| ConnectionError::StoreUnavailable)?
+                .map_err(map_catalog_error)?;
             if latest != target {
                 return Err(ConnectionError::SourceChanged);
             }

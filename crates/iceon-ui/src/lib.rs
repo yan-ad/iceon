@@ -3,6 +3,7 @@
 pub mod catalog_view;
 pub mod cluster_view;
 pub mod inspector_view;
+mod native_menu;
 pub mod navigation;
 pub mod pod_dock_view;
 pub mod preferences_view;
@@ -10,21 +11,21 @@ pub mod secrets_view;
 mod shell_header;
 mod shell_theme;
 mod sidebar_view;
-mod native_menu;
 
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, TitleBar,
+    ActiveTheme as _, IconName, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{EditorState, Input, InputState},
     scroll::ScrollableElement as _,
-    v_flex, IconName,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use cluster_view::OverviewSnapshot;
 use iceon_core::catalog::{CatalogEngine, CatalogSnapshot, ClusterSummary};
 use iceon_core::connection::{
     ConnectionEngine, ConnectionSnapshot, ResourceKind, ResourcePage,
@@ -36,11 +37,8 @@ use iceon_core::connection::{
 };
 use iceon_core::preferences::{Preferences, PreferencesEngine};
 use iceon_core::secrets;
-use cluster_view::OverviewSnapshot;
 use inspector_view::InspectorState;
-use navigation::{
-    NavigationHistory, Route, active_group_id, destination_label,
-};
+use navigation::{NavigationHistory, Route, active_group_id, destination_label};
 use pod_dock_view::PodDockTab;
 use preferences_view::PreferencesSection;
 use secrets_view::SecretsWorkspaceState;
@@ -98,11 +96,9 @@ pub struct IceonApp {
     pub(crate) rbac_users_response: Option<RbacUsersResponse>,
     pub(crate) rbac_management_snapshot: Option<ManagementSnapshot>,
     pub(crate) rbac_active_plan: Option<UserPlan>,
-    pub(crate) rbac_apply_response:
-        Option<iceon_core::connection::rbac_management::ApplyResponse>,
+    pub(crate) rbac_apply_response: Option<iceon_core::connection::rbac_management::ApplyResponse>,
     pub(crate) rbac_selected_templates: Vec<String>,
-    pub(crate) rbac_selected_cluster_access:
-        iceon_core::connection::rbac_management::ClusterAccess,
+    pub(crate) rbac_selected_cluster_access: iceon_core::connection::rbac_management::ClusterAccess,
     pub(crate) rbac_all_namespaces: bool,
 
     pub(crate) inspector: InspectorState,
@@ -195,10 +191,8 @@ impl IceonApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter clusters..."));
         let resource_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources by name..."));
-        let scale_replicas_input =
-            cx.new(|cx| InputState::new(window, cx).default_value("1"));
-        let service_port_input =
-            cx.new(|cx| InputState::new(window, cx).default_value("80"));
+        let scale_replicas_input = cx.new(|cx| InputState::new(window, cx).default_value("1"));
+        let service_port_input = cx.new(|cx| InputState::new(window, cx).default_value("80"));
         let pod_terminal_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Enter shell command..."));
         let pod_log_filter_input =
@@ -247,8 +241,7 @@ impl IceonApp {
                 .default_value(preferences_draft.editor.font_size.to_string())
         });
         let pref_editor_tab_size_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(preferences_draft.editor.tab_size.to_string())
+            InputState::new(window, cx).default_value(preferences_draft.editor.tab_size.to_string())
         });
         let pref_terminal_font_family_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -455,9 +448,11 @@ impl IceonApp {
                     .gap_2()
                     .items_center()
                     .child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&self.global_search_input).small().cleanable(true)),
+                        div().flex_1().child(
+                            Input::new(&self.global_search_input)
+                                .small()
+                                .cleanable(true),
+                        ),
                     )
                     .child(
                         Button::new("close-search-modal-btn")
@@ -478,9 +473,7 @@ impl IceonApp {
                     .children(
                         clusters
                             .into_iter()
-                            .filter(|c| {
-                                query.is_empty() || c.name.to_lowercase().contains(&query)
-                            })
+                            .filter(|c| query.is_empty() || c.name.to_lowercase().contains(&query))
                             .map(|c| {
                                 let cid = c.id.clone();
                                 Button::new(SharedString::from(format!("jump-cluster-{cid}")))
@@ -496,7 +489,7 @@ impl IceonApp {
                                             },
                                             true,
                                             window,
-                                        cx,
+                                            cx,
                                         );
                                     }))
                             }),
@@ -519,10 +512,7 @@ impl IceonApp {
                                     )))
                                     .xsmall()
                                     .ghost()
-                                    .label(format!(
-                                        "Section · {}",
-                                        destination_label(&target_sec)
-                                    ))
+                                    .label(format!("Section · {}", destination_label(&target_sec)))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.search_modal_open = false;
                                         this.navigate(
@@ -565,7 +555,8 @@ impl Render for IceonApp {
                     .overflow_hidden()
                     .child(self.render_primary_sidebar(cx))
                     .when_some(
-                        active_cluster_id.filter(|_| !self.sidebar_collapsed && !self.cluster_sidebar_collapsed),
+                        active_cluster_id
+                            .filter(|_| !self.sidebar_collapsed && !self.cluster_sidebar_collapsed),
                         |el, cid| el.child(self.render_cluster_sidebar(&cid, cx)),
                     )
                     .child(
@@ -642,14 +633,17 @@ pub fn run() {
                 async move {
                     let _ = tokio::time::timeout(std::time::Duration::from_millis(750), async {
                         tokio::join!(connection.drain(), secrets.drain());
-                    }).await;
+                    })
+                    .await;
                 }
-            }).detach();
+            })
+            .detach();
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }
-            }).detach();
+            })
+            .detach();
             let catalog = catalog.clone();
             let connection = connection.clone();
             let preferences_engine = preferences_engine.clone();

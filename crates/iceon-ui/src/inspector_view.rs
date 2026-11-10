@@ -15,9 +15,7 @@ use gpui_kit::*;
 use iceon_core::connection::{
     NodeInfo, ResourceKind,
     delete::DeleteRequest,
-    detail_collections::{
-        CollectionKind, CollectionRequest, CollectionState, ResourceCollection,
-    },
+    detail_collections::{CollectionKind, CollectionRequest, CollectionState, ResourceCollection},
     details::{DetailRequest, ResourceDetail, ResourceReference},
     helm::{HelmDetail, HelmDetailRequest, HelmView},
     node_actions::{NodeAction, NodeActionRequest},
@@ -29,7 +27,7 @@ use iceon_core::connection::{
     pods::{PodAction, PodDetails, PodEventsState, PodMutationRequest, PodRequest},
     resource_edit::{EditMode, EditRequest, EditResult},
     service_forward::ServiceForwardRequest,
-    workload_actions::{WorkloadAction, WorkflowRequest},
+    workload_actions::{WorkflowRequest, WorkloadAction},
 };
 
 use crate::IceonApp;
@@ -247,9 +245,7 @@ impl IceonApp {
                 this.inspector.loading = false;
                 match result {
                     Ok(detail) => this.inspector.helm_detail = Some(detail),
-                    Err(err) => {
-                        this.inspector.error = Some(format!("Helm detail error: {err:?}"))
-                    }
+                    Err(err) => this.inspector.error = Some(format!("Helm detail error: {err:?}")),
                 }
                 cx.notify();
             });
@@ -306,12 +302,7 @@ impl IceonApp {
         .detach();
     }
 
-    fn apply_inspector_yaml(
-        &mut self,
-        dry_run: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn apply_inspector_yaml(&mut self, dry_run: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(loaded) = self.inspector.edit_load.clone() else {
             return;
         };
@@ -351,8 +342,7 @@ impl IceonApp {
                         }
                     }
                     Err(err) => {
-                        this.inspector.action_message =
-                            Some(format!("YAML apply failed: {err:?}"));
+                        this.inspector.action_message = Some(format!("YAML apply failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -464,8 +454,7 @@ impl IceonApp {
                     Err(err) => {
                         this.inspector.action_message =
                             Some(format!("Action {action:?} failed: {err:?}"));
-                        this.cluster_error =
-                            Some(format!("Workload {action:?} failed: {err:?}"));
+                        this.cluster_error = Some(format!("Workload {action:?} failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -538,8 +527,7 @@ impl IceonApp {
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(_) => {
-                        this.inspector.action_message =
-                            Some(format!("Node {action:?} completed"));
+                        this.inspector.action_message = Some(format!("Node {action:?} completed"));
                         if this.inspector.target
                             == Some(InspectorTarget::Resource(reference.clone()))
                         {
@@ -550,8 +538,7 @@ impl IceonApp {
                     Err(err) => {
                         this.inspector.action_message =
                             Some(format!("Node {action:?} failed: {err:?}"));
-                        this.cluster_error =
-                            Some(format!("Node {action:?} failed: {err:?}"));
+                        this.cluster_error = Some(format!("Node {action:?} failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -560,12 +547,7 @@ impl IceonApp {
         .detach();
     }
 
-    fn run_node_action(
-        &mut self,
-        action: NodeAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn run_node_action(&mut self, action: NodeAction, window: &mut Window, cx: &mut Context<Self>) {
         let Some(detail) = self.inspector.detail.clone() else {
             return;
         };
@@ -644,12 +626,7 @@ impl IceonApp {
         self.review_node_drain_for(reference, rv, window, cx);
     }
 
-    fn execute_node_drain(
-        &mut self,
-        plan_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn execute_node_drain(&mut self, plan_id: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -722,8 +699,7 @@ impl IceonApp {
                     Err(err) => {
                         this.inspector.action_message =
                             Some(format!("Service forward failed: {err:?}"));
-                        this.cluster_error =
-                            Some(format!("Service forward failed: {err:?}"));
+                        this.cluster_error = Some(format!("Service forward failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -795,10 +771,8 @@ impl IceonApp {
                     }
                     Err(err) => {
                         this.inspector.action_message = Some(format!("Delete failed: {err:?}"));
-                        this.cluster_error = Some(format!(
-                            "Failed to delete {}: {err:?}",
-                            target.name
-                        ));
+                        this.cluster_error =
+                            Some(format!("Failed to delete {}: {err:?}", target.name));
                     }
                 }
                 cx.notify();
@@ -1034,9 +1008,9 @@ impl IceonApp {
                             InspectorTab::Relations => self
                                 .render_inspector_relations(&detail, cx)
                                 .into_any_element(),
-                            InspectorTab::Events => self
-                                .render_inspector_events(&detail, cx)
-                                .into_any_element(),
+                            InspectorTab::Events => {
+                                self.render_inspector_events(&detail, cx).into_any_element()
+                            }
                             InspectorTab::Yaml => self
                                 .render_inspector_yaml(&detail, window, cx)
                                 .into_any_element(),
@@ -1162,7 +1136,11 @@ impl IceonApp {
         h_flex()
             .gap_1()
             .items_center()
-            .child(div().w(px(64.0)).child(Input::new(&self.scale_replicas_input).small()))
+            .child(
+                div()
+                    .w(px(64.0))
+                    .child(Input::new(&self.scale_replicas_input).small()),
+            )
             .child(
                 Button::new("insp-scale-btn")
                     .xsmall()
@@ -1211,7 +1189,11 @@ impl IceonApp {
         h_flex()
             .gap_1()
             .items_center()
-            .child(div().w(px(72.0)).child(Input::new(&self.service_port_input).small()))
+            .child(
+                div()
+                    .w(px(72.0))
+                    .child(Input::new(&self.service_port_input).small()),
+            )
             .child(
                 Button::new("insp-svc-fwd-btn")
                     .xsmall()
@@ -1223,11 +1205,7 @@ impl IceonApp {
             )
     }
 
-    fn pod_actions(
-        &self,
-        detail: &ResourceDetail,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    fn pod_actions(&self, detail: &ResourceDetail, cx: &mut Context<Self>) -> Option<AnyElement> {
         let pod = self.inspector.pod_detail.as_ref()?;
         let ns = pod.namespace.clone();
         let name = pod.name.clone();
@@ -1377,12 +1355,16 @@ impl IceonApp {
     ) -> impl IntoElement {
         let uid_opt = detail.reference.uid.clone().or(detail.item.uid.clone());
         let uid_copy = uid_opt.clone().unwrap_or_default();
-        let ns_ref = detail.reference.namespace.as_ref().map(|ns| ResourceReference {
-            kind: ResourceKind::Namespaces,
-            name: ns.clone(),
-            namespace: None,
-            uid: None,
-        });
+        let ns_ref = detail
+            .reference
+            .namespace
+            .as_ref()
+            .map(|ns| ResourceReference {
+                kind: ResourceKind::Namespaces,
+                name: ns.clone(),
+                namespace: None,
+                uid: None,
+            });
         let node_info: Option<NodeInfo> = detail.item.node.clone().or_else(|| {
             (detail.reference.kind == ResourceKind::Nodes)
                 .then(|| {
@@ -1472,7 +1454,7 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .label("Copy UID")
-                                          .on_click(cx.listener(move |_, _, _, cx| {
+                                        .on_click(cx.listener(move |_, _, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 uid_copy.clone(),
                                             ));
@@ -1588,11 +1570,7 @@ impl IceonApp {
             }))
     }
 
-    fn render_node_info_card(
-        &self,
-        node: &NodeInfo,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_node_info_card(&self, node: &NodeInfo, cx: &mut Context<Self>) -> impl IntoElement {
         let cpu_str = match (node.cpu.used, node.cpu.allocatable.or(node.cpu.capacity)) {
             (Some(u), Some(total)) if total > 0.0 => {
                 format!("{u:.2} / {total:.2} cores ({:.0}%)", (u / total) * 100.0)
@@ -1650,7 +1628,12 @@ impl IceonApp {
                             .text_color(cx.theme().muted_foreground)
                             .child("CPU Usage"),
                     )
-                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(cpu_str)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(cpu_str),
+                    ),
             )
             .child(
                 h_flex()
@@ -1661,7 +1644,12 @@ impl IceonApp {
                             .text_color(cx.theme().muted_foreground)
                             .child("Memory Usage"),
                     )
-                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(mem_str)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(mem_str),
+                    ),
             )
             .when(!node.internal_ips.is_empty(), |el| {
                 el.child(
@@ -1712,8 +1700,10 @@ impl IceonApp {
             )
             .when(!node.conditions.is_empty(), |el| {
                 el.child(
-                    h_flex().gap_1().flex_wrap().children(
-                        node.conditions.iter().map(|c| {
+                    h_flex()
+                        .gap_1()
+                        .flex_wrap()
+                        .children(node.conditions.iter().map(|c| {
                             let healthy = (c.kind == "Ready" && c.status == "True")
                                 || (c.kind != "Ready" && c.status == "False");
                             if healthy {
@@ -1725,8 +1715,7 @@ impl IceonApp {
                                     .small()
                                     .child(format!("{}: {}", c.kind, c.status))
                             }
-                        }),
-                    ),
+                        })),
                 )
             })
     }
@@ -1770,22 +1759,14 @@ impl IceonApp {
                 h_flex()
                     .justify_between()
                     .items_center()
+                    .child(div().text_xs().child(format!("{}/{}", p.namespace, p.name)))
                     .child(
-                        div()
-                            .text_xs()
-                            .child(format!("{}/{}", p.namespace, p.name)),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .child(disp_tag)
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("{:?}", p.reason)),
-                            ),
+                        h_flex().gap_1().items_center().child(disp_tag).child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{:?}", p.reason)),
+                        ),
                     )
             }))
             .child(
@@ -1846,10 +1827,7 @@ impl IceonApp {
                         div()
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!(
-                                "Node Drain Result · Cordoned: {}",
-                                result.cordoned
-                            )),
+                            .child(format!("Node Drain Result · Cordoned: {}", result.cordoned)),
                     )
                     .child(state_tag),
             )
@@ -1865,11 +1843,7 @@ impl IceonApp {
                 h_flex()
                     .justify_between()
                     .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .child(format!("{}/{}", p.namespace, p.name)),
-                    )
+                    .child(div().text_xs().child(format!("{}/{}", p.namespace, p.name)))
                     .child(tag)
             }))
     }
@@ -2048,19 +2022,18 @@ impl IceonApp {
                                 .child("POD CONDITIONS"),
                         )
                         .child(
-                            h_flex().gap_1p5().flex_wrap().children(
-                                pod.conditions.iter().map(|cond| {
+                            h_flex()
+                                .gap_1p5()
+                                .flex_wrap()
+                                .children(pod.conditions.iter().map(|cond| {
                                     if cond.status == "True" {
-                                        Tag::success()
-                                            .small()
-                                            .child(format!("{}: True", cond.kind))
+                                        Tag::success().small().child(format!("{}: True", cond.kind))
                                     } else {
                                         Tag::warning()
                                             .small()
                                             .child(format!("{}: {}", cond.kind, cond.status))
                                     }
-                                }),
-                            ),
+                                })),
                         ),
                 )
             })
@@ -2175,7 +2148,7 @@ impl IceonApp {
                                                 .xsmall()
                                                 .outline()
                                                 .label("Shell")
-                                                             .on_click(listener_cx.listener(
+                                                .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
                                                             ns_shell.clone(),
@@ -2197,7 +2170,7 @@ impl IceonApp {
                                                 .xsmall()
                                                 .ghost()
                                                 .label("Attach")
-                                                             .on_click(listener_cx.listener(
+                                                .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
                                                             ns_attach.clone(),
@@ -2232,55 +2205,54 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .label("Copy")
-                                        .on_click(listener_cx.listener(move |_, _, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                image_copy.clone(),
-                                            ));
-                                        })),
+                                        .on_click(
+                                            listener_cx.listener(move |_, _, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    image_copy.clone(),
+                                                ));
+                                            }),
+                                        ),
                                     ),
                             )
                             .when(!c.ports.is_empty(), |el| {
                                 let ns_fwd = pod.namespace.clone();
                                 let pname_fwd = pod.name.clone();
                                 let puid_fwd = pod.uid.clone();
-                                el.child(
-                                    h_flex().gap_1p5().flex_wrap().items_center().children(
-                                        c.ports.iter().map(move |pt| {
-                                            let port_num = pt.port;
-                                            let ns_p = ns_fwd.clone();
-                                            let pn_p = pname_fwd.clone();
-                                            let pu_p = puid_fwd.clone();
-                                            let port_label = match &pt.name {
-                                                Some(n) => format!(
-                                                    "Forward {n} ({port_num}/{})",
-                                                    pt.protocol
-                                                ),
-                                                None => {
-                                                    format!("Forward :{port_num}/{}", pt.protocol)
-                                                }
-                                            };
-                                            Button::new(SharedString::from(format!(
-                                                "pod-fwd-{}-{port_num}",
-                                                c.name
-                                            )))
-                                            .xsmall()
-                                            .outline()
-                                            .label(port_label)
-                                            .on_click(listener_cx.listener(
-                                                move |this, _, window, cx| {
-                                                    this.start_pod_forward(
-                                                        ns_p.clone(),
-                                                        pn_p.clone(),
-                                                        pu_p.clone(),
-                                                        port_num,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                },
-                                            ))
-                                        }),
-                                    ),
-                                )
+                                el.child(h_flex().gap_1p5().flex_wrap().items_center().children(
+                                    c.ports.iter().map(move |pt| {
+                                        let port_num = pt.port;
+                                        let ns_p = ns_fwd.clone();
+                                        let pn_p = pname_fwd.clone();
+                                        let pu_p = puid_fwd.clone();
+                                        let port_label = match &pt.name {
+                                            Some(n) => {
+                                                format!("Forward {n} ({port_num}/{})", pt.protocol)
+                                            }
+                                            None => {
+                                                format!("Forward :{port_num}/{}", pt.protocol)
+                                            }
+                                        };
+                                        Button::new(SharedString::from(format!(
+                                            "pod-fwd-{}-{port_num}",
+                                            c.name
+                                        )))
+                                        .xsmall()
+                                        .outline()
+                                        .label(port_label)
+                                        .on_click(
+                                            listener_cx.listener(move |this, _, window, cx| {
+                                                this.start_pod_forward(
+                                                    ns_p.clone(),
+                                                    pn_p.clone(),
+                                                    pu_p.clone(),
+                                                    port_num,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                    }),
+                                ))
                             })
                     })),
             )
@@ -2401,11 +2373,13 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .label("Copy")
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                kv_copy.clone(),
-                                            ));
-                                        })),
+                                        .on_click(
+                                            cx.listener(move |_, _, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    kv_copy.clone(),
+                                                ));
+                                            }),
+                                        ),
                                     ),
                             )
                     })),
@@ -2424,10 +2398,7 @@ impl IceonApp {
                         div()
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!(
-                                "REVIEWED ANNOTATIONS ({})",
-                                meta.annotations.len()
-                            )),
+                            .child(format!("REVIEWED ANNOTATIONS ({})", meta.annotations.len())),
                     )
                     .children(meta.annotations.iter().map(|entry| {
                         v_flex()
@@ -2462,10 +2433,7 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!(
-                                    "MANAGED FIELDS ({})",
-                                    meta.managed_fields.len()
-                                )),
+                                .child(format!("MANAGED FIELDS ({})", meta.managed_fields.len())),
                         )
                         .children(meta.managed_fields.iter().map(|mf| {
                             v_flex()
@@ -2486,9 +2454,7 @@ impl IceonApp {
                                                 .child(mf.manager.clone()),
                                         )
                                         .child(
-                                            Tag::secondary()
-                                                .small()
-                                                .child(mf.operation.clone()),
+                                            Tag::secondary().small().child(mf.operation.clone()),
                                         ),
                                 )
                                 .when_some(mf.time.clone(), |r, t| {
@@ -2540,9 +2506,7 @@ impl IceonApp {
                                         h_flex()
                                             .gap_1p5()
                                             .items_center()
-                                            .child(
-                                                Tag::secondary().small().child(relation.clone()),
-                                            )
+                                            .child(Tag::secondary().small().child(relation.clone()))
                                             .child(div().text_xs().child(format!(
                                                 "{:?}/{}",
                                                 target_ref.kind, target_ref.name
@@ -2593,16 +2557,9 @@ impl IceonApp {
                                 h_flex()
                                     .justify_between()
                                     .items_center()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(format!(
-                                                "{:?} ({})",
-                                                col.collection,
-                                                col.items.len()
-                                            )),
-                                    )
+                                    .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                                        format!("{:?} ({})", col.collection, col.items.len()),
+                                    ))
                                     .child(state_badge),
                             )
                             .children(col.items.iter().enumerate().map(|(idx, item)| {
@@ -2892,13 +2849,15 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .label("Inspect Event")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_resource_inspector(
-                                                target.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        })),
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.open_resource_inspector(
+                                                    target.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
                                     ),
                             )
                     }))
@@ -2984,11 +2943,7 @@ impl IceonApp {
             )
     }
 
-    fn render_helm_inspector(
-        &self,
-        helm: &HelmDetail,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_helm_inspector(&self, helm: &HelmDetail, cx: &mut Context<Self>) -> impl IntoElement {
         let is_chart = helm.view == HelmView::Charts;
         let chart_name = helm.name.clone();
         let chart_ver = helm.version.clone().unwrap_or_else(|| "latest".into());

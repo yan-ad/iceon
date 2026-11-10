@@ -11,10 +11,7 @@ use iceon_core::secrets;
 pub enum Route {
     Catalog,
     Secrets,
-    Cluster {
-        cluster_id: String,
-        section: String,
-    },
+    Cluster { cluster_id: String, section: String },
 }
 
 impl Route {
@@ -98,10 +95,12 @@ mod route_tests {
             if group.children.is_empty() {
                 assert_eq!(group.default_child, group.id);
             } else {
-                assert!(group
-                    .children
-                    .iter()
-                    .any(|child| child.id == group.default_child));
+                assert!(
+                    group
+                        .children
+                        .iter()
+                        .any(|child| child.id == group.default_child)
+                );
             }
             for child in group.children {
                 assert!(
@@ -133,9 +132,11 @@ mod route_tests {
         let mut ids = HashSet::new();
         for (index, view) in RESOURCE_VIEWS.iter().enumerate() {
             assert!(ids.insert(view.id), "duplicate resource view: {}", view.id);
-            assert!(RESOURCE_VIEWS[..index]
-                .iter()
-                .all(|other| other.kind != view.kind));
+            assert!(
+                RESOURCE_VIEWS[..index]
+                    .iter()
+                    .all(|other| other.kind != view.kind)
+            );
             assert_eq!(normalize_destination(view.id), view.id);
             let group = CLUSTER_SECTIONS
                 .iter()
@@ -703,14 +704,46 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Nodes,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "cpu", label: "CPU", width: 110.0 },
-            ColumnDef { key: "memory", label: "Memory", width: 120.0 },
-            ColumnDef { key: "roles", label: "Roles", width: 130.0 },
-            ColumnDef { key: "taints", label: "Taints", width: 80.0 },
-            ColumnDef { key: "version", label: "Version", width: 120.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Conditions", width: 140.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "cpu",
+                label: "CPU",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "memory",
+                label: "Memory",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "roles",
+                label: "Roles",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "taints",
+                label: "Taints",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "version",
+                label: "Version",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Conditions",
+                width: 140.0,
+            },
         ],
         statuses: &["Ready", "NotReady", "SchedulingDisabled"],
         creatable: false,
@@ -721,10 +754,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Namespaces,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "labels", label: "Labels", width: 220.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "labels",
+                label: "Labels",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Active", "Terminating"],
         creatable: true,
@@ -735,15 +784,51 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Pods,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "containers", label: "Ready", width: 90.0 },
-            ColumnDef { key: "restarts", label: "Restarts", width: 90.0 },
-            ColumnDef { key: "controlledBy", label: "Controlled By", width: 150.0 },
-            ColumnDef { key: "node", label: "Node", width: 140.0 },
-            ColumnDef { key: "qos", label: "QoS", width: 100.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "containers",
+                label: "Ready",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "restarts",
+                label: "Restarts",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "controlledBy",
+                label: "Controlled By",
+                width: 150.0,
+            },
+            ColumnDef {
+                key: "node",
+                label: "Node",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "qos",
+                label: "QoS",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Running", "Pending", "Succeeded", "Failed", "Terminating"],
         creatable: true,
@@ -754,12 +839,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Deployments,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "pods", label: "Pods", width: 100.0 },
-            ColumnDef { key: "replicas", label: "Replicas", width: 90.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Conditions", width: 150.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "pods",
+                label: "Pods",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "replicas",
+                label: "Replicas",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Conditions",
+                width: 150.0,
+            },
         ],
         statuses: &["Available", "Progressing", "ReplicaFailure", "Paused"],
         creatable: true,
@@ -770,12 +879,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::DaemonSets,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "pods", label: "Pods", width: 100.0 },
-            ColumnDef { key: "nodeSelector", label: "Node Selector", width: 180.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "pods",
+                label: "Pods",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "nodeSelector",
+                label: "Node Selector",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Ready", "Progressing", "Empty"],
         creatable: true,
@@ -786,12 +919,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::StatefulSets,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "pods", label: "Pods", width: 100.0 },
-            ColumnDef { key: "replicas", label: "Replicas", width: 100.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "pods",
+                label: "Pods",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "replicas",
+                label: "Replicas",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Ready", "Progressing", "ScaledDown"],
         creatable: true,
@@ -802,13 +959,41 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ReplicaSets,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "desired", label: "Desired", width: 90.0 },
-            ColumnDef { key: "current", label: "Current", width: 90.0 },
-            ColumnDef { key: "ready", label: "Ready", width: 90.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "desired",
+                label: "Desired",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "current",
+                label: "Current",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "ready",
+                label: "Ready",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Ready", "Scaling", "ScaledDown"],
         creatable: true,
@@ -819,13 +1004,41 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ReplicationControllers,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "replicas", label: "Replicas", width: 100.0 },
-            ColumnDef { key: "desiredReplicas", label: "Desired", width: 100.0 },
-            ColumnDef { key: "selector", label: "Selector", width: 180.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "replicas",
+                label: "Replicas",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "desiredReplicas",
+                label: "Desired",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "selector",
+                label: "Selector",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Ready", "Progressing", "ScaledDown"],
         creatable: true,
@@ -836,11 +1049,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Jobs,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "completions", label: "Completions", width: 110.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Conditions", width: 130.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "completions",
+                label: "Completions",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Conditions",
+                width: 130.0,
+            },
         ],
         statuses: &["Running", "Complete", "Failed", "Suspended"],
         creatable: true,
@@ -851,14 +1084,46 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::CronJobs,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "schedule", label: "Schedule", width: 140.0 },
-            ColumnDef { key: "suspend", label: "Suspend", width: 90.0 },
-            ColumnDef { key: "active", label: "Active", width: 90.0 },
-            ColumnDef { key: "lastSchedule", label: "Last Schedule", width: 140.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "schedule",
+                label: "Schedule",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "suspend",
+                label: "Suspend",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "active",
+                label: "Active",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "lastSchedule",
+                label: "Last Schedule",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Scheduled", "Active", "Suspended"],
         creatable: true,
@@ -869,11 +1134,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ConfigMaps,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "keys", label: "Keys", width: 200.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Mode", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "keys",
+                label: "Keys",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Mode",
+                width: 120.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -884,13 +1169,41 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Secrets,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "labels", label: "Labels", width: 160.0 },
-            ColumnDef { key: "keys", label: "Keys", width: 160.0 },
-            ColumnDef { key: "type", label: "Type", width: 150.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Mode", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "labels",
+                label: "Labels",
+                width: 160.0,
+            },
+            ColumnDef {
+                key: "keys",
+                label: "Keys",
+                width: 160.0,
+            },
+            ColumnDef {
+                key: "type",
+                label: "Type",
+                width: 150.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Mode",
+                width: 120.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -901,10 +1214,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ResourceQuotas,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Scope", width: 160.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Scope",
+                width: 160.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -915,10 +1244,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::LimitRanges,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Limits", width: 160.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Limits",
+                width: 160.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -929,14 +1274,46 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::HorizontalPodAutoscalers,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "metrics", label: "Metrics", width: 150.0 },
-            ColumnDef { key: "minPods", label: "Min Pods", width: 90.0 },
-            ColumnDef { key: "maxPods", label: "Max Pods", width: 90.0 },
-            ColumnDef { key: "replicas", label: "Replicas", width: 90.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Status", width: 130.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "metrics",
+                label: "Metrics",
+                width: 150.0,
+            },
+            ColumnDef {
+                key: "minPods",
+                label: "Min Pods",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "maxPods",
+                label: "Max Pods",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "replicas",
+                label: "Replicas",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 130.0,
+            },
         ],
         statuses: &["AbleToScale", "ScalingActive", "ScalingLimited"],
         creatable: true,
@@ -947,11 +1324,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::VerticalPodAutoscalers,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "mode", label: "Mode", width: 120.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 140.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "mode",
+                label: "Mode",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 140.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -962,14 +1359,46 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::PodDisruptionBudgets,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "minAvailable", label: "Min Available", width: 110.0 },
-            ColumnDef { key: "maxUnavailable", label: "Max Unavailable", width: 120.0 },
-            ColumnDef { key: "currentHealthy", label: "Current Healthy", width: 120.0 },
-            ColumnDef { key: "desiredHealthy", label: "Desired Healthy", width: 120.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "minAvailable",
+                label: "Min Available",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "maxUnavailable",
+                label: "Max Unavailable",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "currentHealthy",
+                label: "Current Healthy",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "desiredHealthy",
+                label: "Desired Healthy",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Healthy", "DisruptionBlocked"],
         creatable: true,
@@ -980,11 +1409,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::PriorityClasses,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "value", label: "Value", width: 110.0 },
-            ColumnDef { key: "globalDefault", label: "Global Default", width: 120.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Preemption", width: 150.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "value",
+                label: "Value",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "globalDefault",
+                label: "Global Default",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Preemption",
+                width: 150.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -995,10 +1444,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::RuntimeClasses,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "handler", label: "Handler", width: 180.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "handler",
+                label: "Handler",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1009,11 +1474,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Leases,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "holder", label: "Holder", width: 220.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "holder",
+                label: "Holder",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1024,10 +1509,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::MutatingWebhookConfigurations,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 280.0 },
-            ColumnDef { key: "webhooks", label: "Webhooks", width: 120.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 280.0,
+            },
+            ColumnDef {
+                key: "webhooks",
+                label: "Webhooks",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1038,10 +1539,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ValidatingWebhookConfigurations,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 280.0 },
-            ColumnDef { key: "webhooks", label: "Webhooks", width: 120.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 280.0,
+            },
+            ColumnDef {
+                key: "webhooks",
+                label: "Webhooks",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1052,11 +1569,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ValidatingAdmissionPolicies,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 260.0 },
-            ColumnDef { key: "failurePolicy", label: "Failure Policy", width: 140.0 },
-            ColumnDef { key: "validations", label: "Validations", width: 110.0 },
-            ColumnDef { key: "paramKind", label: "Param Kind", width: 140.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 260.0,
+            },
+            ColumnDef {
+                key: "failurePolicy",
+                label: "Failure Policy",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "validations",
+                label: "Validations",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "paramKind",
+                label: "Param Kind",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1067,11 +1604,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ValidatingAdmissionPolicyBindings,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 260.0 },
-            ColumnDef { key: "policyName", label: "Policy", width: 200.0 },
-            ColumnDef { key: "paramRef", label: "Param Ref", width: 160.0 },
-            ColumnDef { key: "validationActions", label: "Actions", width: 140.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 260.0,
+            },
+            ColumnDef {
+                key: "policyName",
+                label: "Policy",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "paramRef",
+                label: "Param Ref",
+                width: 160.0,
+            },
+            ColumnDef {
+                key: "validationActions",
+                label: "Actions",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1082,15 +1639,51 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Services,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "type", label: "Type", width: 120.0 },
-            ColumnDef { key: "clusterIp", label: "Cluster IP", width: 130.0 },
-            ColumnDef { key: "ports", label: "Ports", width: 160.0 },
-            ColumnDef { key: "externalIp", label: "External IP", width: 140.0 },
-            ColumnDef { key: "selector", label: "Selector", width: 180.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Status", width: 110.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "type",
+                label: "Type",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "clusterIp",
+                label: "Cluster IP",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "ports",
+                label: "Ports",
+                width: 160.0,
+            },
+            ColumnDef {
+                key: "externalIp",
+                label: "External IP",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "selector",
+                label: "Selector",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 110.0,
+            },
         ],
         statuses: &["Active", "Pending"],
         creatable: true,
@@ -1101,13 +1694,41 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::EndpointSlices,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "addressType", label: "Address Type", width: 120.0 },
-            ColumnDef { key: "ports", label: "Ports", width: 140.0 },
-            ColumnDef { key: "endpoints", label: "Endpoints", width: 140.0 },
-            ColumnDef { key: "service", label: "Service", width: 160.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "addressType",
+                label: "Address Type",
+                width: 120.0,
+            },
+            ColumnDef {
+                key: "ports",
+                label: "Ports",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "endpoints",
+                label: "Endpoints",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "service",
+                label: "Service",
+                width: 160.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1118,11 +1739,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Endpoints,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "endpoints", label: "Endpoints", width: 240.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "endpoints",
+                label: "Endpoints",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Ready", "Empty"],
         creatable: true,
@@ -1133,12 +1774,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Ingresses,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "loadBalancers", label: "LoadBalancers", width: 160.0 },
-            ColumnDef { key: "rules", label: "Rules", width: 220.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Class", width: 130.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "loadBalancers",
+                label: "LoadBalancers",
+                width: 160.0,
+            },
+            ColumnDef {
+                key: "rules",
+                label: "Rules",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Class",
+                width: 130.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1149,12 +1814,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::IngressClasses,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "controller", label: "Controller", width: 240.0 },
-            ColumnDef { key: "apiGroup", label: "API Group", width: 150.0 },
-            ColumnDef { key: "scope", label: "Scope", width: 110.0 },
-            ColumnDef { key: "kind", label: "Kind", width: 130.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "controller",
+                label: "Controller",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "apiGroup",
+                label: "API Group",
+                width: 150.0,
+            },
+            ColumnDef {
+                key: "scope",
+                label: "Scope",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "kind",
+                label: "Kind",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1165,11 +1854,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::NetworkPolicies,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "policyTypes", label: "Policy Types", width: 180.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Selector", width: 180.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "policyTypes",
+                label: "Policy Types",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Selector",
+                width: 180.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1180,13 +1889,41 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::PersistentVolumeClaims,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "storageClass", label: "StorageClass", width: 150.0 },
-            ColumnDef { key: "size", label: "Size", width: 100.0 },
-            ColumnDef { key: "volume", label: "Volume", width: 180.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Status", width: 110.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "storageClass",
+                label: "StorageClass",
+                width: 150.0,
+            },
+            ColumnDef {
+                key: "size",
+                label: "Size",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "volume",
+                label: "Volume",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 110.0,
+            },
         ],
         statuses: &["Bound", "Pending", "Lost"],
         creatable: true,
@@ -1197,12 +1934,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::PersistentVolumes,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "storageClass", label: "StorageClass", width: 150.0 },
-            ColumnDef { key: "capacity", label: "Capacity", width: 110.0 },
-            ColumnDef { key: "claim", label: "Claim", width: 180.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Status", width: 120.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "storageClass",
+                label: "StorageClass",
+                width: 150.0,
+            },
+            ColumnDef {
+                key: "capacity",
+                label: "Capacity",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "claim",
+                label: "Claim",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Status",
+                width: 120.0,
+            },
         ],
         statuses: &["Available", "Bound", "Released", "Failed"],
         creatable: true,
@@ -1213,12 +1974,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::StorageClasses,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "provisioner", label: "Provisioner", width: 220.0 },
-            ColumnDef { key: "reclaimPolicy", label: "Reclaim Policy", width: 130.0 },
-            ColumnDef { key: "default", label: "Default", width: 90.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Binding Mode", width: 150.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "provisioner",
+                label: "Provisioner",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "reclaimPolicy",
+                label: "Reclaim Policy",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "default",
+                label: "Default",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Binding Mode",
+                width: 150.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1229,15 +2014,51 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Events,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "type", label: "Type", width: 100.0 },
-            ColumnDef { key: "name", label: "Name", width: 200.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "involvedObject", label: "Involved Object", width: 180.0 },
-            ColumnDef { key: "source", label: "Source", width: 150.0 },
-            ColumnDef { key: "count", label: "Count", width: 80.0 },
-            ColumnDef { key: "lastSeen", label: "Last Seen", width: 110.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Reason", width: 140.0 },
+            ColumnDef {
+                key: "type",
+                label: "Type",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 200.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "involvedObject",
+                label: "Involved Object",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "source",
+                label: "Source",
+                width: 150.0,
+            },
+            ColumnDef {
+                key: "count",
+                label: "Count",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "lastSeen",
+                label: "Last Seen",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Reason",
+                width: 140.0,
+            },
         ],
         statuses: &["Normal", "Warning"],
         creatable: false,
@@ -1248,10 +2069,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ServiceAccounts,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Automount", width: 140.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Automount",
+                width: 140.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1262,9 +2099,21 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ClusterRoles,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 280.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Rules", width: 140.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 280.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Rules",
+                width: 140.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1275,10 +2124,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::Roles,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 140.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Rules", width: 140.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Rules",
+                width: 140.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1289,10 +2154,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::ClusterRoleBindings,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "bindings", label: "Subjects", width: 240.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Role Ref", width: 180.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "bindings",
+                label: "Subjects",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Role Ref",
+                width: 180.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1303,11 +2184,31 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::RoleBindings,
         namespaced: true,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 220.0 },
-            ColumnDef { key: "namespace", label: "Namespace", width: 130.0 },
-            ColumnDef { key: "bindings", label: "Subjects", width: 220.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
-            ColumnDef { key: "status", label: "Role Ref", width: 160.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "namespace",
+                label: "Namespace",
+                width: 130.0,
+            },
+            ColumnDef {
+                key: "bindings",
+                label: "Subjects",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Role Ref",
+                width: 160.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1318,10 +2219,26 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::PodSecurityPolicies,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Name", width: 240.0 },
-            ColumnDef { key: "privileged", label: "Privileged", width: 110.0 },
-            ColumnDef { key: "volumes", label: "Volumes", width: 220.0 },
-            ColumnDef { key: "age", label: "Age", width: 90.0 },
+            ColumnDef {
+                key: "name",
+                label: "Name",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "privileged",
+                label: "Privileged",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "volumes",
+                label: "Volumes",
+                width: 220.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 90.0,
+            },
         ],
         statuses: &[],
         creatable: true,
@@ -1332,12 +2249,36 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
         kind: ResourceKind::CustomResourceDefinitions,
         namespaced: false,
         columns: &[
-            ColumnDef { key: "name", label: "Resource", width: 240.0 },
-            ColumnDef { key: "group", label: "Group", width: 180.0 },
-            ColumnDef { key: "version", label: "Version", width: 100.0 },
-            ColumnDef { key: "scope", label: "Scope", width: 110.0 },
-            ColumnDef { key: "age", label: "Age", width: 80.0 },
-            ColumnDef { key: "status", label: "Kind", width: 150.0 },
+            ColumnDef {
+                key: "name",
+                label: "Resource",
+                width: 240.0,
+            },
+            ColumnDef {
+                key: "group",
+                label: "Group",
+                width: 180.0,
+            },
+            ColumnDef {
+                key: "version",
+                label: "Version",
+                width: 100.0,
+            },
+            ColumnDef {
+                key: "scope",
+                label: "Scope",
+                width: 110.0,
+            },
+            ColumnDef {
+                key: "age",
+                label: "Age",
+                width: 80.0,
+            },
+            ColumnDef {
+                key: "status",
+                label: "Kind",
+                width: 150.0,
+            },
         ],
         statuses: &[],
         creatable: true,

@@ -2,8 +2,7 @@
 //! popup dismissal and accessibility; the application remains the authority for routing.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _,
-    TitleBar,
+    ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
@@ -34,11 +33,20 @@ mod tests {
             revision: 1,
             discovery_error: None,
             pinned_items: vec![],
-            clusters: ["east", "west"].into_iter().map(|id| ClusterSummary {
-                id: id.into(), name: "Production".into(), context_name: format!("{id}-context"),
-                source: "kubeconfig".into(), status: "disconnected", pinned: false,
-                pinned_sections: vec![], labels: vec![], color: "#4ba7a5".into(),
-            }).collect(),
+            clusters: ["east", "west"]
+                .into_iter()
+                .map(|id| ClusterSummary {
+                    id: id.into(),
+                    name: "Production".into(),
+                    context_name: format!("{id}-context"),
+                    source: "kubeconfig".into(),
+                    status: "disconnected",
+                    pinned: false,
+                    pinned_sections: vec![],
+                    labels: vec![],
+                    color: "#4ba7a5".into(),
+                })
+                .collect(),
         }
     }
 
@@ -213,134 +221,136 @@ impl IceonApp {
         }
 
         TitleBar::new()
-        .bg(cx.theme().tokens.title_bar)
-        .text_color(cx.theme().sidebar_foreground)
-        .child(
-            h_flex()
-                .w_full()
-                .min_w_0()
-                .pr_3()
-                .gap_3()
-                .items_center()
-                .when(!cfg!(target_os = "macos"), |bar| {
-                    bar.child(
-                        div().w(px(280.0)).h_full()
-                            .child(crate::native_menu::create_menu_bar(cx))
-                    )
-                })
-                .justify_between()
-                .text_color(cx.theme().sidebar_foreground)
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            Button::new("nav-toggle-sidebar")
-                                .text_color(cx.theme().sidebar_foreground)
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::PanelLeft)
-                                .accessibility_label("Toggle sidebar")
-                                .tooltip("Toggle sidebar")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.sidebar_collapsed = !this.sidebar_collapsed;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("nav-back-btn")
-                                .text_color(cx.theme().sidebar_foreground)
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::ArrowLeft)
-                                .accessibility_label("Go back")
-                                .tooltip("Go back")
-                                .disabled(!self.history.can_go_back())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(route) = this.history.go_back() {
-                                        this.navigate(route, false, window, cx);
-                                    }
-                                })),
-                        )
-                        .child(
-                            Button::new("nav-forward-btn")
-                                .text_color(cx.theme().sidebar_foreground)
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::ArrowRight)
-                                .accessibility_label("Go forward")
-                                .tooltip("Go forward")
-                                .disabled(!self.history.can_go_forward())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Some(route) = this.history.go_forward() {
-                                        this.navigate(route, false, window, cx);
-                                    }
-                                })),
-                        )
-                        .child(
+            .bg(cx.theme().tokens.title_bar)
+            .text_color(cx.theme().sidebar_foreground)
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .pr_3()
+                    .gap_3()
+                    .items_center()
+                    .when(!cfg!(target_os = "macos"), |bar| {
+                        bar.child(
                             div()
-                                .id("titlebar-cluster-switcher")
-                                .ml_2()
-                                .min_w_0()
-                                .w(px(300.0))
-                                .max_w(px(340.0))
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(tooltip.clone()).build(window, cx)
-                                })
-                                .child(
-                                    Select::new(&self.cluster_select)
-                                        .id("titlebar-cluster-select")
-                                        .small()
-                                        .w_full()
-                                        .accessibility_label("Select a cluster")
-                                        .placeholder("Select a cluster")
-                                        .search_placeholder("Search clusters or contexts…")
-                                        .menu_width(px(340.0))
-                                        .menu_max_h(px(360.0))
-                                        .empty(|_, cx| {
-                                            div()
-                                                .px_3()
-                                                .py_2()
-                                                .text_sm()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child("No matching clusters")
-                                        }),
-                                ),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            Button::new("open-search-palette-btn")
-                                .text_color(cx.theme().sidebar_foreground)
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::Search)
-                                .accessibility_label("Quick jump")
-                                .tooltip("Quick jump")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.search_modal_open = !this.search_modal_open;
-                                    cx.notify();
-                                })),
+                                .w(px(280.0))
+                                .h_full()
+                                .child(crate::native_menu::create_menu_bar(cx)),
                         )
-                        .child(
-                            Button::new("titlebar-preferences-btn")
-                                .text_color(cx.theme().sidebar_foreground)
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::Settings)
-                                .accessibility_label("Settings")
-                                .tooltip("Settings")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_preferences(window, cx);
-                                })),
-                        ),
-                ),
-        )
+                    })
+                    .justify_between()
+                    .text_color(cx.theme().sidebar_foreground)
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                Button::new("nav-toggle-sidebar")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::PanelLeft)
+                                    .accessibility_label("Toggle sidebar")
+                                    .tooltip("Toggle sidebar")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.sidebar_collapsed = !this.sidebar_collapsed;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("nav-back-btn")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::ArrowLeft)
+                                    .accessibility_label("Go back")
+                                    .tooltip("Go back")
+                                    .disabled(!self.history.can_go_back())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Some(route) = this.history.go_back() {
+                                            this.navigate(route, false, window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("nav-forward-btn")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::ArrowRight)
+                                    .accessibility_label("Go forward")
+                                    .tooltip("Go forward")
+                                    .disabled(!self.history.can_go_forward())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        if let Some(route) = this.history.go_forward() {
+                                            this.navigate(route, false, window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("titlebar-cluster-switcher")
+                                    .ml_2()
+                                    .min_w_0()
+                                    .w(px(300.0))
+                                    .max_w(px(340.0))
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(tooltip.clone()).build(window, cx)
+                                    })
+                                    .child(
+                                        Select::new(&self.cluster_select)
+                                            .id("titlebar-cluster-select")
+                                            .small()
+                                            .w_full()
+                                            .accessibility_label("Select a cluster")
+                                            .placeholder("Select a cluster")
+                                            .search_placeholder("Search clusters or contexts…")
+                                            .menu_width(px(340.0))
+                                            .menu_max_h(px(360.0))
+                                            .empty(|_, cx| {
+                                                div()
+                                                    .px_3()
+                                                    .py_2()
+                                                    .text_sm()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("No matching clusters")
+                                            }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                Button::new("open-search-palette-btn")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::Search)
+                                    .accessibility_label("Quick jump")
+                                    .tooltip("Quick jump")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.search_modal_open = !this.search_modal_open;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("titlebar-preferences-btn")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::Settings)
+                                    .accessibility_label("Settings")
+                                    .tooltip("Settings")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_preferences(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
     }
 }

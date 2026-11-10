@@ -2,13 +2,13 @@
 //! pin/unpin actions, and remove confirmation modal.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
     scroll::ScrollableElement as _,
     tag::Tag,
-    v_flex, IconName,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -404,11 +404,7 @@ impl IceonApp {
         cx.notify();
     }
 
-    pub(crate) fn prompt_import_kubeconfig(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn prompt_import_kubeconfig(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -426,8 +422,8 @@ impl IceonApp {
             };
             let path_str = path.to_string_lossy().into_owned();
             let result = iceon_core::runtime::spawn_blocking(move || {
-                let mut snapshot =
-                    catalog.import_kubeconfig(iceon_core::catalog::ImportRequest { path: path_str })?;
+                let mut snapshot = catalog
+                    .import_kubeconfig(iceon_core::catalog::ImportRequest { path: path_str })?;
                 let _ = connection.project_catalog_statuses(&mut snapshot);
                 Ok::<CatalogSnapshot, iceon_core::catalog::CatalogError>(snapshot)
             })
@@ -475,11 +471,7 @@ impl IceonApp {
         cx.notify();
     }
 
-    pub(crate) fn confirm_remove_cluster(
-        &mut self,
-        cluster_id: String,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn confirm_remove_cluster(&mut self, cluster_id: String, cx: &mut Context<Self>) {
         self.pending_remove_cluster = None;
         match self.catalog.remove(RemoveRequest {
             id: cluster_id.clone(),
@@ -488,10 +480,12 @@ impl IceonApp {
                 if let Some(session) = &self.cluster_session
                     && session.cluster_id == cluster_id
                 {
-                    let _ = self.connection.disconnect(iceon_core::connection::SessionRequest {
-                        cluster_id: session.cluster_id.clone(),
-                        session_id: session.session_id.clone(),
-                    });
+                    let _ = self
+                        .connection
+                        .disconnect(iceon_core::connection::SessionRequest {
+                            cluster_id: session.cluster_id.clone(),
+                            session_id: session.session_id.clone(),
+                        });
                     self.cluster_session = None;
                 }
                 let _ = self.connection.project_catalog_statuses(&mut snapshot);

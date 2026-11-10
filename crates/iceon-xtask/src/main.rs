@@ -200,7 +200,11 @@ fn version_plan(root: &Path, bump: &str, allow_equal: bool) -> Result<VersionPla
         .to_string();
     let old = stable(&old_text)?;
     let new = next(&old, bump, allow_equal)?;
-    if cargo.get("workspace").and_then(|w| w.get("package")).is_some() {
+    if cargo
+        .get("workspace")
+        .and_then(|w| w.get("package"))
+        .is_some()
+    {
         cargo["workspace"]["package"]["version"] = value(new.to_string());
     } else {
         cargo["package"]["version"] = value(new.to_string());

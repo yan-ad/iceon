@@ -56,11 +56,8 @@ impl PodDockTab {
 }
 
 pub const TAIL_LINE_OPTIONS: &[u32] = &[100, 500, 2000, 10000];
-pub const TERMINAL_SIZE_PRESETS: &[(u16, u16, &str)] = &[
-    (80, 24, "80×24"),
-    (120, 36, "120×36"),
-    (160, 48, "160×48"),
-];
+pub const TERMINAL_SIZE_PRESETS: &[(u16, u16, &str)] =
+    &[(80, 24, "80×24"), (120, 36, "120×36"), (160, 48, "160×48")];
 
 pub fn shell_option_path(label: &str) -> &'static str {
     match label {
@@ -121,36 +118,34 @@ impl IceonApp {
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.pod_detail(req).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok(pod) => {
-                        let containers: Vec<String> =
-                            pod.containers.iter().map(|c| c.name.clone()).collect();
-                        let default_container = pod
-                            .containers
-                            .iter()
-                            .find(|c| c.kind == "container")
-                            .or_else(|| pod.containers.first())
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| "main".into());
-                        this.open_pod_stream_with_containers(
-                            namespace,
-                            pod_name,
-                            pod.uid,
-                            default_container,
-                            containers,
-                            mode,
-                            window,
-                            cx,
-                        );
-                    }
-                    Err(err) => {
-                        this.cluster_error = Some(format!(
-                            "Failed to resolve pod {namespace}/{pod_name} for {:?}: {err:?}",
-                            mode
-                        ));
-                        cx.notify();
-                    }
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(pod) => {
+                    let containers: Vec<String> =
+                        pod.containers.iter().map(|c| c.name.clone()).collect();
+                    let default_container = pod
+                        .containers
+                        .iter()
+                        .find(|c| c.kind == "container")
+                        .or_else(|| pod.containers.first())
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| "main".into());
+                    this.open_pod_stream_with_containers(
+                        namespace,
+                        pod_name,
+                        pod.uid,
+                        default_container,
+                        containers,
+                        mode,
+                        window,
+                        cx,
+                    );
+                }
+                Err(err) => {
+                    this.cluster_error = Some(format!(
+                        "Failed to resolve pod {namespace}/{pod_name} for {:?}: {err:?}",
+                        mode
+                    ));
+                    cx.notify();
                 }
             });
         })
@@ -172,7 +167,12 @@ impl IceonApp {
             .pod_detail
             .as_ref()
             .filter(|p| p.name == pod_name && p.namespace == namespace)
-            .map(|p| p.containers.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
+            .map(|p| {
+                p.containers
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         if !available_containers.contains(&container) {
             available_containers.push(container.clone());
@@ -457,11 +457,7 @@ impl IceonApp {
         cx.notify();
     }
 
-    pub(crate) fn send_pod_terminal_input(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn send_pod_terminal_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(active_idx) = self.active_pod_tab else {
             return;
         };
@@ -673,10 +669,12 @@ impl IceonApp {
                                             tab.pod_name,
                                             tab.container
                                         ))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.active_pod_tab = Some(idx);
-                                            cx.notify();
-                                        })),
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.active_pod_tab = Some(idx);
+                                                cx.notify();
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         Button::new(SharedString::from(format!(
@@ -685,9 +683,11 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .icon(IconName::Close)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.close_pod_tab(idx, cx);
-                                        })),
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.close_pod_tab(idx, cx);
+                                            }),
+                                        ),
                                     )
                             })),
                     )
@@ -713,11 +713,13 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .label("Copy")
-                                        .on_click(cx.listener(move |_, _, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                local_addr.clone(),
-                                            ));
-                                        })),
+                                        .on_click(
+                                            cx.listener(move |_, _, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    local_addr.clone(),
+                                                ));
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         Button::new(SharedString::from(format!("stop-fwd-{fid}")))
@@ -790,23 +792,26 @@ impl IceonApp {
                                             .text_color(cx.theme().muted_foreground)
                                             .child("Container:"),
                                     )
-                                    .children(containers.into_iter().map(|cname| {
-                                        let selected = cname == current_container;
-                                        let target_cname = cname.clone();
-                                        Button::new(SharedString::from(format!(
-                                            "dock-container-switch-{tab_idx}-{cname}"
-                                        )))
-                                        .xsmall()
-                                        .ghost()
-                                        .selected(selected)
-                                        .label(cname)
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx) {
-                                                t.container = target_cname.clone();
-                                            }
-                                            this.reopen_pod_tab(tab_idx, window, cx);
-                                        }))
-                                    }))
+                                    .children(
+                                        containers.into_iter().map(|cname| {
+                                            let selected = cname == current_container;
+                                            let target_cname = cname.clone();
+                                            Button::new(SharedString::from(format!(
+                                                "dock-container-switch-{tab_idx}-{cname}"
+                                            )))
+                                            .xsmall()
+                                            .ghost()
+                                            .selected(selected)
+                                            .label(cname)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
+                                                {
+                                                    t.container = target_cname.clone();
+                                                }
+                                                this.reopen_pod_tab(tab_idx, window, cx);
+                                            }))
+                                        }),
+                                    )
                                 }),
                         )
                         .when(is_logs, |bar| {
@@ -815,13 +820,11 @@ impl IceonApp {
                                     .gap_1()
                                     .items_center()
                                     .child(
-                                        div()
-                                            .w(px(190.0))
-                                            .child(
-                                                Input::new(&self.pod_log_filter_input)
-                                                    .small()
-                                                    .cleanable(true),
-                                            ),
+                                        div().w(px(190.0)).child(
+                                            Input::new(&self.pod_log_filter_input)
+                                                .small()
+                                                .cleanable(true),
+                                        ),
                                     )
                                     .child(
                                         Button::new("pod-log-pause-toggle")
@@ -830,8 +833,7 @@ impl IceonApp {
                                             .selected(!paused)
                                             .label(if paused { "Paused" } else { "Following" })
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(t) =
-                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
                                                 {
                                                     t.paused = !t.paused;
                                                     cx.notify();
@@ -845,8 +847,7 @@ impl IceonApp {
                                             .selected(ts_enabled)
                                             .label("Timestamps")
                                             .on_click(cx.listener(move |this, _, window, cx| {
-                                                if let Some(t) =
-                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
                                                 {
                                                     t.timestamps = !t.timestamps;
                                                 }
@@ -860,8 +861,7 @@ impl IceonApp {
                                             .selected(prev_enabled)
                                             .label("Previous")
                                             .on_click(cx.listener(move |this, _, window, cx| {
-                                                if let Some(t) =
-                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
                                                 {
                                                     t.previous = !t.previous;
                                                 }
@@ -876,12 +876,15 @@ impl IceonApp {
                                         .ghost()
                                         .selected(tail_lines == lines)
                                         .label(format!("{lines}L"))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx) {
-                                                t.tail_lines = lines;
-                                            }
-                                            this.reopen_pod_tab(tab_idx, window, cx);
-                                        }))
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
+                                                {
+                                                    t.tail_lines = lines;
+                                                }
+                                                this.reopen_pod_tab(tab_idx, window, cx);
+                                            }),
+                                        )
                                     }))
                                     .child(
                                         Button::new("pod-log-copy-btn")
@@ -900,8 +903,7 @@ impl IceonApp {
                                             .ghost()
                                             .label("Clear")
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(t) =
-                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
                                                 {
                                                     t.output_lines.clear();
                                                     cx.notify();
@@ -1045,9 +1047,8 @@ impl IceonApp {
                     ),
             )
             .when_some(
-                active_tab.filter(|t| {
-                    matches!(t.mode, PodStreamMode::Shell | PodStreamMode::Attach)
-                }),
+                active_tab
+                    .filter(|t| matches!(t.mode, PodStreamMode::Shell | PodStreamMode::Attach)),
                 |el, tab| {
                     let recent_cmds: Vec<String> =
                         tab.command_history.iter().rev().take(4).cloned().collect();
