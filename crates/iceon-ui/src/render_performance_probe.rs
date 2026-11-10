@@ -298,6 +298,80 @@ impl Probe {
                     "render_performance_probe initial: viewport={rect:?}, table={stats:?}, terminal={terminal:?}"
                 );
             }
+            16 => {
+                self.table.update(cx, |table, cx| {
+                    table.sort_by_key("name", cx);
+                    let ascending = table.visible_order();
+                    assert_eq!(
+                        ascending.first().map(String::as_str),
+                        Some("offline-pod-000")
+                    );
+                    table.sort_by_key("name", cx);
+                    assert_eq!(
+                        table.visible_order().first().map(String::as_str),
+                        Some("offline-pod-099")
+                    );
+                    table.sort_by_key("name", cx);
+                    assert_eq!(table.visible_order(), ascending);
+                    table.resize_column("namespace", 1., cx);
+                    let widths = table.column_widths();
+                    let namespace = widths
+                        .iter()
+                        .find(|column| column.0 == "namespace")
+                        .unwrap();
+                    assert_eq!(namespace.1, namespace.2);
+                    table.resize_column("namespace", 256., cx);
+                    assert_eq!(
+                        table
+                            .column_widths()
+                            .iter()
+                            .find(|column| column.0 == "namespace")
+                            .unwrap()
+                            .1,
+                        256.
+                    );
+                    assert!(
+                        table
+                            .column_widths()
+                            .iter()
+                            .all(|column| column.1 >= column.2)
+                    );
+                    assert_eq!(table.stats().filter_builds, 1);
+                    assert_eq!(table.stats().row_size_builds, 1);
+                });
+            }
+            17 => {
+                let selected = self._owner.read(cx).selected_namespace.clone();
+                require(
+                    selected.as_deref() == Some("fixture-namespace"),
+                    "namespace cell did not set filter scope",
+                )?;
+                require(
+                    self._owner.read(cx).current_continue_token.is_none(),
+                    "namespace filter retained stale pagination",
+                )?;
+                println!(
+                    "PASS table interactions: sort cycle, minimum widths, resize, namespace filtering; caches retained"
+                );
+            }
+            18 => {}
+            19 => {
+                let widths = self.table.read(cx).column_widths();
+                let width = widths
+                    .iter()
+                    .find(|column| column.0 == "namespace")
+                    .unwrap()
+                    .1;
+                require(
+                    width > 280.,
+                    &format!("native separator drag did not resize Namespace: {width}"),
+                )?;
+                require(
+                    stats.filter_builds == 1 && stats.row_size_builds == 1,
+                    "native drag rebuilt filter or row sizes",
+                )?;
+                println!("PASS native Namespace separator drag: width={width}; caches retained");
+            }
             1 => {
                 let (vertical, _) = self.table.read(cx).scroll_offsets();
                 require(
@@ -413,6 +487,7 @@ fn scroll(
         "render_performance_probe wheel dispatch={:?}",
         start.elapsed()
     );
+    window.draw(cx).clear(cx);
     // Two callbacks bracket at least one completed native draw. This is not a
     // GPU fence, and includes platform scheduling rather than pretending to be FPS.
     window.on_next_frame(move |window, _| {
@@ -430,7 +505,7 @@ impl Render for Probe {
             window.on_next_frame(move |window, cx| {
                 let _ = weak.update(cx, |_, cx| {
                     cx.spawn_in(window, async move |this, cx| {
-                        for stage in 0..=15 {
+                        for stage in 0..=19 {
                             cx.background_executor().timer(Duration::from_millis(220)).await;
                             let result = cx.update(|window, cx| {
                                 let checked = this.update(cx, |probe, cx| {
@@ -451,9 +526,41 @@ impl Render for Probe {
                                                 println!("render_performance_probe 40-chunk parser feed={:?}", start.elapsed());
                                             }),
                                             3..=12 => window.refresh(),
+                                            16 => {
+                                                let _ = this.update(cx, |probe, cx| {
+                                                    probe._owner.update(cx, |app, cx| {
+                                                        app.current_continue_token = Some("stale-fixture-token".into());
+                                                        ResourceTable::filter_namespace(app, "fixture-namespace", window, cx);
+                                                    });
+                                                });
+                                            }
+                                            17 => scroll(window, cx, bounds.unwrap(), point(px(1000.), px(0.)), horizontal),
+                                            18 => {
+                                                let table = this.read_with(cx, |probe, _| probe.table.clone()).unwrap();
+                                                let rect = table.read(cx).column_header_bounds("namespace").expect("Namespace header rendered");
+                                                let origin = point(rect.right() - px(2.), rect.top() + px(20.));
+                                                window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent {
+                                                    position: origin, ..Default::default()
+                                                }), cx);
+                                                window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent {
+                                                    position: origin, button: MouseButton::Left,
+                                                    click_count: 1, ..Default::default()
+                                                }), cx);
+                                                for delta in [8., 24., 48., 64.] {
+                                                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent {
+                                                        position: origin + point(px(delta), px(0.)),
+                                                        pressed_button: Some(MouseButton::Left), ..Default::default()
+                                                    }), cx);
+                                                    window.draw(cx).clear(cx);
+                                                }
+                                                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent {
+                                                    position: origin + point(px(64.), px(0.)),
+                                                    button: MouseButton::Left, click_count: 1, ..Default::default()
+                                                }), cx);
+                                            }
                                             _ => {}
                                         }
-                                        if stage == 15 {
+                                        if stage == 19 {
                                             let _ = this.update(cx, |probe, _| {
                                                 *probe.outcome.borrow_mut() = Some(Ok(()));
                                                 probe.directory.cleanup();

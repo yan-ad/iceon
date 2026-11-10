@@ -10,6 +10,7 @@ use gpui_kit::{App, Hsla, Window, WindowBackgroundAppearance, rgb};
 const CHROME_ALPHA_LIGHT: f32 = 0.48;
 const CHROME_ALPHA_DARK: f32 = 0.38;
 const SELECTED_ALPHA: f32 = 0.12;
+pub(crate) const PRIMARY_RGB: u32 = 0x1a43bf;
 
 fn neutral(value: u32, alpha: f32) -> Hsla {
     Hsla::from(rgb(value)).alpha(alpha)
@@ -30,13 +31,9 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
         colors.sidebar = neutral(0x121214, CHROME_ALPHA_DARK);
         colors.title_bar = colors.sidebar;
         colors.sidebar_foreground = neutral(0xededed, 1.0);
-        colors.sidebar_accent = neutral(0xffffff, SELECTED_ALPHA);
-        colors.sidebar_accent_foreground = colors.sidebar_foreground;
-        colors.sidebar_primary = colors.sidebar_accent;
-        colors.sidebar_primary_foreground = colors.sidebar_foreground;
         colors.sidebar_border = neutral(0xffffff, 0.08);
         colors.title_bar_border = colors.sidebar_border;
-        colors.secondary_active = colors.sidebar_accent;
+        colors.secondary_active = neutral(0xffffff, SELECTED_ALPHA);
 
         colors.background = neutral(0x090909, 1.0);
         colors.foreground = colors.sidebar_foreground;
@@ -44,26 +41,45 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
         colors.muted_foreground = neutral(0x969696, 1.0);
         colors.popover = neutral(0x090909, 1.0);
         colors.popover_foreground = colors.foreground;
-        colors.accent = colors.sidebar_accent;
+        colors.accent = colors.secondary_active;
         colors.accent_foreground = colors.foreground;
         colors.secondary = neutral(0x151515, 1.0);
         colors.secondary_foreground = colors.foreground;
         colors.secondary_hover = neutral(0xffffff, 0.08);
         colors.border = neutral(0xffffff, 0.10);
-        colors.ring = neutral(0x969696, 1.0);
     } else {
         colors.sidebar = neutral(0xf6f6f7, CHROME_ALPHA_LIGHT);
         colors.title_bar = colors.sidebar;
         colors.sidebar_foreground = neutral(0x18181b, 1.0);
-        colors.sidebar_accent = neutral(0x000000, 0.06);
-        colors.sidebar_accent_foreground = colors.sidebar_foreground;
-        colors.sidebar_primary = colors.sidebar_accent;
-        colors.sidebar_primary_foreground = colors.sidebar_foreground;
         colors.sidebar_border = neutral(0x000000, 0.08);
         colors.title_bar_border = colors.sidebar_border;
-        colors.secondary_active = colors.sidebar_accent;
+        colors.secondary_active = neutral(0x000000, 0.06);
         colors.secondary_hover = neutral(0x000000, 0.05);
     }
+
+    // Brand interactive tokens in both modes without tinting the glass surfaces
+    // or changing semantic success, warning, info, and danger colors.
+    colors.primary = neutral(PRIMARY_RGB, 1.0);
+    colors.primary_foreground = neutral(0xffffff, 1.0);
+    colors.primary_hover = neutral(0x163aa6, 1.0);
+    colors.primary_active = neutral(0x12308a, 1.0);
+    colors.button_primary = colors.primary;
+    colors.button_primary_foreground = colors.primary_foreground;
+    colors.button_primary_hover = colors.primary_hover;
+    colors.button_primary_active = colors.primary_active;
+    colors.ring = colors.primary;
+    colors.link = colors.primary;
+    colors.link_hover = colors.primary_hover;
+    colors.link_active = colors.primary_active;
+    colors.selection = colors.primary.alpha(0.18);
+    colors.sidebar_primary = colors.primary;
+    colors.sidebar_primary_foreground = colors.primary_foreground;
+    colors.sidebar_accent = colors.primary.alpha(SELECTED_ALPHA);
+    colors.sidebar_accent_foreground = if mode.is_dark() {
+        neutral(0x9bb4ff, 1.0)
+    } else {
+        colors.primary
+    };
 }
 
 /// Reload the user's chosen content mode, then brand chrome. Theme::update
@@ -97,7 +113,9 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
 
 #[cfg(test)]
 mod tests {
-    use super::{CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, SELECTED_ALPHA, brand_colors, neutral};
+    use super::{
+        CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
+    };
     use gpui_kit::component::theme::{ThemeColor, ThemeMode};
 
     #[test]
@@ -108,16 +126,66 @@ mod tests {
         assert_eq!(dark_colors.title_bar, dark_colors.sidebar);
         assert_eq!(
             dark_colors.sidebar_accent,
-            neutral(0xffffff, SELECTED_ALPHA)
+            neutral(PRIMARY_RGB, SELECTED_ALPHA)
         );
         assert_eq!(dark_colors.sidebar_foreground, neutral(0xededed, 1.0));
+        assert_eq!(
+            dark_colors.sidebar_accent_foreground,
+            neutral(0x9bb4ff, 1.0)
+        );
 
         let mut light_colors = ThemeColor::default();
         brand_colors(&mut light_colors, ThemeMode::Light);
         assert_eq!(light_colors.sidebar, neutral(0xf6f6f7, CHROME_ALPHA_LIGHT));
         assert_eq!(light_colors.title_bar, light_colors.sidebar);
-        assert_eq!(light_colors.sidebar_accent, neutral(0x000000, 0.06));
+        assert_eq!(
+            light_colors.sidebar_accent,
+            neutral(PRIMARY_RGB, SELECTED_ALPHA)
+        );
         assert_eq!(light_colors.sidebar_foreground, neutral(0x18181b, 1.0));
+        assert_eq!(light_colors.sidebar_accent_foreground, light_colors.primary);
+    }
+
+    #[test]
+    fn primary_brand_and_interactive_aliases_match_in_both_modes() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let mut colors = ThemeColor::default();
+            brand_colors(&mut colors, mode);
+            assert_eq!(colors.primary, neutral(0x1a43bf, 1.0));
+            assert_eq!(colors.primary_foreground, neutral(0xffffff, 1.0));
+            assert_eq!(colors.primary_hover, neutral(0x163aa6, 1.0));
+            assert_eq!(colors.primary_active, neutral(0x12308a, 1.0));
+            assert_eq!(colors.button_primary, colors.primary);
+            assert_eq!(colors.button_primary_foreground, colors.primary_foreground);
+            assert_eq!(colors.button_primary_hover, colors.primary_hover);
+            assert_eq!(colors.button_primary_active, colors.primary_active);
+            assert_eq!(colors.ring, colors.primary);
+            assert_eq!(colors.link, colors.primary);
+            assert_eq!(colors.link_hover, colors.primary_hover);
+            assert_eq!(colors.link_active, colors.primary_active);
+            assert_eq!(colors.selection, neutral(PRIMARY_RGB, 0.18));
+            assert_eq!(colors.sidebar_primary, colors.primary);
+            assert_eq!(colors.sidebar_primary_foreground, colors.primary_foreground);
+        }
+    }
+
+    #[test]
+    fn semantic_status_colors_and_tab_background_are_retained() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let mut colors = ThemeColor::default();
+            colors.success = neutral(0x16a34a, 1.0);
+            colors.warning = neutral(0xf59e0b, 1.0);
+            colors.danger = neutral(0xdc2626, 1.0);
+            colors.info = neutral(0x0284c7, 1.0);
+            colors.tab_active = neutral(0x27272a, 1.0);
+            let before = colors;
+            brand_colors(&mut colors, mode);
+            assert_eq!(colors.success, before.success);
+            assert_eq!(colors.warning, before.warning);
+            assert_eq!(colors.danger, before.danger);
+            assert_eq!(colors.info, before.info);
+            assert_eq!(colors.tab_active, before.tab_active);
+        }
     }
 
     #[test]

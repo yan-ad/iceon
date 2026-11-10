@@ -148,22 +148,6 @@ pub(crate) const RESOURCE_NAMESPACE_WIDTH: f32 = 144.0;
 pub(crate) const RESOURCE_AGE_WIDTH: f32 = 76.0;
 pub(crate) const RESOURCE_STATUS_WIDTH: f32 = 148.0;
 
-pub(crate) fn resource_table_min_width(kind: ResourceKind) -> f32 {
-    RESOURCE_NAME_WIDTH
-        + RESOURCE_AGE_WIDTH
-        + RESOURCE_STATUS_WIDTH
-        + RESOURCE_ACTIONS_WIDTH
-        + if namespaced_kind(kind) {
-            RESOURCE_NAMESPACE_WIDTH
-        } else {
-            0.0
-        }
-        + columns_for_kind(kind)
-            .iter()
-            .map(|column| column.width)
-            .sum::<f32>()
-}
-
 // Shared cell geometry: padding is inside each column; only internal vertical rules.
 pub(crate) fn table_cell(width: f32, flexible: bool, separator: bool, border: Hsla) -> Div {
     h_flex()
