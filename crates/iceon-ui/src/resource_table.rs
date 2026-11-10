@@ -585,8 +585,15 @@ impl ResourceTable {
                     .ghost()
                     .w_full()
                     .min_w_0()
-                    .justify_start()
-                    .label(label)
+                    .child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .truncate()
+                            .when(key == "actions", |label| label.text_right())
+                            .when(key != "actions", |label| label.text_left())
+                            .child(label),
+                    )
                     .tooltip(help.clone())
                     .accessibility_label(format!("{}, {sort_state}. {help}", column.label))
                     .on_click(cx.listener(move |this, _, _, cx| this.sort_by_key(key, cx)))
