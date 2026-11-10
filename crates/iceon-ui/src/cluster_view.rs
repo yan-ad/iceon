@@ -12,7 +12,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
-    v_flex,
+    v_flex, v_virtual_list,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -878,7 +878,6 @@ impl IceonApp {
                     Ok(snap) => {
                         let status = snap.status;
                         let err = snap.error;
-                        if let Some(ver) = snap.api_version.clone() {}
                         this.cluster_session = Some(snap);
                         this.namespaces = ns_list;
                         this.refresh_catalog(cx);
@@ -2502,6 +2501,12 @@ impl IceonApp {
                     SharedString::from(format!("virtual-resource-table-{kind:?}")),
                     item_sizes,
                     move |this, visible_range, _window, cx| {
+                        if std::env::var_os("ICEON_TRACE_RESOURCE_LAYOUT").is_some() {
+                            eprintln!(
+                                "resource-layout {kind:?}: count={} range={visible_range:?}",
+                                shared_items.len()
+                            );
+                        }
                         visible_range
                             .filter_map(|idx| {
                                 let item = shared_items.get(idx)?.clone();
@@ -2594,9 +2599,9 @@ impl IceonApp {
                         )
                         .when(extra_count > 0, |row| {
                             row.child(
-                                Tag::outline()
+                                Tag::secondary()
+                                    .outline()
                                     .small()
-                                    .without_icon()
                                     .child(format!("+{extra_count}")),
                             )
                         })
@@ -3662,7 +3667,29 @@ impl IceonApp {
 }
 
 fn row_status_tag(status: &str) -> Tag {
-    Tag::for_resource_status(status)
+    let normalized = status.to_ascii_lowercase();
+    let tag = if normalized.contains("fail")
+        || normalized.contains("error")
+        || normalized.contains("crash")
+    {
+        Tag::danger()
+    } else if normalized.contains("pending")
+        || normalized.contains("wait")
+        || normalized.contains("warn")
+        || normalized.contains("notready")
+        || normalized.contains("not ready")
+    {
+        Tag::warning()
+    } else if normalized.contains("running")
+        || normalized.contains("ready")
+        || normalized.contains("complete")
+        || normalized.contains("succeed")
+    {
+        Tag::success()
+    } else {
+        Tag::secondary()
+    };
+    tag.small().child(status.to_owned())
 }
 
 pub fn default_yaml_template(kind: ResourceKind, namespace: &str) -> String {

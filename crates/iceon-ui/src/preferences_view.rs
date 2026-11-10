@@ -368,17 +368,23 @@ impl PreferencesWindow {
                                     SharedString::from("relative"),
                                     SharedString::from("Relative"),
                                 ),
+                                (
+                                    SharedString::from("interval"),
+                                    SharedString::from("Interval"),
+                                ),
                             ],
                             |cx: &App| match current_prefs(cx).editor.line_numbers {
                                 LineNumbers::On => SharedString::from("on"),
                                 LineNumbers::Off => SharedString::from("off"),
                                 LineNumbers::Relative => SharedString::from("relative"),
+                                LineNumbers::Interval => SharedString::from("interval"),
                             },
                             |val: SharedString, cx: &mut App| {
                                 mutate_preferences(cx, |prefs| {
                                     prefs.editor.line_numbers = match val.as_ref() {
                                         "off" => LineNumbers::Off,
                                         "relative" => LineNumbers::Relative,
+                                        "interval" => LineNumbers::Interval,
                                         _ => LineNumbers::On,
                                     };
                                 });
@@ -649,10 +655,10 @@ impl IceonApp {
             ..TitleBar::window_options()
         };
 
-        if let Ok(handle) = gpui_kit::open_window(options, cx, |window, cx| {
+        if let Ok((handle, _preferences)) = gpui_kit::open_window(options, cx, |window, cx| {
             cx.new(|cx| PreferencesWindow::new(window, cx))
         }) {
-            self.preferences_window = Some(handle.into());
+            self.preferences_window = Some(handle);
         }
         cx.notify();
     }

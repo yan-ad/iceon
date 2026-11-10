@@ -456,19 +456,19 @@ impl IceonApp {
                             if let Some(c) =
                                 self.catalog_snapshot.clusters.iter().find(|c| &c.id == id)
                             {
-                                ordered.push(c);
+                                ordered.push(c.clone());
                             }
                         }
                         for c in &self.catalog_snapshot.clusters {
                             if !self.cluster_order.contains(&c.id) {
-                                ordered.push(c);
+                                ordered.push(c.clone());
                             }
                         }
                         let sidebar_foreground = cx.theme().sidebar_foreground;
                         let success = cx.theme().success;
                         let warning = cx.theme().warning;
                         let danger = cx.theme().danger;
-                        ordered.into_iter().map(move |cluster| {
+                        ordered.into_iter().map(|cluster| {
                             let cid = cluster.id.clone();
                             let selected = matches!(
                                 &route,
@@ -626,7 +626,7 @@ impl IceonApp {
                                                 ),
                                         ),
                                 )
-                        })
+                        }).collect::<Vec<_>>()
                     }),
             )
             .child(
