@@ -19,17 +19,40 @@ pub(crate) fn theme_mode(prefs: &Preferences, dark: bool) -> gpui_kit::component
     }
 }
 
+#[derive(Default)]
+struct FontFamilyCache {
+    installed: Option<Vec<String>>,
+    resolved: std::collections::HashMap<String, gpui_kit::SharedString>,
+}
+
+impl gpui_kit::Global for FontFamilyCache {}
+
 /// GPUI accepts one family, not a CSS comma-separated fallback list.
 /// Resolve the first installed preference, retaining a native monospace fallback.
-pub(crate) fn font_family(value: &str, cx: &gpui_kit::App) -> gpui_kit::SharedString {
-    let installed = cx.text_system().all_font_names();
-    value
+/// Lazily populated after startup font registration, and scoped to this App.
+/// Repeated renders only clone a SharedString; native font discovery runs once.
+pub(crate) fn font_family(value: &str, cx: &mut gpui_kit::App) -> gpui_kit::SharedString {
+    if let Some(family) = cx
+        .try_global::<FontFamilyCache>()
+        .and_then(|cache| cache.resolved.get(value))
+    {
+        return family.clone();
+    }
+    if cx.default_global::<FontFamilyCache>().installed.is_none() {
+        let installed = cx.text_system().all_font_names();
+        cx.default_global::<FontFamilyCache>().installed = Some(installed);
+    }
+    let cache = cx.default_global::<FontFamilyCache>();
+    let installed = cache.installed.as_ref().unwrap();
+    let family: gpui_kit::SharedString = value
         .split(',')
         .map(|part| part.trim().trim_matches(['\'', '"']))
         .find(|part| installed.iter().any(|name| name.eq_ignore_ascii_case(part)))
         .unwrap_or("monospace")
         .to_owned()
-        .into()
+        .into();
+    cache.resolved.insert(value.to_owned(), family.clone());
+    family
 }
 
 /// Format API timestamps in the saved IANA timezone. Invalid or unavailable

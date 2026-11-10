@@ -457,20 +457,46 @@ impl IceonApp {
     }
 
     pub(crate) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
-        match self
-            .catalog
-            .list_with_preferences(&self.preferences_draft.kubernetes)
-        {
-            Ok(mut snapshot) => {
-                let _ = self.connection.project_catalog_statuses(&mut snapshot);
-                self.catalog_snapshot = snapshot;
-                self.catalog_error = None;
-            }
-            Err(error) => {
-                self.catalog_error = Some(catalog_error_message(error).to_string());
-            }
+        if self.catalog_refresh_pending {
+            return;
         }
-        cx.notify();
+        self.catalog_refresh_pending = true;
+        let catalog = self.catalog.clone();
+        let connection = self.connection.clone();
+        let preferences = self.preferences_draft.kubernetes.clone();
+        cx.spawn(async move |owner, cx| {
+            let result = iceon_core::runtime::spawn_blocking(move || {
+                let mut snapshot = catalog.list_with_preferences(&preferences)?;
+                let _ = connection.project_catalog_statuses(&mut snapshot);
+                Ok::<_, iceon_core::catalog::CatalogError>(snapshot)
+            })
+            .await;
+            let _ = owner.update(cx, |app, cx| {
+                app.catalog_refresh_pending = false;
+                let changed = match result {
+                    Ok(Ok(snapshot)) => {
+                        let changed =
+                            app.catalog_snapshot != snapshot || app.catalog_error.is_some();
+                        app.catalog_snapshot = snapshot;
+                        app.catalog_error = None;
+                        changed
+                    }
+                    result => {
+                        let error = match result {
+                            Ok(Err(error)) => catalog_error_message(error).to_string(),
+                            _ => "Catalog refresh worker unavailable".to_string(),
+                        };
+                        let changed = app.catalog_error.as_ref() != Some(&error);
+                        app.catalog_error = Some(error);
+                        changed
+                    }
+                };
+                if changed {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn prompt_import_kubeconfig(&mut self, window: &mut Window, cx: &mut Context<Self>) {

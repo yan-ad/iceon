@@ -6,12 +6,14 @@
 
 use std::num::NonZeroU16;
 
-use gpui_kit::component::input::{Copy, Paste};
+use gpui_kit::component::input::{Copy, Paste, SelectAll};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 const SCROLLBACK_LINES: usize = 2500;
 const LINE_HEIGHT: f32 = 18.0;
+const PADDING_X: f32 = 12.0;
+const PADDING_Y: f32 = 2.0;
 const KEY_CONTEXT: &str = "IceonTerminal";
 
 gpui_kit::actions!(iceon_terminal, [CopySnapshot, PasteClipboard]);
@@ -32,6 +34,8 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("cmd-v", PasteClipboard, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-c", CopySnapshot, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-v", PasteClipboard, Some(KEY_CONTEXT)),
+        KeyBinding::new("cmd-a", SelectAll, Some(KEY_CONTEXT)),
+        KeyBinding::new("ctrl-shift-a", SelectAll, Some(KEY_CONTEXT)),
     ]);
 }
 
@@ -53,6 +57,7 @@ impl vt100::Callbacks for DeviceReplies {
         if !self.enabled || intermediate.is_some() || self.pending.len() > 4096 {
             return;
         }
+
         let parameter = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
         match (prefix, parameter, command) {
             (None, 0, 'c') => self.pending.push_str("\x1b[?1;2c"),
@@ -95,6 +100,91 @@ pub(crate) struct TerminalSurface {
     selecting: bool,
     cell_width: Pixels,
     line_height: f32,
+    metrics: Option<(Font, f32)>,
+    grid_cache: GridCache,
+    #[cfg(debug_assertions)]
+    render_count: usize,
+    #[cfg(debug_assertions)]
+    grid_build_count: usize,
+}
+
+#[derive(Clone, PartialEq)]
+struct GridStyle {
+    font: Font,
+    font_size: f32,
+    background: u32,
+    foreground: u32,
+}
+
+#[derive(Default)]
+struct GridCache {
+    dirty: bool,
+    style: Option<GridStyle>,
+    rows: Vec<(SharedString, Vec<TextRun>)>,
+}
+
+impl GridCache {
+    fn needs_rebuild(&self, style: &GridStyle) -> bool {
+        self.dirty || self.style.as_ref() != Some(style)
+    }
+
+    fn process_output(&mut self, parser: &mut vt100::Parser<DeviceReplies>, bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            return false;
+        }
+        parser.process(bytes);
+        self.dirty = true;
+        true
+    }
+
+    fn resize(&mut self, parser: &mut vt100::Parser<DeviceReplies>, cols: u16, rows: u16) -> bool {
+        let (cols, rows) = dimensions(cols, rows);
+        if parser.screen().size() == (rows, cols) {
+            return false;
+        }
+        parser.set_size(rows, cols);
+        self.dirty = true;
+        true
+    }
+}
+
+#[cfg(test)]
+fn inner_bounds(bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    let origin = point(
+        bounds.origin.x + px(PADDING_X),
+        bounds.origin.y + px(PADDING_Y),
+    );
+    Bounds::from_corners(
+        origin,
+        point(
+            (bounds.origin.x + bounds.size.width - px(PADDING_X)).max(origin.x),
+            (bounds.origin.y + bounds.size.height - px(PADDING_Y)).max(origin.y),
+        ),
+    )
+}
+
+fn grid_dimensions(bounds: Bounds<Pixels>, cell_width: Pixels, line_height: f32) -> (u16, u16) {
+    let cols = (f32::from(bounds.size.width) / f32::from(cell_width).max(1.)).floor() as u16;
+    let rows = (f32::from(bounds.size.height) / line_height.max(1.)).floor() as u16;
+    let (cols, rows) = dimensions(cols, rows);
+    (cols.get(), rows.get())
+}
+
+fn cell_at_position(
+    position: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    cell_width: Pixels,
+    line_height: f32,
+    cols: u16,
+    rows: u16,
+) -> (u16, u16) {
+    let col = (f32::from(position.x - bounds.origin.x) / f32::from(cell_width).max(1.))
+        .floor()
+        .max(0.) as u16;
+    let row = (f32::from(position.y - bounds.origin.y) / line_height.max(1.))
+        .floor()
+        .max(0.) as u16;
+    (row.min(rows.saturating_sub(1)), col.min(cols))
 }
 
 impl EventEmitter<TerminalEvent> for TerminalSurface {}
@@ -119,6 +209,16 @@ fn parser(cols: u16, rows: u16) -> vt100::Parser {
 }
 
 impl TerminalSurface {
+    #[cfg(debug_assertions)]
+    pub(crate) fn performance_snapshot(&self) -> (usize, usize) {
+        (self.render_count, self.grid_build_count)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn selection_snapshot(&self) -> Option<String> {
+        self.selected_text()
+    }
+
     pub(crate) fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             parser: surface_parser(80, 24, false),
@@ -128,6 +228,12 @@ impl TerminalSurface {
             selecting: false,
             cell_width: px(8.),
             line_height: LINE_HEIGHT,
+            metrics: None,
+            grid_cache: GridCache::default(),
+            #[cfg(debug_assertions)]
+            render_count: 0,
+            #[cfg(debug_assertions)]
+            grid_build_count: 0,
         }
     }
 
@@ -138,7 +244,9 @@ impl TerminalSurface {
 
     /// Prefer this entry point if transport chunks may split a UTF-8 code point.
     pub(crate) fn feed_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
-        self.parser.process(bytes);
+        if !self.grid_cache.process_output(&mut self.parser, bytes) {
+            return;
+        }
         let reply = std::mem::take(&mut self.parser.callbacks_mut().pending);
         if !reply.is_empty() {
             cx.emit(TerminalEvent::Input(reply));
@@ -155,6 +263,7 @@ impl TerminalSurface {
         let enabled = self.parser.callbacks().enabled;
         self.parser = surface_parser(cols, rows, enabled);
         self.selection = None;
+        self.grid_cache.dirty = true;
         cx.notify();
     }
 
@@ -167,10 +276,12 @@ impl TerminalSurface {
     /// Clamp and notify the remote consumer only when the cell grid actually changes.
     pub(crate) fn resize(&mut self, cols: u16, rows: u16, cx: &mut Context<Self>) {
         let (cols, rows) = dimensions(cols, rows);
-        if self.size() == (cols.get(), rows.get()) {
+        if !self
+            .grid_cache
+            .resize(&mut self.parser, cols.get(), rows.get())
+        {
             return;
         }
-        self.parser.set_size(rows, cols);
         cx.emit(TerminalEvent::Resize {
             cols: cols.get(),
             rows: rows.get(),
@@ -185,13 +296,14 @@ impl TerminalSurface {
 
     fn cell_at(&self, position: Point<Pixels>) -> (u16, u16) {
         let (cols, rows) = self.size();
-        let col = (f32::from(position.x - self.bounds.origin.x) / f32::from(self.cell_width))
-            .floor()
-            .max(0.) as u16;
-        let row = (f32::from(position.y - self.bounds.origin.y) / self.line_height)
-            .floor()
-            .max(0.) as u16;
-        (row.min(rows - 1), col.min(cols))
+        cell_at_position(
+            position,
+            self.bounds,
+            self.cell_width,
+            self.line_height,
+            cols,
+            rows,
+        )
     }
 
     fn selected_text(&self) -> Option<String> {
@@ -203,11 +315,20 @@ impl TerminalSurface {
         Some(self.parser.screen().contents_between(a.0, a.1, b.0, b.1))
     }
 
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        let (cols, rows) = self.size();
+        self.selection = Some(((0, 0), (rows.saturating_sub(1), cols)));
+        self.selecting = false;
+        self.grid_cache.dirty = true;
+        cx.notify();
+    }
+
     fn finish_selection(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         if !self.selecting {
             return;
         }
         self.selecting = false;
+        self.grid_cache.dirty = true;
         let end = self.cell_at(position);
         if let Some((_, selected_end)) = &mut self.selection {
             *selected_end = end;
@@ -242,6 +363,7 @@ impl TerminalSurface {
 
     fn send_input(&mut self, input: String, cx: &mut Context<Self>) {
         self.selection = None;
+        self.grid_cache.dirty = true;
         self.parser.screen_mut().set_scrollback(0);
         cx.emit(TerminalEvent::Input(input));
         cx.notify();
@@ -412,96 +534,119 @@ impl Render for TerminalSurface {
         let (default_bg, default_fg) =
             crate::preference_runtime::terminal_colors(preferences.theme, dark);
         let (cols, rows) = self.size();
-        let cell_width = window
-            .text_system()
-            .ch_advance(
-                window.text_system().resolve_font(&console_font),
-                px(font_size),
-            )
-            .unwrap_or(px(8.0));
-        self.cell_width = cell_width;
-        self.line_height = line_height;
-        let screen = self.parser.screen();
-        let cursor = screen.cursor_position();
-        let show_cursor = !screen.hide_cursor() && screen.scrollback() == 0;
-        let mut lines = Vec::with_capacity(usize::from(rows));
-        for row in 0..rows {
-            let mut text = String::new();
-            let mut runs = Vec::new();
-            for col in 0..cols {
-                let Some(cell) = screen.cell(row, col) else {
-                    continue;
-                };
-                if cell.is_wide_continuation() {
-                    continue;
-                }
-                let content = if cell.contents().is_empty() {
-                    " "
-                } else {
-                    cell.contents()
-                };
-                text.push_str(content);
-                let mut foreground = ansi_color(cell.fgcolor(), true, cell.bold());
-                let mut background = ansi_color(cell.bgcolor(), false, false);
-                if cell.fgcolor() == vt100::Color::Default {
-                    foreground = default_fg;
-                }
-                if cell.bgcolor() == vt100::Color::Default {
-                    background = default_bg;
-                }
-                if cell.inverse() {
-                    std::mem::swap(&mut foreground, &mut background);
-                }
-                if cell.dim() {
-                    foreground = (foreground & 0xfefefe) >> 1;
-                }
-                if show_cursor
-                    && cursor.0 == row
-                    && (cursor.1 == col || (cell.is_wide() && cursor.1 == col + 1))
-                {
-                    foreground = 0x000000;
-                    background = 0xd4d4d4;
-                }
-                if let Some((a, b)) = self.selection {
-                    let (a, b) = if a < b { (a, b) } else { (b, a) };
-                    if (row, col) >= a && (row, col) < b {
-                        background = 0x365f8c;
-                        foreground = 0xffffff;
-                    }
-                }
-                let mut face = console_font.clone();
-                if cell.bold() {
-                    face = face.bold();
-                }
-                if cell.italic() {
-                    face = face.italic();
-                }
-                push_text_run(
-                    &mut runs,
-                    TextRun {
-                        len: content.len(),
-                        font: face,
-                        color: rgb(foreground).into(),
-                        background_color: Some(rgb(background).into()),
-                        underline: cell.underline().then_some(UnderlineStyle {
-                            thickness: px(1.0),
-                            color: Some(rgb(foreground).into()),
-                            wavy: false,
-                        }),
-                        strikethrough: None,
-                    },
-                );
-            }
-            lines.push(
-                div()
-                    .h(px(line_height))
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .child(StyledText::new(text).with_runs(runs)),
-            );
+        #[cfg(debug_assertions)]
+        {
+            self.render_count += 1;
         }
+        if self.metrics.as_ref() != Some(&(console_font.clone(), font_size)) {
+            self.cell_width = window
+                .text_system()
+                .ch_advance(
+                    window.text_system().resolve_font(&console_font),
+                    px(font_size),
+                )
+                .unwrap_or(px(8.0));
+            self.line_height = line_height;
+            self.metrics = Some((console_font.clone(), font_size));
+        }
+        let cell_width = self.cell_width;
+        let style = GridStyle {
+            font: console_font.clone(),
+            font_size,
+            background: default_bg,
+            foreground: default_fg,
+        };
+        if self.grid_cache.needs_rebuild(&style) {
+            #[cfg(debug_assertions)]
+            {
+                self.grid_build_count += 1;
+            }
+            let screen = self.parser.screen();
+            let cursor = screen.cursor_position();
+            let show_cursor = !screen.hide_cursor() && screen.scrollback() == 0;
+            let mut lines = Vec::with_capacity(usize::from(rows));
+            for row in 0..rows {
+                let mut text = String::new();
+                let mut runs = Vec::new();
+                for col in 0..cols {
+                    let Some(cell) = screen.cell(row, col) else {
+                        continue;
+                    };
+                    if cell.is_wide_continuation() {
+                        continue;
+                    }
+                    let content = if cell.contents().is_empty() {
+                        " "
+                    } else {
+                        cell.contents()
+                    };
+                    text.push_str(content);
+                    let mut foreground = ansi_color(cell.fgcolor(), true, cell.bold());
+                    let mut background = ansi_color(cell.bgcolor(), false, false);
+                    if cell.fgcolor() == vt100::Color::Default {
+                        foreground = default_fg;
+                    }
+                    if cell.bgcolor() == vt100::Color::Default {
+                        background = default_bg;
+                    }
+                    if cell.inverse() {
+                        std::mem::swap(&mut foreground, &mut background);
+                    }
+                    if cell.dim() {
+                        foreground = (foreground & 0xfefefe) >> 1;
+                    }
+                    if show_cursor
+                        && cursor.0 == row
+                        && (cursor.1 == col || (cell.is_wide() && cursor.1 == col + 1))
+                    {
+                        foreground = 0x000000;
+                        background = 0xd4d4d4;
+                    }
+                    if let Some((a, b)) = self.selection {
+                        let (a, b) = if a < b { (a, b) } else { (b, a) };
+                        if (row, col) >= a && (row, col) < b {
+                            background = 0x365f8c;
+                            foreground = 0xffffff;
+                        }
+                    }
+                    let mut face = console_font.clone();
+                    if cell.bold() {
+                        face = face.bold();
+                    }
+                    if cell.italic() {
+                        face = face.italic();
+                    }
+                    push_text_run(
+                        &mut runs,
+                        TextRun {
+                            len: content.len(),
+                            font: face,
+                            color: rgb(foreground).into(),
+                            background_color: Some(rgb(background).into()),
+                            underline: cell.underline().then_some(UnderlineStyle {
+                                thickness: px(1.0),
+                                color: Some(rgb(foreground).into()),
+                                wavy: false,
+                            }),
+                            strikethrough: None,
+                        },
+                    );
+                }
+                lines.push((SharedString::from(text), runs));
+            }
+            self.grid_cache.rows = lines;
+            self.grid_cache.style = Some(style);
+            self.grid_cache.dirty = false;
+        }
+        let lines = self.grid_cache.rows.iter().map(|(text, runs)| {
+            div()
+                .h(px(line_height))
+                .flex_shrink_0()
+                .overflow_hidden()
+                .child(StyledText::new(text.clone()).with_runs(runs.clone()))
+        });
         let weak = cx.entity().downgrade();
-        let bounds_owner = weak.clone();
+        let previous_bounds = self.bounds;
         div()
             .id("terminal-surface")
             .key_context(KEY_CONTEXT)
@@ -523,6 +668,7 @@ impl Render for TerminalSurface {
                     let start = this.cell_at(event.position);
                     this.selection = Some((start, start));
                     this.selecting = true;
+                    this.grid_cache.dirty = true;
                     cx.notify();
                 }),
             )
@@ -530,8 +676,12 @@ impl Render for TerminalSurface {
                 if this.selecting && event.pressed_button == Some(MouseButton::Left) {
                     let end = this.cell_at(event.position);
                     if let Some((_, selected_end)) = &mut this.selection {
+                        if *selected_end == end {
+                            return;
+                        }
                         *selected_end = end;
                     }
+                    this.grid_cache.dirty = true;
                     cx.notify();
                 }
             }))
@@ -561,6 +711,7 @@ impl Render for TerminalSurface {
             // Also handle native Edit-menu actions (the component input action types).
             .on_action(cx.listener(|this, _: &Copy, _, cx| this.copy_snapshot(cx)))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste(cx)))
+            .on_action(cx.listener(|this, _: &SelectAll, _, cx| this.select_all(cx)))
             .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                 if this.parser.screen().alternate_screen() {
                     return;
@@ -574,31 +725,38 @@ impl Render for TerminalSurface {
                 let offset = (current + delta.round() as isize).max(0) as usize;
                 this.selection = None;
                 this.parser.screen_mut().set_scrollback(offset);
+                this.grid_cache.dirty = true;
                 cx.notify();
                 cx.stop_propagation();
             }))
-            .child(div().flex().flex_col().children(lines))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(PADDING_X))
+                    .top(px(PADDING_Y))
+                    .right(px(PADDING_X))
+                    .bottom(px(PADDING_Y))
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .children(lines),
+            )
             .child(
                 canvas(
                     move |bounds, window, _| {
-                        // Ignore hidden/zero-sized views. Layout measurement never mutates an
-                        // entity during paint; defer and check again to avoid a render loop.
-                        if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
+                        // Canvas is already inset: do not subtract padding twice.
+                        if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
                             return;
                         }
-                        // Bounds are hit-test metadata only. Defer outside paint.
-                        window.on_next_frame(move |_, cx| {
-                            let _ = bounds_owner.update(cx, |this, _| this.bounds = bounds);
-                        });
-                        let measured_cols =
-                            (f32::from(bounds.size.width) / f32::from(cell_width)).floor() as u16;
-                        let measured_rows =
-                            (f32::from(bounds.size.height) / line_height).floor() as u16;
-                        let (new_cols, new_rows) = dimensions(measured_cols, measured_rows);
-                        if (new_cols.get(), new_rows.get()) != (cols, rows) {
+                        let measured = grid_dimensions(bounds, cell_width, line_height);
+                        if bounds != previous_bounds || measured != (cols, rows) {
                             window.on_next_frame(move |_, cx| {
                                 let _ = weak.update(cx, |this, cx| {
-                                    this.resize(new_cols.get(), new_rows.get(), cx)
+                                    this.bounds = bounds;
+                                    // Preferences may have changed since layout.
+                                    let (cols, rows) =
+                                        grid_dimensions(bounds, this.cell_width, this.line_height);
+                                    this.resize(cols, rows, cx);
                                 });
                             });
                         }
@@ -606,7 +764,10 @@ impl Render for TerminalSurface {
                     |_, _, _, _| {},
                 )
                 .absolute()
-                .inset_0(),
+                .left(px(PADDING_X))
+                .top(px(PADDING_Y))
+                .right(px(PADDING_X))
+                .bottom(px(PADDING_Y)),
             )
     }
 }
@@ -615,6 +776,83 @@ impl Render for TerminalSurface {
 mod tests {
     use super::{ansi_color, dimensions, encode_key, encode_paste, parser};
     use gpui_kit::{Keystroke, Modifiers};
+
+    #[::core::prelude::v1::test]
+    fn padded_grid_and_selection_use_the_same_inner_origin() {
+        use gpui_kit::{Bounds, point, px, size};
+        let bounds = super::inner_bounds(Bounds {
+            origin: point(px(100.), px(200.)),
+            size: size(px(824.), px(452.)),
+        });
+        assert_eq!(bounds.origin, point(px(112.), px(202.)));
+        assert_eq!(bounds.size, size(px(800.), px(448.)));
+        assert_eq!(super::grid_dimensions(bounds, px(10.), 18.), (80, 24));
+        let cell =
+            |x, y| super::cell_at_position(point(px(x), px(y)), bounds, px(10.), 18., 80, 24);
+        assert_eq!(cell(112., 202.), (0, 0));
+        assert_eq!(cell(132., 238.), (2, 2));
+        // Dragging into padding or outside the terminal clamps safely.
+        assert_eq!(cell(100., 200.), (0, 0));
+        assert_eq!(cell(2000., 2000.), (23, 80));
+        assert_eq!(super::grid_dimensions(bounds, px(20.), 36.), (40, 12));
+        let tiny = super::inner_bounds(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(10.), px(10.)),
+        });
+        assert_eq!(tiny.size, size(px(0.), px(6.)));
+        assert_eq!(super::grid_dimensions(tiny, px(10.), 18.), (1, 1));
+    }
+
+    #[::core::prelude::v1::test]
+    fn grid_cache_invalidates_for_output_cursor_resize_and_style() {
+        let style = super::GridStyle {
+            font: gpui_kit::font("JetBrains Mono"),
+            font_size: 12.,
+            background: 0,
+            foreground: 0xd4d4d4,
+        };
+        let mut cache = super::GridCache::default();
+        let mut parser = super::surface_parser(80, 24, false);
+        assert!(cache.needs_rebuild(&style));
+        cache.style = Some(style.clone());
+        assert!(!cache.needs_rebuild(&style));
+        assert!(!cache.process_output(&mut parser, b""));
+        assert!(!cache.needs_rebuild(&style));
+        assert!(cache.process_output(&mut parser, b"ready"));
+        assert!(cache.needs_rebuild(&style));
+        assert_eq!(parser.screen().contents(), "ready");
+        cache.dirty = false;
+        assert!(cache.process_output(&mut parser, b"\x1b[2;3H"));
+        assert_eq!(parser.screen().cursor_position(), (1, 2));
+        assert!(cache.needs_rebuild(&style));
+        cache.dirty = false;
+        assert!(!cache.resize(&mut parser, 80, 24));
+        assert!(!cache.needs_rebuild(&style));
+        assert!(cache.resize(&mut parser, 40, 12));
+        assert!(cache.needs_rebuild(&style));
+        cache.dirty = false;
+        for changed in [
+            super::GridStyle {
+                font_size: 14.,
+                ..style.clone()
+            },
+            super::GridStyle {
+                font: gpui_kit::font("monospace"),
+                ..style.clone()
+            },
+            super::GridStyle {
+                background: 0xffffff,
+                ..style.clone()
+            },
+            super::GridStyle {
+                foreground: 0x111111,
+                ..style.clone()
+            },
+        ] {
+            assert!(cache.needs_rebuild(&changed));
+        }
+        assert!(!cache.needs_rebuild(&style));
+    }
 
     #[::core::prelude::v1::test]
     fn adjacent_cells_with_same_style_share_one_text_run() {

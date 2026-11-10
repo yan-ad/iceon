@@ -16,7 +16,12 @@ pub mod navigation;
 pub mod pod_dock_view;
 mod preference_runtime;
 pub mod preferences_view;
+#[cfg(debug_assertions)]
+mod render_performance_probe;
 mod resource_scroll;
+mod resource_table;
+#[cfg(debug_assertions)]
+pub use render_performance_probe::run as run_render_performance_probe;
 pub mod secrets_view;
 mod shell_header;
 mod shell_theme;
@@ -69,6 +74,7 @@ pub struct IceonApp {
 
     pub(crate) catalog_snapshot: CatalogSnapshot,
     pub(crate) catalog_error: Option<String>,
+    pub(crate) catalog_refresh_pending: bool,
     pub(crate) pending_remove_cluster: Option<ClusterSummary>,
 
     pub(crate) history: NavigationHistory,
@@ -97,8 +103,8 @@ pub struct IceonApp {
     pub(crate) operation_counter: u64,
 
     pub(crate) overview_snapshot: OverviewSnapshot,
-    pub(crate) resource_page: Option<ResourcePage>,
-    pub(crate) resource_scroll: resource_scroll::ResourceScrollState,
+    pub(crate) resource_page: Option<std::rc::Rc<ResourcePage>>,
+    pub(crate) resource_table: Option<Entity<resource_table::ResourceTable>>,
     pub(crate) current_continue_token: Option<String>,
     pub(crate) continue_token_history: Vec<Option<String>>,
     pub(crate) active_pod_sync_id: Option<String>,
@@ -228,6 +234,8 @@ impl IceonApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter clusters..."));
         let resource_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources by name..."));
+        cx.observe(&resource_filter_input, |_, _, cx| cx.notify())
+            .detach();
         let (namespace_select, namespace_select_items) =
             cluster_view::create_namespace_select(window, cx);
         let status_select = cluster_view::create_status_select(window, cx);
@@ -302,6 +310,7 @@ impl IceonApp {
             secrets,
             catalog_snapshot,
             catalog_error: None,
+            catalog_refresh_pending: false,
             pending_remove_cluster: None,
             history: NavigationHistory::new(initial_route.clone()),
             cluster_order,
@@ -327,7 +336,7 @@ impl IceonApp {
             operation_counter: 1,
             overview_snapshot: OverviewSnapshot::default(),
             resource_page: None,
-            resource_scroll: resource_scroll::ResourceScrollState::default(),
+            resource_table: None,
             current_continue_token: None,
             continue_token_history: vec![],
             active_pod_sync_id: None,

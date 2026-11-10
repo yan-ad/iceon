@@ -10,7 +10,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use iceon_core::local_terminal::{LocalTerminal, Status};
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 pub(crate) struct DeviceTerminalTab {
     pub key: u64,
@@ -37,6 +37,28 @@ fn status_text(status: Status) -> String {
     }
 }
 
+/// Use the shell's inherited directory without enumerating its contents.
+fn local_terminal_title(cwd: Option<&Path>, home: Option<&Path>, shell: &str) -> String {
+    let directory = match cwd {
+        Some(cwd) if Some(cwd) == home => "~".to_owned(),
+        Some(cwd) => cwd
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cwd.display().to_string()),
+        None => "Device".into(),
+    };
+    format!("{directory} — {shell}")
+}
+
+fn local_poll_changes(
+    has_output: bool,
+    dropped: bool,
+    old_status: &str,
+    status: &str,
+) -> (bool, bool) {
+    (has_output || dropped, old_status != status)
+}
+
 impl IceonApp {
     pub(crate) fn open_device_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.local_terminal_active = true;
@@ -61,6 +83,14 @@ impl IceonApp {
             cx.notify();
             return;
         }
+        let cwd = std::env::current_dir().ok();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".into());
+        let shell = Path::new(&shell)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("sh");
+        let title = local_terminal_title(cwd.as_deref(), home.as_deref(), shell);
         let key = self.next_operation_id();
         let terminal = cx.new(|cx| {
             let mut terminal = TerminalSurface::new(window, cx);
@@ -93,9 +123,9 @@ impl IceonApp {
         window.focus(&terminal.focus_handle(cx), cx);
         self.device_terminals.push(DeviceTerminalTab {
             key,
-            title: "Device terminal".into(),
+            title,
             status: "opening".into(),
-            terminal,
+            terminal: terminal.clone(),
             process: None,
         });
         self.active_device_terminal = Some(key);
@@ -132,7 +162,8 @@ impl IceonApp {
                 let Some(tab) = app.device_terminals.iter_mut().find(|tab| tab.key == key) else {
                     return false;
                 };
-                tab.title = format!("Device — {}", process.shell_name());
+                tab.title =
+                    local_terminal_title(cwd.as_deref(), home.as_deref(), process.shell_name());
                 tab.status = "running".into();
                 let (cols, rows) = tab.terminal.read(cx).size();
                 let _ = process.resize(cols, rows);
@@ -146,6 +177,7 @@ impl IceonApp {
                 process.close();
                 return;
             }
+            let mut last_status = "running".to_owned();
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(40))
@@ -160,35 +192,49 @@ impl IceonApp {
                 let snapshot = process.read();
                 let status = status_text(snapshot.status);
                 let finished = snapshot.status != Status::Running;
-                let changed = !snapshot.output.is_empty() || snapshot.dropped || finished;
-                if !changed {
-                    continue;
+                let (output_changed, status_changed) = local_poll_changes(
+                    !snapshot.output.is_empty(),
+                    snapshot.dropped,
+                    &last_status,
+                    &status,
+                );
+                // Feed the terminal independently: raw PTY output must not take a mutable
+                // workspace borrow (device-query reply events may update the owner).
+                if output_changed {
+                    if cx
+                        .update(|_, cx| {
+                            terminal.update(cx, |surface, cx| {
+                                if snapshot.dropped {
+                                    surface.reset(cx);
+                                }
+                                if !snapshot.output.is_empty() {
+                                    surface.feed_bytes(&snapshot.output, cx);
+                                }
+                            });
+                        })
+                        .is_err()
+                    {
+                        process.close();
+                        break;
+                    }
                 }
-                let updated = owner.update_in(cx, |app, _, cx| {
-                    let Some(tab) = app.device_terminals.iter_mut().find(|tab| tab.key == key)
-                    else {
-                        return false;
-                    };
-                    let status_changed = tab.status != status;
-                    tab.status = status;
-                    tab.terminal.update(cx, |surface, cx| {
-                        if snapshot.dropped {
-                            surface.reset(cx);
-                        }
-                        if !snapshot.output.is_empty() {
-                            surface.feed_bytes(&snapshot.output, cx);
-                        }
-                    });
-                    if status_changed {
+                if status_changed {
+                    last_status = status.clone();
+                    let updated = owner.update_in(cx, |app, _, cx| {
+                        let Some(tab) = app.device_terminals.iter_mut().find(|tab| tab.key == key)
+                        else {
+                            return false;
+                        };
+                        tab.status = status;
                         if let Some(dock) = &app.workspace_dock {
                             dock.notify_console(cx);
                         }
+                        true
+                    });
+                    if !matches!(updated, Ok(true)) {
+                        process.close();
+                        break;
                     }
-                    true
-                });
-                if !matches!(updated, Ok(true)) {
-                    process.close();
-                    break;
                 }
                 if finished {
                     break;
@@ -243,10 +289,63 @@ impl IceonApp {
                 Button::new("open-device-terminal")
                     .ghost()
                     .label("Open device terminal")
+                    .tooltip("Open device terminal")
+                    .accessibility_label("Open device terminal")
                     .on_click(
                         cx.listener(|app, _, window, cx| app.open_device_terminal(window, cx)),
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{local_poll_changes, local_terminal_title};
+    use std::path::Path;
+
+    #[test]
+    fn local_titles_identify_directory_and_shell() {
+        assert_eq!(
+            local_terminal_title(Some(Path::new("/work/icekube")), None, "fish"),
+            "icekube — fish"
+        );
+        assert_eq!(
+            local_terminal_title(
+                Some(Path::new("/home/me")),
+                Some(Path::new("/home/me")),
+                "zsh"
+            ),
+            "~ — zsh"
+        );
+        assert_eq!(
+            local_terminal_title(Some(Path::new("/")), None, "sh"),
+            "/ — sh"
+        );
+        assert_eq!(local_terminal_title(None, None, "sh"), "Device — sh");
+    }
+
+    #[test]
+    fn output_and_status_have_independent_dirty_flags() {
+        assert_eq!(
+            local_poll_changes(false, false, "running", "running"),
+            (false, false)
+        );
+        assert_eq!(
+            local_poll_changes(true, false, "running", "running"),
+            (true, false)
+        );
+        assert_eq!(
+            local_poll_changes(false, true, "running", "running"),
+            (true, false)
+        );
+        assert_eq!(
+            local_poll_changes(false, false, "running", "exited (0)"),
+            (false, true)
+        );
+        assert_eq!(
+            local_poll_changes(true, false, "running", "failed"),
+            (true, true)
+        );
     }
 }

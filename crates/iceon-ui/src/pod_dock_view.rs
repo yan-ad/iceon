@@ -97,6 +97,21 @@ struct LogPresentation {
     rows: Rc<Vec<SharedString>>,
 }
 
+/// Bound visible labels by Unicode scalar count, keeping the shell/container suffix.
+/// Full names remain available in the tab tooltip and accessibility label.
+fn console_tab_title(title: &str) -> String {
+    const MAX_CHARS: usize = 36;
+    let chars = title.chars().collect::<Vec<_>>();
+    if chars.len() <= MAX_CHARS {
+        return title.to_owned();
+    }
+    chars[..23]
+        .iter()
+        .chain(std::iter::once(&'…'))
+        .chain(chars[chars.len() - 12..].iter())
+        .collect()
+}
+
 // Output-only terminal updates belong to TerminalSurface, not the workspace.
 fn poll_needs_update(
     output: &str,
@@ -812,9 +827,14 @@ impl IceonApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // The first device session is represented by the permanent Terminal tab.
+        // Keep a Terminal launcher only while there are no local sessions.
         // Snapshot keys, not indices: close/reconnect can change positions before a click.
-        let primary_key = self.device_terminals.first().map(|tab| tab.key);
+        let primary = self.device_terminals.first();
+        let primary_key = primary.map(|tab| tab.key);
+        let primary_title = primary.map(|tab| tab.title.as_str()).unwrap_or("Terminal");
+        let primary_tooltip = primary
+            .map(|tab| format!("{} — {}", tab.title, tab.status))
+            .unwrap_or_else(|| "Open your device terminal".into());
         let extra_keys = self
             .device_terminals
             .iter()
@@ -841,12 +861,15 @@ impl IceonApp {
         };
         let mut tabs = vec![
             Tab::new()
-                .label("Terminal")
-                .aria_label("Terminal — device shell")
+                .min_w(px(160.))
+                .px_3()
+                .flex_shrink_0()
+                .label(console_tab_title(primary_title))
+                .aria_label(primary_tooltip.clone())
                 .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
                 .when_some(primary_key, |tab, key| {
                     tab.suffix(
-                        Button::new("close-primary-device-terminal")
+                        Button::new(SharedString::from(format!("close-device-console-{key}")))
                             .xsmall()
                             .ghost()
                             .icon(IconName::Close)
@@ -858,14 +881,17 @@ impl IceonApp {
                             })),
                     )
                 })
-                .tooltip(|window, cx| Tooltip::new("Open your device terminal").build(window, cx)),
+                .tooltip(move |window, cx| Tooltip::new(primary_tooltip.clone()).build(window, cx)),
         ];
         tabs.extend(self.device_terminals.iter().skip(1).map(|tab| {
             let key = tab.key;
             let title = tab.title.clone();
             let tooltip = format!("{} — {}", title, tab.status);
             Tab::new()
-                .label(title)
+                .min_w(px(160.))
+                .px_3()
+                .flex_shrink_0()
+                .label(console_tab_title(&title))
                 .aria_label(tooltip.clone())
                 .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
                 .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
@@ -893,7 +919,10 @@ impl IceonApp {
                 tab.status
             );
             Tab::new()
-                .label(title)
+                .min_w(px(160.))
+                .px_3()
+                .flex_shrink_0()
+                .label(console_tab_title(&title))
                 .aria_label(tooltip.clone())
                 .prefix(
                     gpui_kit::component::Icon::new(if tab.mode == PodStreamMode::Logs {
@@ -932,9 +961,9 @@ impl IceonApp {
         let new_menu = Button::new("console-new-menu")
             .small()
             .ghost()
-            .icon(IconName::ChevronDown)
-            .tooltip("New session options")
-            .accessibility_label("New session options")
+            .icon(IconName::Plus)
+            .tooltip("New console session")
+            .accessibility_label("New console session")
             .dropdown_menu(move |mut menu, _, _| {
                 let owner = menu_owner.clone();
                 menu = menu.item(PopupMenuItem::new("Device Terminal").on_click(
@@ -965,7 +994,7 @@ impl IceonApp {
         TabBar::new("pod-console-tabs")
             .underline()
             .max_width(px(280.))
-            .menu(true)
+            .menu(false)
             .small()
             .h(px(36.))
             .w_full()
@@ -974,26 +1003,10 @@ impl IceonApp {
             .border_color(cx.theme().border)
             .selected_index(selected_index)
             .children(tabs)
-            .last_empty_space(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        Button::new("console-new")
-                            .small()
-                            .ghost()
-                            .icon(IconName::Plus)
-                            .label("New")
-                            .tooltip("New device terminal")
-                            .accessibility_label("New device terminal")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_device_terminal(window, cx)
-                            })),
-                    )
-                    .child(new_menu),
-            )
+            .last_empty_space(div().flex_shrink_0().px_1().child(new_menu))
             .suffix(
                 h_flex()
+                    .flex_shrink_0()
                     .gap_1()
                     .items_center()
                     .child(
@@ -1186,79 +1199,46 @@ impl IceonApp {
                     terminal_preferences.theme,
                     cx.theme().mode.is_dark(),
                 );
-                el.child(
-                    h_flex()
-                        .w_full()
-                        .px_2()
-                        .py_1()
-                        .gap_2()
-                        .items_center()
-                        .child(
-                            Button::new("pod-console-target")
-                                .small()
-                                .ghost()
-                                .disabled(true)
-                                .label(format!("{} / {}", tab.namespace, tab.pod_name)),
-                        )
-                        .when_some(tab.container_select.clone(), |el, select| {
-                            el.child(Select::new(&select).small().w(px(160.0)))
-                        })
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(tab.status.clone()),
-                        )
-                        .when(logs, |el| {
-                            el.child(
-                                div().flex_1().min_w_0().child(
-                                    Input::new(&self.pod_log_filter_input)
-                                        .small()
-                                        .cleanable(true),
-                                ),
-                            )
-                        })
-                        .child(
-                            Button::new("pod-console-copy")
-                                .small()
-                                .ghost()
-                                .icon(IconName::Copy)
-                                .tooltip("Copy console output")
-                                .accessibility_label("Copy console output")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let Some(active_idx) = this
-                                        .pod_dock_tabs
-                                        .iter()
-                                        .position(|tab| tab.key == active_key)
-                                    else {
-                                        return;
-                                    };
-                                    if logs {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            this.pod_dock_tabs
-                                                .get(active_idx)
-                                                .map(|tab| tab.output_lines.join("\n"))
-                                                .unwrap_or_default(),
-                                        ));
-                                    } else if let Some(terminal) = this
-                                        .pod_dock_tabs
-                                        .get(active_idx)
-                                        .and_then(|tab| tab.terminal.clone())
-                                    {
-                                        terminal
-                                            .update(cx, |terminal, cx| terminal.copy_snapshot(cx));
-                                    }
-                                })),
-                        )
-                        .when(logs, |el| {
-                            el.child(
-                                Button::new("pod-console-follow")
+                el.when(logs, |el| {
+                    el.child(
+                        h_flex()
+                            .w_full()
+                            .px_2()
+                            .py_1()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Button::new("pod-console-target")
                                     .small()
                                     .ghost()
-                                    .icon(IconName::ChevronDown)
-                                    .tooltip("Toggle following output")
-                                    .accessibility_label("Toggle following output")
-                                    .selected(tab.follow)
+                                    .disabled(true)
+                                    .label(format!("{} / {}", tab.namespace, tab.pod_name)),
+                            )
+                            .when_some(tab.container_select.clone(), |el, select| {
+                                el.child(Select::new(&select).small().w(px(160.0)))
+                            })
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(tab.status.clone()),
+                            )
+                            .when(logs, |el| {
+                                el.child(
+                                    div().flex_1().min_w_0().child(
+                                        Input::new(&self.pod_log_filter_input)
+                                            .small()
+                                            .cleanable(true),
+                                    ),
+                                )
+                            })
+                            .child(
+                                Button::new("pod-console-copy")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Copy)
+                                    .tooltip("Copy console output")
+                                    .accessibility_label("Copy console output")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         let Some(active_idx) = this
                                             .pod_dock_tabs
@@ -1267,35 +1247,73 @@ impl IceonApp {
                                         else {
                                             return;
                                         };
-                                        if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
-                                            tab.follow = !tab.follow;
-                                            if tab.follow {
-                                                tab.log_scroll.scroll_to_bottom();
-                                            }
+                                        if logs {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                this.pod_dock_tabs
+                                                    .get(active_idx)
+                                                    .map(|tab| tab.output_lines.join("\n"))
+                                                    .unwrap_or_default(),
+                                            ));
+                                        } else if let Some(terminal) = this
+                                            .pod_dock_tabs
+                                            .get(active_idx)
+                                            .and_then(|tab| tab.terminal.clone())
+                                        {
+                                            terminal.update(cx, |terminal, cx| {
+                                                terminal.copy_snapshot(cx)
+                                            });
                                         }
-                                        cx.notify();
                                     })),
                             )
-                        })
-                        .child(
-                            Button::new("pod-console-reconnect")
-                                .small()
-                                .ghost()
-                                .icon(IconName::Undo2)
-                                .tooltip("Reconnect stream")
-                                .accessibility_label("Reconnect stream")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let Some(active_idx) = this
-                                        .pod_dock_tabs
-                                        .iter()
-                                        .position(|tab| tab.key == active_key)
-                                    else {
-                                        return;
-                                    };
-                                    this.reopen_pod_tab(active_idx, window, cx)
-                                })),
-                        ),
-                )
+                            .when(logs, |el| {
+                                el.child(
+                                    Button::new("pod-console-follow")
+                                        .small()
+                                        .ghost()
+                                        .icon(IconName::ChevronDown)
+                                        .tooltip("Toggle following output")
+                                        .accessibility_label("Toggle following output")
+                                        .selected(tab.follow)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            let Some(active_idx) = this
+                                                .pod_dock_tabs
+                                                .iter()
+                                                .position(|tab| tab.key == active_key)
+                                            else {
+                                                return;
+                                            };
+                                            if let Some(tab) =
+                                                this.pod_dock_tabs.get_mut(active_idx)
+                                            {
+                                                tab.follow = !tab.follow;
+                                                if tab.follow {
+                                                    tab.log_scroll.scroll_to_bottom();
+                                                }
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(
+                                Button::new("pod-console-reconnect")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Undo2)
+                                    .tooltip("Reconnect stream")
+                                    .accessibility_label("Reconnect stream")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let Some(active_idx) = this
+                                            .pod_dock_tabs
+                                            .iter()
+                                            .position(|tab| tab.key == active_key)
+                                        else {
+                                            return;
+                                        };
+                                        this.reopen_pod_tab(active_idx, window, cx)
+                                    })),
+                            ),
+                    )
+                })
                 .child(
                     div()
                         .relative()
@@ -1724,6 +1742,17 @@ fn feed_tab_output(tab: &mut PodDockTab, chunk: &str, cx: &mut Context<IceonApp>
 #[cfg(test)]
 mod chunk_tests {
     use super::append_log_chunk;
+    #[test]
+    fn console_labels_are_bounded_without_losing_shell_suffix() {
+        assert_eq!(super::console_tab_title("icekube — fish"), "icekube — fish");
+        assert_eq!(super::console_tab_title("Terminal"), "Terminal");
+        let title = format!("{} — fish", "界".repeat(80));
+        let label = super::console_tab_title(&title);
+        assert_eq!(label.chars().count(), 36);
+        assert!(label.ends_with(" — fish"));
+        assert!(label.contains('…'));
+        assert_eq!(super::console_tab_title(&"a".repeat(36)), "a".repeat(36));
+    }
     #[test]
     fn idle_snapshots_do_not_schedule_updates() {
         assert!(!super::poll_needs_update(

@@ -1,7 +1,10 @@
 //! Standard Dock behavior belongs only to the bottom console.
 //! Resources and inspector are ordinary workspace views, not dockable panels.
 
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use gpui_kit::component::{
     Icon, IconName,
@@ -17,6 +20,50 @@ use gpui_kit::*;
 use crate::{IceonApp, navigation::Route};
 
 const CONSOLE_HEIGHT: f32 = 320.;
+
+#[derive(PartialEq, Eq)]
+struct ResourceProjection {
+    route: Route,
+    section: String,
+    page: usize,
+    namespace: Option<String>,
+    namespaces: Vec<String>,
+    query: String,
+    status: Option<String>,
+    loading: bool,
+    error: Option<String>,
+    creating: bool,
+    create_message: Option<String>,
+    sync_id: Option<String>,
+    preferences_revision: u64,
+}
+
+fn resource_projection(app: &IceonApp, cx: &App) -> Option<ResourceProjection> {
+    if !matches!(app.history.current(), Route::Cluster { .. })
+        || crate::cluster_view::section_to_resource_kind(&app.active_cluster_section).is_none()
+    {
+        return None;
+    }
+    Some(ResourceProjection {
+        route: app.history.current().clone(),
+        section: app.active_cluster_section.clone(),
+        page: app
+            .resource_page
+            .as_ref()
+            .map(|page| Rc::as_ptr(page) as usize)
+            .unwrap_or_default(),
+        namespace: app.selected_namespace.clone(),
+        namespaces: app.namespaces.clone(),
+        query: app.resource_filter_input.read(cx).value().to_string(),
+        status: app.selected_status_filter.clone(),
+        loading: app.cluster_loading,
+        error: app.cluster_error.clone(),
+        creating: app.creating_resource_kind.is_some(),
+        create_message: app.create_modal_message.clone(),
+        sync_id: app.active_pod_sync_id.clone(),
+        preferences_revision: app.preferences_revision,
+    })
+}
 
 pub(crate) struct WorkspaceDock {
     pub(crate) dock_area: Entity<DockArea>,
@@ -76,13 +123,20 @@ pub(crate) fn create(
     });
     // Invalidate projections only after actual owner notifications. Doing this in
     // render/sync invalidates the area during its own render and causes frame churn.
-    let panes = [main.downgrade(), console.downgrade()];
-    let owner_subscription =
-        cx.observe(&owner.upgrade().expect("workspace owner"), move |_, cx| {
-            for pane in &panes {
-                let _ = pane.update(cx, |_, cx| cx.notify());
+    let main_projection = RefCell::new(resource_projection(owner.upgrade().unwrap().read(cx), cx));
+    let main = main.downgrade();
+    let console_projection = console.downgrade();
+    let owner_subscription = cx.observe(
+        &owner.upgrade().expect("workspace owner"),
+        move |app, cx| {
+            let next = resource_projection(app.read(cx), cx);
+            if next.is_none() || *main_projection.borrow() != next {
+                let _ = main.update(cx, |_, cx| cx.notify());
             }
-        });
+            *main_projection.borrow_mut() = next;
+            let _ = console_projection.update(cx, |_, cx| cx.notify());
+        },
+    );
     WorkspaceDock {
         dock_area,
         _dock_skin: dock_skin,

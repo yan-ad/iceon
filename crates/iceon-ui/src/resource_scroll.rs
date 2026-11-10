@@ -3,7 +3,7 @@
 use gpui_kit::component::VirtualListScrollHandle;
 use iceon_core::connection::ResourceKind;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ResourceScrollScope {
     pub cluster_id: String,
     pub kind: ResourceKind,

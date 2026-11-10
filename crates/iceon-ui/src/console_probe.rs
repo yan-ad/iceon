@@ -421,6 +421,24 @@ impl ConsoleProbe {
                     "PASS console_probe: bundled JetBrains Mono; titleless center; idle panel renders={extra}"
                 );
             }
+            8 => {
+                let selected = self
+                    .terminal
+                    .read(cx)
+                    .selection_snapshot()
+                    .ok_or("Select All did not create a terminal selection")?;
+                require(
+                    selected.contains("offline:/ $") && selected.contains("fixture remote echo"),
+                    "Select All did not include the terminal text",
+                )?;
+                require(
+                    self.inputs.borrow().len() == INPUT.len(),
+                    "Select All sent unintended shell input",
+                )?;
+                println!(
+                    "PASS console_probe: terminal Select All includes visible text without shell input"
+                );
+            }
             _ => unreachable!(),
         }
         Ok(())
@@ -437,7 +455,7 @@ impl Render for ConsoleProbe {
             window.on_next_frame(move |window, cx| {
                 let _ = weak.update(cx, |_, cx| {
                     cx.spawn_in(window, async move |this, cx| {
-                        for stage in 0..=7 {
+                        for stage in 0..=8 {
                             cx.background_executor()
                                 .timer(Duration::from_millis(350))
                                 .await;
@@ -448,7 +466,7 @@ impl Render for ConsoleProbe {
                                         Ok(()) => println!("console_probe: stage {stage} passed"),
                                         Err(error) => eprintln!("FAIL console_probe: {error}"),
                                     }
-                                    if result.is_err() || stage == 7 {
+                                    if result.is_err() || stage == 8 {
                                         *this.outcome.borrow_mut() = Some(result.clone());
                                         cx.quit();
                                     }
@@ -461,6 +479,10 @@ impl Render for ConsoleProbe {
                                         window
                                             .dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
                                     }
+                                }
+                                if stage == 7 && matches!(&checked, Ok(Ok(()))) {
+                                    window
+                                        .dispatch_keystroke(Keystroke::parse("cmd-a").unwrap(), cx);
                                 }
                                 checked
                             });
