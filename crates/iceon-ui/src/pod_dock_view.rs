@@ -1,5 +1,7 @@
 //! Bottom operational dock for Pod Logs, Interactive Exec Shell, Attach, and Port-Forwards.
 
+use std::time::Duration;
+
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -14,10 +16,10 @@ use gpui_kit::*;
 
 use iceon_core::connection::{
     pod_runtime::{
-        PodEvent, PodForwardRequest, PodForwardStopRequest, PodInputRequest, PodResizeRequest,
-        PodStartRequest, PodStopRequest, PodStreamMode,
+        PodForwardRequest, PodForwardStopRequest, PodInputRequest, PodResizeRequest,
+        PodStartRequest, PodStreamMode, PodStreamRequest,
     },
-    pods::PodIdentity,
+    pods::PodRequest,
 };
 
 use crate::IceonApp;
@@ -109,17 +111,16 @@ impl IceonApp {
             return;
         }
 
-        let read_id = self.next_operation_id();
         let connection = self.connection.clone();
-        let identity = PodIdentity {
+        let req = PodRequest {
             cluster_id: session.cluster_id,
             session_id: session.session_id,
             namespace: namespace.clone(),
             name: pod_name.clone(),
-            read_id,
+            uid: None,
         };
         cx.spawn_in(window, async move |this, cx| {
-            let result = connection.pod_detail(identity).await;
+            let result = connection.pod_detail(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(pod) => {
@@ -203,11 +204,11 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let stream_id = format!("pod-stream-{}", self.next_operation_id());
+        let placeholder_id = format!("opening-{}", self.next_operation_id());
         let default_shell = shell_option_path("sh").to_string();
 
         let tab = PodDockTab {
-            id: stream_id.clone(),
+            id: placeholder_id.clone(),
             pod_name: pod_name.clone(),
             namespace: namespace.clone(),
             uid: uid.clone(),
@@ -229,14 +230,15 @@ impl IceonApp {
             command_history: vec![],
         };
         self.pod_dock_tabs.push(tab);
-        self.active_pod_tab = Some(self.pod_dock_tabs.len() - 1);
+        let tab_index = self.pod_dock_tabs.len() - 1;
+        self.active_pod_tab = Some(tab_index);
         self.pod_dock_open = true;
         cx.notify();
 
         self.spawn_pod_stream_worker(
             session.cluster_id,
             session.session_id,
-            stream_id,
+            placeholder_id,
             namespace,
             pod_name,
             uid,
@@ -263,15 +265,17 @@ impl IceonApp {
         let Some(existing) = self.pod_dock_tabs.get(index).cloned() else {
             return;
         };
-        let _ = self.connection.pod_stream_stop(PodStopRequest {
-            cluster_id: session.cluster_id.clone(),
-            session_id: session.session_id.clone(),
-            stream: existing.id,
-        });
+        if !existing.id.starts_with("opening-") {
+            let _ = self.connection.pod_stream_close(PodStreamRequest {
+                cluster_id: session.cluster_id.clone(),
+                session_id: session.session_id.clone(),
+                stream_id: existing.id,
+            });
+        }
 
-        let new_stream_id = format!("pod-stream-{}", self.next_operation_id());
+        let placeholder_id = format!("opening-{}", self.next_operation_id());
         if let Some(tab) = self.pod_dock_tabs.get_mut(index) {
-            tab.id = new_stream_id.clone();
+            tab.id = placeholder_id.clone();
             tab.status = "opening".into();
             tab.paused = false;
             tab.output_lines = vec![format!(
@@ -284,7 +288,7 @@ impl IceonApp {
         self.spawn_pod_stream_worker(
             session.cluster_id,
             session.session_id,
-            new_stream_id,
+            placeholder_id,
             existing.namespace,
             existing.pod_name,
             existing.uid,
@@ -304,7 +308,7 @@ impl IceonApp {
         &mut self,
         cluster_id: String,
         session_id: String,
-        stream_id: String,
+        placeholder_id: String,
         namespace: String,
         pod_name: String,
         uid: String,
@@ -317,12 +321,10 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PodEvent>();
         let connection = self.connection.clone();
         let req = PodStartRequest {
-            cluster_id,
-            session_id,
-            stream: stream_id.clone(),
+            cluster_id: cluster_id.clone(),
+            session_id: session_id.clone(),
             namespace,
             name: pod_name,
             uid,
@@ -339,61 +341,92 @@ impl IceonApp {
         };
 
         cx.spawn_in(window, async move |this, cx| {
-            let start_res = connection
-                .pod_stream_start(req, move |ev| {
-                    let _ = tx.send(ev);
-                })
-                .await;
+            let opened = match connection.pod_stream_open(req).await {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        if let Some(tab) = this
+                            .pod_dock_tabs
+                            .iter_mut()
+                            .find(|t| t.id == placeholder_id)
+                        {
+                            tab.status = "error".into();
+                            tab.output_lines.push(format!("Stream error: {err:?}"));
+                        }
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
 
-            if let Err(err) = start_res {
-                let _ = this.update_in(cx, |this, _, cx| {
-                    if let Some(tab) = this.pod_dock_tabs.iter_mut().find(|t| t.id == stream_id) {
-                        tab.status = "error".into();
-                        tab.output_lines.push(format!("Stream error: {err:?}"));
+            let stream_id = opened.stream_id.clone();
+            let initial_output = opened.output.clone();
+            let initial_status = opened.status.to_string();
+
+            let mut tab_present = false;
+            let _ = this.update_in(cx, |this, _, cx| {
+                if let Some(tab) = this
+                    .pod_dock_tabs
+                    .iter_mut()
+                    .find(|t| t.id == placeholder_id)
+                {
+                    tab.id = stream_id.clone();
+                    tab.status = initial_status;
+                    if !initial_output.is_empty() {
+                        for line in initial_output.lines() {
+                            tab.output_lines.push(line.to_owned());
+                        }
                     }
-                    cx.notify();
+                    tab_present = true;
+                }
+                cx.notify();
+            });
+
+            if !tab_present {
+                let _ = connection.pod_stream_close(PodStreamRequest {
+                    cluster_id,
+                    session_id,
+                    stream_id,
                 });
                 return;
             }
 
-            while let Some(ev) = rx.recv().await {
-                let should_break = matches!(ev.kind, "exit" | "error");
+            loop {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                let snapshot = match connection.pod_stream_read(PodStreamRequest {
+                    cluster_id: cluster_id.clone(),
+                    session_id: session_id.clone(),
+                    stream_id: stream_id.clone(),
+                }) {
+                    Ok(snap) => snap,
+                    Err(_) => break,
+                };
+
+                let is_done = matches!(snapshot.status, "exited" | "error");
+                let mut still_open = false;
                 let _ = this.update_in(cx, |this, _, cx| {
                     if let Some(tab) = this.pod_dock_tabs.iter_mut().find(|t| t.id == stream_id) {
-                        match ev.kind {
-                            "ready" => {
-                                tab.status = "running".into();
+                        still_open = true;
+                        tab.status = snapshot.status.to_string();
+                        if !tab.paused && !snapshot.output.is_empty() {
+                            for line in snapshot.output.lines() {
+                                tab.output_lines.push(line.to_owned());
                             }
-                            "data" => {
-                                if !tab.paused
-                                    && let Some(data) = ev.data
-                                {
-                                    for line in data.lines() {
-                                        tab.output_lines.push(line.to_owned());
-                                    }
-                                    if tab.output_lines.len() > 2500 {
-                                        let drain_count = tab.output_lines.len() - 2500;
-                                        tab.output_lines.drain(0..drain_count);
-                                    }
-                                }
+                            if tab.output_lines.len() > 2500 {
+                                let drain_count = tab.output_lines.len() - 2500;
+                                tab.output_lines.drain(0..drain_count);
                             }
-                            "exit" => {
-                                tab.status = "exited".into();
-                                tab.output_lines.push("[stream closed]".into());
-                            }
-                            "error" => {
-                                tab.status = "error".into();
-                                tab.output_lines.push(format!(
-                                    "[stream error: {:?}]",
-                                    ev.error
-                                ));
-                            }
-                            _ => {}
                         }
+                        if let Some(err) = snapshot.error {
+                            tab.output_lines.push(format!("[stream error: {err:?}]"));
+                        } else if snapshot.status == "exited" {
+                            tab.output_lines.push("[stream closed]".into());
+                        }
+                        cx.notify();
                     }
-                    cx.notify();
                 });
-                if should_break {
+
+                if !still_open || is_done {
                     break;
                 }
             }
@@ -406,11 +439,13 @@ impl IceonApp {
             return;
         }
         let removed = self.pod_dock_tabs.remove(index);
-        if let Some(session) = &self.cluster_session {
-            let _ = self.connection.pod_stream_stop(PodStopRequest {
+        if !removed.id.starts_with("opening-")
+            && let Some(session) = &self.cluster_session
+        {
+            let _ = self.connection.pod_stream_close(PodStreamRequest {
                 cluster_id: session.cluster_id.clone(),
                 session_id: session.session_id.clone(),
-                stream: removed.id,
+                stream_id: removed.id,
             });
         }
         if self.pod_dock_tabs.is_empty() {
@@ -437,7 +472,7 @@ impl IceonApp {
             return;
         };
         let input_text = self.pod_terminal_input.read(cx).value().to_string();
-        if input_text.is_empty() {
+        if input_text.is_empty() || tab.id.starts_with("opening-") {
             return;
         }
         let stream_id = tab.id.clone();
@@ -453,9 +488,11 @@ impl IceonApp {
 
         let payload = format!("{input_text}\n");
         let _ = self.connection.pod_stream_write(PodInputRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
-            stream: stream_id,
+            stream: PodStreamRequest {
+                cluster_id: session.cluster_id,
+                session_id: session.session_id,
+                stream_id,
+            },
             data: payload,
         });
         cx.notify();
@@ -471,6 +508,9 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
+        if tab.id.starts_with("opening-") {
+            return;
+        }
         let stream_id = tab.id.clone();
         if label == "clear" {
             tab.output_lines.clear();
@@ -478,9 +518,11 @@ impl IceonApp {
             tab.output_lines.push(format!("[sent {label}]"));
         }
         let _ = self.connection.pod_stream_write(PodInputRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
-            stream: stream_id,
+            stream: PodStreamRequest {
+                cluster_id: session.cluster_id,
+                session_id: session.session_id,
+                stream_id,
+            },
             data: raw.to_owned(),
         });
         cx.notify();
@@ -503,13 +545,17 @@ impl IceonApp {
         };
         tab.cols = cols;
         tab.rows = rows;
-        let _ = self.connection.pod_stream_resize(PodResizeRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
-            stream: tab.id.clone(),
-            cols,
-            rows,
-        });
+        if !tab.id.starts_with("opening-") {
+            let _ = self.connection.pod_stream_resize(PodResizeRequest {
+                stream: PodStreamRequest {
+                    cluster_id: session.cluster_id,
+                    session_id: session.session_id,
+                    stream_id: tab.id.clone(),
+                },
+                cols,
+                rows,
+            });
+        }
         cx.notify();
     }
 

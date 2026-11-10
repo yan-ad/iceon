@@ -14,9 +14,9 @@ use gpui_kit::*;
 
 use iceon_core::connection::{
     NodeInfo, ResourceKind,
-    delete::{DeleteRequest, ResourceDeleteTarget},
+    delete::DeleteRequest,
     detail_collections::{
-        CollectionKind, CollectionRequest, CollectionState, ResourceCollection, supported_collections,
+        CollectionKind, CollectionRequest, CollectionState, ResourceCollection,
     },
     details::{DetailRequest, ResourceDetail, ResourceReference},
     helm::{HelmDetail, HelmDetailRequest, HelmView},
@@ -26,13 +26,50 @@ use iceon_core::connection::{
         DrainReviewRequest, DrainState,
     },
     pod_runtime::PodStreamMode,
-    pods::{PodAction, PodDetails, PodEventsState, PodIdentity, PodMutationRequest},
-    resource_edit::{EditApplyRequest, EditLoadRequest, ResourceEditLoad},
+    pods::{PodAction, PodDetails, PodEventsState, PodMutationRequest, PodRequest},
+    resource_edit::{EditMode, EditRequest, EditResult},
     service_forward::ServiceForwardRequest,
     workload_actions::{WorkloadAction, WorkflowRequest},
 };
 
 use crate::IceonApp;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeleteTarget {
+    pub kind: ResourceKind,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub uid: String,
+    pub resource_version: String,
+}
+
+pub fn supported_collections_for_kind(kind: ResourceKind) -> Vec<CollectionKind> {
+    use ResourceKind::*;
+    let mut out = match kind {
+        Nodes | ReplicaSets | DaemonSets | StatefulSets | ReplicationControllers | Jobs => {
+            vec![CollectionKind::Pods]
+        }
+        Deployments => vec![CollectionKind::Pods, CollectionKind::ReplicaSets],
+        CronJobs => vec![CollectionKind::Jobs],
+        Services => vec![CollectionKind::EndpointSlices],
+        Namespaces => vec![CollectionKind::ResourceQuotas, CollectionKind::LimitRanges],
+        _ => Vec::new(),
+    };
+    out.push(CollectionKind::Events);
+    out
+}
+
+pub fn collection_item_kind(collection: CollectionKind) -> ResourceKind {
+    match collection {
+        CollectionKind::Pods => ResourceKind::Pods,
+        CollectionKind::ReplicaSets => ResourceKind::ReplicaSets,
+        CollectionKind::Jobs => ResourceKind::Jobs,
+        CollectionKind::EndpointSlices => ResourceKind::EndpointSlices,
+        CollectionKind::ResourceQuotas => ResourceKind::ResourceQuotas,
+        CollectionKind::LimitRanges => ResourceKind::LimitRanges,
+        CollectionKind::Events => ResourceKind::Events,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum InspectorTab {
@@ -65,7 +102,7 @@ pub struct InspectorState {
     pub detail: Option<ResourceDetail>,
     pub pod_detail: Option<PodDetails>,
     pub collections: Vec<ResourceCollection>,
-    pub edit_load: Option<ResourceEditLoad>,
+    pub edit_load: Option<EditResult>,
     pub helm_detail: Option<HelmDetail>,
     pub drain_review: Option<DrainReview>,
     pub drain_result: Option<DrainResult>,
@@ -110,17 +147,11 @@ impl IceonApp {
         let is_pod = reference.kind == ResourceKind::Pods;
         let pod_ns = reference.namespace.clone().unwrap_or_default();
         let pod_name = reference.name.clone();
-        let pod_read_id = self.next_operation_id();
-        let col_kinds = supported_collections(reference.kind).to_vec();
-        let col_requests: Vec<CollectionRequest> = col_kinds
+        let pod_uid = reference.uid.clone();
+        let col_kinds = supported_collections_for_kind(reference.kind);
+        let col_read_ids: Vec<(CollectionKind, u64)> = col_kinds
             .into_iter()
-            .map(|collection| CollectionRequest {
-                cluster_id: session.cluster_id.clone(),
-                session_id: session.session_id.clone(),
-                read_id: self.next_operation_id(),
-                target: reference.clone(),
-                collection,
-            })
+            .map(|c| (c, self.next_operation_id()))
             .collect();
 
         cx.spawn_in(window, async move |this, cx| {
@@ -128,12 +159,12 @@ impl IceonApp {
             let pod_res = if is_pod {
                 Some(
                     connection
-                        .pod_detail(PodIdentity {
+                        .pod_detail(PodRequest {
                             cluster_id: session.cluster_id.clone(),
                             session_id: session.session_id.clone(),
                             namespace: pod_ns,
                             name: pod_name,
-                            read_id: pod_read_id,
+                            uid: pod_uid,
                         })
                         .await,
                 )
@@ -142,9 +173,20 @@ impl IceonApp {
             };
 
             let mut collections = Vec::new();
-            for creq in col_requests {
-                if let Ok(col) = connection.resource_detail_collection(creq).await {
-                    collections.push(col);
+            if let Ok(ref detail) = detail_res
+                && detail.reference.uid.is_some()
+            {
+                for (collection, cid) in col_read_ids {
+                    let creq = CollectionRequest {
+                        cluster_id: session.cluster_id.clone(),
+                        session_id: session.session_id.clone(),
+                        read_id: cid,
+                        reference: detail.reference.clone(),
+                        collection,
+                    };
+                    if let Ok(col) = connection.resource_collection(creq).await {
+                        collections.push(col);
+                    }
                 }
             }
 
@@ -228,7 +270,16 @@ impl IceonApp {
     }
 
     pub(crate) fn load_inspector_yaml(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(InspectorTarget::Resource(reference)) = self.inspector.target.clone() else {
+        let reference = self
+            .inspector
+            .detail
+            .as_ref()
+            .map(|d| d.reference.clone())
+            .or_else(|| match self.inspector.target.clone() {
+                Some(InspectorTarget::Resource(r)) => Some(r),
+                _ => None,
+            });
+        let Some(reference) = reference else {
             return;
         };
         let Some(session) = self.cluster_session.clone() else {
@@ -236,18 +287,21 @@ impl IceonApp {
         };
         let op_id = self.next_operation_id();
         let connection = self.connection.clone();
-        let req = EditLoadRequest {
+        let req = EditRequest {
             cluster_id: session.cluster_id,
             session_id: session.session_id,
             operation_id: op_id,
             reference,
+            resource_version: None,
+            yaml: None,
+            mode: EditMode::Read,
         };
         cx.spawn_in(window, async move |this, cx| {
-            let result = connection.resource_edit_load(req).await;
+            let result = connection.resource_edit(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(loaded) => {
-                        let yaml = loaded.yaml.clone();
+                        let yaml = loaded.yaml.clone().unwrap_or_default();
                         this.inspector.edit_load = Some(loaded);
                         this.inspector_yaml_editor.update(cx, |editor, cx| {
                             editor.set_value(yaml, window, cx);
@@ -279,29 +333,31 @@ impl IceonApp {
         let yaml = self.inspector_yaml_editor.read(cx).value().to_string();
         let op_id = self.next_operation_id();
         let connection = self.connection.clone();
-        let req = EditApplyRequest {
+        let req = EditRequest {
             cluster_id: session.cluster_id,
             session_id: session.session_id,
             operation_id: op_id,
             reference: loaded.reference.clone(),
-            resource_version: loaded.resource_version,
-            yaml,
-            dry_run,
+            resource_version: Some(loaded.resource_version),
+            yaml: Some(yaml),
+            mode: if dry_run {
+                EditMode::DryRun
+            } else {
+                EditMode::Apply
+            },
         };
         cx.spawn_in(window, async move |this, cx| {
-            let result = connection.resource_edit_apply(req).await;
+            let result = connection.resource_edit(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(applied) => {
-                        this.inspector.action_message = Some(if applied.dry_run {
-                            format!(
-                                "Dry-run validated (rv {})",
-                                applied.resource_version
-                            )
+                        let was_dry_run = applied.mode == EditMode::DryRun;
+                        this.inspector.action_message = Some(if was_dry_run {
+                            format!("Dry-run validated (rv {})", applied.resource_version)
                         } else {
                             format!("Applied (rv {})", applied.resource_version)
                         });
-                        if !applied.dry_run {
+                        if !was_dry_run {
                             this.load_inspector_yaml(window, cx);
                             this.reload_active_section(window, cx);
                         }
@@ -330,18 +386,24 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let op_id = self.next_operation_id();
+        let Some(rv) = resource_version else {
+            self.inspector.action_message =
+                Some("Cannot mutate pod without resourceVersion.".into());
+            cx.notify();
+            return;
+        };
         let connection = self.connection.clone();
         let req = PodMutationRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
-            namespace: namespace.clone(),
-            name: name.clone(),
-            uid,
-            resource_version,
+            pod: PodRequest {
+                cluster_id: session.cluster_id,
+                session_id: session.session_id,
+                namespace: namespace.clone(),
+                name: name.clone(),
+                uid: Some(uid),
+            },
             action,
+            resource_version: rv,
             yaml: None,
-            operation_id: op_id,
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.pod_mutate(req).await;
@@ -404,7 +466,8 @@ impl IceonApp {
                             format!("Workload {:?} accepted", res.action)
                         };
                         this.inspector.action_message = Some(msg);
-                        if this.inspector.target == Some(InspectorTarget::Resource(reference.clone()))
+                        if this.inspector.target
+                            == Some(InspectorTarget::Resource(reference.clone()))
                         {
                             this.open_resource_inspector(reference, window, cx);
                         }
@@ -432,12 +495,12 @@ impl IceonApp {
         let Some(detail) = self.inspector.detail.clone() else {
             return;
         };
-        let Some(rv) = detail.resource_version.clone() else {
+        let Some(rv) = detail.item.resource_version.clone() else {
             self.inspector.action_message = Some("Missing resourceVersion".into());
             cx.notify();
             return;
         };
-        let Some(uid) = detail.uid.clone() else {
+        let Some(uid) = detail.reference.uid.clone().or(detail.item.uid.clone()) else {
             self.inspector.action_message = Some("Missing resource UID".into());
             cx.notify();
             return;
@@ -453,9 +516,9 @@ impl IceonApp {
             None
         };
         let reference = ResourceReference {
-            kind: detail.kind,
-            name: detail.name,
-            namespace: detail.namespace,
+            kind: detail.reference.kind,
+            name: detail.reference.name,
+            namespace: detail.reference.namespace,
             uid: Some(uid),
         };
         self.run_workload_action_for(reference, rv, action, replicas, window, cx);
@@ -489,7 +552,8 @@ impl IceonApp {
                     Ok(_) => {
                         this.inspector.action_message =
                             Some(format!("Node {action:?} completed"));
-                        if this.inspector.target == Some(InspectorTarget::Resource(reference.clone()))
+                        if this.inspector.target
+                            == Some(InspectorTarget::Resource(reference.clone()))
                         {
                             this.open_resource_inspector(reference, window, cx);
                         }
@@ -517,12 +581,15 @@ impl IceonApp {
         let Some(detail) = self.inspector.detail.clone() else {
             return;
         };
-        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+        let (Some(uid), Some(rv)) = (
+            detail.reference.uid.clone().or(detail.item.uid.clone()),
+            detail.item.resource_version.clone(),
+        ) else {
             return;
         };
         let reference = ResourceReference {
             kind: ResourceKind::Nodes,
-            name: detail.name,
+            name: detail.reference.name,
             namespace: None,
             uid: Some(uid),
         };
@@ -574,12 +641,15 @@ impl IceonApp {
         let Some(detail) = self.inspector.detail.clone() else {
             return;
         };
-        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+        let (Some(uid), Some(rv)) = (
+            detail.reference.uid.clone().or(detail.item.uid.clone()),
+            detail.item.resource_version.clone(),
+        ) else {
             return;
         };
         let reference = ResourceReference {
             kind: ResourceKind::Nodes,
-            name: detail.name,
+            name: detail.reference.name,
             namespace: None,
             uid: Some(uid),
         };
@@ -678,7 +748,10 @@ impl IceonApp {
         let Some(detail) = self.inspector.detail.clone() else {
             return;
         };
-        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+        let (Some(uid), Some(rv)) = (
+            detail.reference.uid.clone().or(detail.item.uid.clone()),
+            detail.item.resource_version.clone(),
+        ) else {
             return;
         };
         let service_port = self
@@ -690,8 +763,8 @@ impl IceonApp {
             .unwrap_or(80);
         let reference = ResourceReference {
             kind: ResourceKind::Services,
-            name: detail.name,
-            namespace: detail.namespace,
+            name: detail.reference.name,
+            namespace: detail.reference.namespace,
             uid: Some(uid),
         };
         self.start_service_forward_for(reference, rv, service_port, window, cx);
@@ -699,30 +772,34 @@ impl IceonApp {
 
     pub(crate) fn delete_resource_by_target(
         &mut self,
-        target: ResourceDeleteTarget,
+        target: DeleteTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let op_id = self.next_operation_id();
+        let read_id = self.next_operation_id();
         let connection = self.connection.clone();
         let req = DeleteRequest {
             cluster_id: session.cluster_id,
             session_id: session.session_id,
-            operation_id: op_id,
-            target: target.clone(),
+            kind: target.kind,
+            namespace: target.namespace.clone(),
+            name: target.name.clone(),
+            uid: target.uid.clone(),
+            resource_version: target.resource_version.clone(),
+            read_id,
         };
         cx.spawn_in(window, async move |this, cx| {
-            let result = connection.resource_delete(req).await;
+            let result = connection.delete(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(res) => {
                         if let Some(InspectorTarget::Resource(r)) = &this.inspector.target
-                            && r.kind == res.target.kind
-                            && r.name == res.target.name
-                            && r.namespace == res.target.namespace
+                            && r.kind == res.kind
+                            && r.name == res.name
+                            && r.namespace == res.namespace
                         {
                             this.inspector.target = None;
                         }
@@ -746,17 +823,20 @@ impl IceonApp {
         let Some(detail) = self.inspector.detail.clone() else {
             return;
         };
-        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+        let (Some(uid), Some(rv)) = (
+            detail.reference.uid.clone().or(detail.item.uid.clone()),
+            detail.item.resource_version.clone(),
+        ) else {
             self.inspector.action_message =
                 Some("Cannot delete without UID and resourceVersion".into());
             cx.notify();
             return;
         };
         self.delete_resource_by_target(
-            ResourceDeleteTarget {
-                kind: detail.kind,
-                name: detail.name,
-                namespace: detail.namespace,
+            DeleteTarget {
+                kind: detail.reference.kind,
+                name: detail.reference.name,
+                namespace: detail.reference.namespace,
                 uid,
                 resource_version: rv,
             },
@@ -989,7 +1069,7 @@ impl IceonApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let kind = detail.kind;
+        let kind = detail.reference.kind;
         let can_scale = matches!(
             kind,
             ResourceKind::Deployments
@@ -1017,9 +1097,7 @@ impl IceonApp {
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().tokens.elevated_surface)
-            .when(can_scale, |el| {
-                el.child(self.scale_controls(cx))
-            })
+            .when(can_scale, |el| el.child(self.scale_controls(cx)))
             .when(can_restart, |el| {
                 el.child(
                     Button::new("insp-restart-btn")
@@ -1062,12 +1140,8 @@ impl IceonApp {
                         })),
                 )
             })
-            .when(is_node, |el| {
-                el.child(self.node_controls(cx))
-            })
-            .when(is_service, |el| {
-                el.child(self.service_controls(cx))
-            })
+            .when(is_node, |el| el.child(self.node_controls(cx)))
+            .when(is_service, |el| el.child(self.service_controls(cx)))
             .when_some(
                 is_pod.then(|| self.pod_actions(detail, cx)).flatten(),
                 |el, pod_bar| el.child(pod_bar),
@@ -1170,10 +1244,9 @@ impl IceonApp {
         let ns = pod.namespace.clone();
         let name = pod.name.clone();
         let uid = pod.uid.clone();
-        let rv = pod
-            .resource_version
-            .clone()
-            .or_else(|| detail.resource_version.clone());
+        let rv = Some(pod.resource_version.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| detail.item.resource_version.clone());
         let primary_container = pod
             .containers
             .iter()
@@ -1314,29 +1387,25 @@ impl IceonApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let uid_copy = detail.uid.clone().unwrap_or_default();
-        let ns_ref = detail.namespace.as_ref().map(|ns| ResourceReference {
+        let uid_opt = detail.reference.uid.clone().or(detail.item.uid.clone());
+        let uid_copy = uid_opt.clone().unwrap_or_default();
+        let ns_ref = detail.reference.namespace.as_ref().map(|ns| ResourceReference {
             kind: ResourceKind::Namespaces,
             name: ns.clone(),
             namespace: None,
             uid: None,
         });
-        let node_info: Option<NodeInfo> = (detail.kind == ResourceKind::Nodes)
-            .then(|| {
-                self.resource_page
-                    .as_ref()
-                    .filter(|p| p.kind == ResourceKind::Nodes)
-                    .and_then(|p| p.items.iter().find(|i| i.name == detail.name))
-                    .and_then(|i| i.node.clone())
-                    .or_else(|| {
-                        self.overview_snapshot
-                            .nodes
-                            .as_ref()
-                            .and_then(|p| p.items.iter().find(|i| i.name == detail.name))
-                            .and_then(|i| i.node.clone())
-                    })
-            })
-            .flatten();
+        let node_info: Option<NodeInfo> = detail.item.node.clone().or_else(|| {
+            (detail.reference.kind == ResourceKind::Nodes)
+                .then(|| {
+                    self.resource_page
+                        .as_ref()
+                        .filter(|p| p.kind == ResourceKind::Nodes)
+                        .and_then(|p| p.items.iter().find(|i| i.name == detail.reference.name))
+                        .and_then(|i| i.node.clone())
+                })
+                .flatten()
+        });
 
         v_flex()
             .w_full()
@@ -1359,11 +1428,11 @@ impl IceonApp {
                                 div()
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(detail.name.clone()),
+                                    .child(detail.reference.name.clone()),
                             )
-                            .child(status_tag(&detail.status)),
+                            .child(status_tag(&detail.item.status)),
                     )
-                    .when_some(detail.namespace.clone(), |el, ns| {
+                    .when_some(detail.reference.namespace.clone(), |el, ns| {
                         el.child(
                             h_flex()
                                 .justify_between()
@@ -1391,7 +1460,7 @@ impl IceonApp {
                                 }),
                         )
                     })
-                    .when_some(detail.created_at.clone(), |el, created| {
+                    .when_some(detail.item.created_at.clone(), |el, created| {
                         el.child(
                             div()
                                 .text_xs()
@@ -1399,7 +1468,7 @@ impl IceonApp {
                                 .child(format!("Created: {created}")),
                         )
                     })
-                    .when_some(detail.uid.clone(), |el, uid| {
+                    .when_some(uid_opt, |el, uid| {
                         el.child(
                             h_flex()
                                 .justify_between()
@@ -1423,7 +1492,7 @@ impl IceonApp {
                                 ),
                         )
                     })
-                    .when_some(detail.resource_version.clone(), |el, rv| {
+                    .when_some(detail.item.resource_version.clone(), |el, rv| {
                         el.child(
                             div()
                                 .text_xs()
@@ -1697,13 +1766,11 @@ impl IceonApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(format!("Node Drain Review ({} pods)", review.pods.len())),
                     )
-                    .child(
-                        if review.can_drain {
-                            Tag::success().small().child("Ready to Evict")
-                        } else {
-                            Tag::danger().small().child("Blocked")
-                        },
-                    ),
+                    .child(if review.can_drain {
+                        Tag::success().small().child("Ready to Evict")
+                    } else {
+                        Tag::danger().small().child("Blocked")
+                    }),
             )
             .children(review.pods.iter().take(15).map(|p| {
                 let disp_tag = match p.disposition {
@@ -2039,13 +2106,14 @@ impl IceonApp {
                         let pname_attach = pname.clone();
                         let puid_attach = puid.clone();
                         let cname_attach = cname.clone();
-                        let image_copy = c.image.clone().unwrap_or_default();
+                        let image_str = c.image.clone();
+                        let image_copy = c.image.clone();
 
-                        let state_badge = match c.state {
+                        let state_badge = match c.state.as_str() {
                             "running" => Tag::success().small().child("running"),
                             "waiting" => Tag::warning().small().child("waiting"),
                             "terminated" => Tag::secondary().small().child("terminated"),
-                            other => Tag::secondary().small().child(other),
+                            other => Tag::secondary().small().child(other.to_owned()),
                         };
 
                         v_flex()
@@ -2156,34 +2224,32 @@ impl IceonApp {
                                             ),
                                     ),
                             )
-                            .when_some(c.image.clone(), |el, img| {
-                                el.child(
-                                    h_flex()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .truncate()
-                                                .child(format!("Image: {img}")),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "copy-img-{}",
-                                                c.name
-                                            )))
-                                            .xsmall()
-                                            .ghost()
-                                            .label("Copy")
-                                            .on_click(cx.listener(move |_, _, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    image_copy.clone(),
-                                                ));
-                                            })),
-                                        ),
-                                )
-                            })
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .truncate()
+                                            .child(format!("Image: {image_str}")),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "copy-img-{}",
+                                            c.name
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Copy")
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                image_copy.clone(),
+                                            ));
+                                        })),
+                                    ),
+                            )
                             .when(!c.ports.is_empty(), |el| {
                                 let ns_fwd = pod.namespace.clone();
                                 let pname_fwd = pod.name.clone();
@@ -2191,7 +2257,7 @@ impl IceonApp {
                                 el.child(
                                     h_flex().gap_1p5().flex_wrap().items_center().children(
                                         c.ports.iter().map(move |pt| {
-                                            let port_num = pt.container_port;
+                                            let port_num = pt.port;
                                             let ns_p = ns_fwd.clone();
                                             let pn_p = pname_fwd.clone();
                                             let pu_p = puid_fwd.clone();
@@ -2475,95 +2541,9 @@ impl IceonApp {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(format!("DIRECT REFERENCES ({})", detail.related.len())),
                         )
-                        .children(detail.related.iter().enumerate().map(|(idx, rel)| {
-                            let target = rel.target.clone();
-                            h_flex()
-                                .justify_between()
-                                .items_center()
-                                .child(
-                                    h_flex()
-                                        .gap_1p5()
-                                        .items_center()
-                                        .child(Tag::secondary().small().child(rel.relation))
-                                        .child(
-                                            div().text_xs().child(format!(
-                                                "{:?}/{}",
-                                                rel.target.kind, rel.target.name
-                                            )),
-                                        ),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!("rel-nav-{idx}")))
-                                        .xsmall()
-                                        .ghost()
-                                        .label("Inspect")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_resource_inspector(
-                                                target.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                )
-                        })),
-                )
-            })
-            // Scoped ResourceCollections (Pods, ReplicaSets, Jobs, EndpointSlices, ResourceQuotas, LimitRanges)
-            .children(self.inspector.collections.iter().map(|col| {
-                let is_pods = col.collection == CollectionKind::Pods;
-                let state_badge = match col.state {
-                    CollectionState::Complete => Tag::success().small().child("Complete"),
-                    CollectionState::Partial => Tag::warning().small().child("Partial"),
-                    CollectionState::Denied => Tag::danger().small().child("Denied"),
-                    CollectionState::Unavailable => Tag::secondary().small().child("Unavailable"),
-                };
-                v_flex()
-                    .w_full()
-                    .p_3()
-                    .gap_2()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
-                    .child(
-                        h_flex()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format!(
-                                        "{:?} ({})",
-                                        col.collection,
-                                        col.items.len()
-                                    )),
-                            )
-                            .child(state_badge),
-                    )
-                    .children(col.items.iter().enumerate().map(|(idx, item)| {
-                        let target = item.reference.clone();
-                        let pod_ns = item.reference.namespace.clone().unwrap_or_default();
-                        let pod_name = item.reference.name.clone();
-                        let pod_ns_shell = pod_ns.clone();
-                        let pod_name_shell = pod_name.clone();
-                        let summary_cols: String = item
-                            .columns
-                            .iter()
-                            .take(3)
-                            .map(|(k, v)| format!("{k}:{v}"))
-                            .collect::<Vec<_>>()
-                            .join(" · ");
-
-                        v_flex()
-                            .w_full()
-                            .p_2()
-                            .gap_1()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().tokens.surface)
-                            .child(
+                        .children(detail.related.iter().enumerate().map(
+                            |(idx, (relation, target_ref))| {
+                                let target = target_ref.clone();
                                 h_flex()
                                     .justify_between()
                                     .items_center()
@@ -2572,87 +2552,189 @@ impl IceonApp {
                                             .gap_1p5()
                                             .items_center()
                                             .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .child(item.reference.name.clone()),
+                                                Tag::secondary().small().child(relation.clone()),
                                             )
-                                            .child(status_tag(&item.status)),
+                                            .child(div().text_xs().child(format!(
+                                                "{:?}/{}",
+                                                target_ref.kind, target_ref.name
+                                            ))),
                                     )
                                     .child(
-                                        h_flex()
-                                            .gap_1()
-                                            .items_center()
-                                            .when(is_pods, |r| {
-                                                r.child(
-                                                    Button::new(SharedString::from(format!(
-                                                        "col-pod-logs-{idx}"
-                                                    )))
-                                                    .xsmall()
-                                                    .primary()
-                                                    .label("Logs")
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.open_pod_stream_for_pod(
-                                                                pod_ns.clone(),
-                                                                pod_name.clone(),
-                                                                PodStreamMode::Logs,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
-                                                )
-                                                .child(
-                                                    Button::new(SharedString::from(format!(
-                                                        "col-pod-shell-{idx}"
-                                                    )))
-                                                    .xsmall()
-                                                    .outline()
-                                                    .label("Shell")
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.open_pod_stream_for_pod(
-                                                                pod_ns_shell.clone(),
-                                                                pod_name_shell.clone(),
-                                                                PodStreamMode::Shell,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
-                                                )
-                                            })
-                                            .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "col-item-{:?}-{idx}",
-                                                    col.collection
-                                                )))
-                                                .xsmall()
-                                                .ghost()
-                                                .label("Inspect")
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.open_resource_inspector(
-                                                            target.clone(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
-                                            ),
-                                    ),
+                                        Button::new(SharedString::from(format!("rel-nav-{idx}")))
+                                            .xsmall()
+                                            .ghost()
+                                            .label("Inspect")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_resource_inspector(
+                                                    target.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                            },
+                        )),
+                )
+            })
+            // Scoped ResourceCollections (Pods, ReplicaSets, Jobs, EndpointSlices, ResourceQuotas, LimitRanges)
+            .children(
+                self.inspector
+                    .collections
+                    .iter()
+                    .filter(|col| col.collection != CollectionKind::Events)
+                    .map(|col| {
+                        let is_pods = col.collection == CollectionKind::Pods;
+                        let item_kind = collection_item_kind(col.collection);
+                        let state_badge = match col.state {
+                            CollectionState::Complete => Tag::success().small().child("Complete"),
+                            CollectionState::Partial => Tag::warning().small().child("Partial"),
+                            CollectionState::Denied => Tag::danger().small().child("Denied"),
+                            CollectionState::Unavailable => {
+                                Tag::secondary().small().child("Unavailable")
+                            }
+                        };
+                        v_flex()
+                            .w_full()
+                            .p_3()
+                            .gap_2()
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().tokens.elevated_surface)
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(format!(
+                                                "{:?} ({})",
+                                                col.collection,
+                                                col.items.len()
+                                            )),
+                                    )
+                                    .child(state_badge),
                             )
-                            .when(!summary_cols.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(summary_cols),
-                                )
-                            })
-                    }))
-            }))
+                            .children(col.items.iter().enumerate().map(|(idx, item)| {
+                                let target = ResourceReference {
+                                    kind: item_kind,
+                                    name: item.name.clone(),
+                                    namespace: item.namespace.clone(),
+                                    uid: item.uid.clone(),
+                                };
+                                let pod_ns = item.namespace.clone().unwrap_or_default();
+                                let pod_name = item.name.clone();
+                                let pod_ns_shell = pod_ns.clone();
+                                let pod_name_shell = pod_name.clone();
+                                let summary_cols: String = item
+                                    .columns
+                                    .iter()
+                                    .take(3)
+                                    .map(|(k, v)| format!("{k}:{v}"))
+                                    .collect::<Vec<_>>()
+                                    .join(" · ");
+
+                                v_flex()
+                                    .w_full()
+                                    .p_2()
+                                    .gap_1()
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().tokens.surface)
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .items_center()
+                                            .child(
+                                                h_flex()
+                                                    .gap_1p5()
+                                                    .items_center()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .child(item.name.clone()),
+                                                    )
+                                                    .child(status_tag(&item.status)),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap_1()
+                                                    .items_center()
+                                                    .when(is_pods, |r| {
+                                                        r.child(
+                                                            Button::new(SharedString::from(
+                                                                format!("col-pod-logs-{idx}"),
+                                                            ))
+                                                            .xsmall()
+                                                            .primary()
+                                                            .label("Logs")
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.open_pod_stream_for_pod(
+                                                                        pod_ns.clone(),
+                                                                        pod_name.clone(),
+                                                                        PodStreamMode::Logs,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new(SharedString::from(
+                                                                format!("col-pod-shell-{idx}"),
+                                                            ))
+                                                            .xsmall()
+                                                            .outline()
+                                                            .label("Shell")
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.open_pod_stream_for_pod(
+                                                                        pod_ns_shell.clone(),
+                                                                        pod_name_shell.clone(),
+                                                                        PodStreamMode::Shell,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                        )
+                                                    })
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "col-item-{:?}-{idx}",
+                                                            col.collection
+                                                        )))
+                                                        .xsmall()
+                                                        .ghost()
+                                                        .label("Inspect")
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.open_resource_inspector(
+                                                                    target.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                    ),
+                                            ),
+                                    )
+                                    .when(!summary_cols.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(summary_cols),
+                                        )
+                                    })
+                            }))
+                    }),
+            )
     }
 
     fn render_inspector_events(
@@ -2784,9 +2866,18 @@ impl IceonApp {
                         )
                     })
                     .children(col.items.into_iter().enumerate().map(|(idx, item)| {
-                        let target = item.reference.clone();
+                        let target = ResourceReference {
+                            kind: ResourceKind::Events,
+                            name: item.name.clone(),
+                            namespace: item.namespace.clone(),
+                            uid: item.uid.clone(),
+                        };
                         let reason = item.columns.get("reason").cloned().unwrap_or_default();
-                        let count = item.columns.get("count").cloned().unwrap_or_else(|| "1".into());
+                        let count = item
+                            .columns
+                            .get("count")
+                            .cloned()
+                            .unwrap_or_else(|| "1".into());
                         v_flex()
                             .w_full()
                             .p_2()
