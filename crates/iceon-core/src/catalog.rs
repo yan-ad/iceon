@@ -4,10 +4,11 @@
 //! Snapshot results cover empty/loaded states; sanitized errors cover rejected/unavailable states.
 //! Acceptance fixtures live in catalog/tests.rs.
 
+use crate::preferences::KubernetesPreferences;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -342,7 +343,17 @@ impl CatalogEngine {
         }
     }
     pub fn list(&self) -> Result<CatalogSnapshot> {
-        self.change_inner(|_| Ok(false), true)
+        self.change_inner(|_| Ok(false), true, None, None)
+    }
+
+    /// Reconcile metadata from the enabled default and configured files/directories.
+    /// Directory scans are shallow and never follow child symlinks. Invalid/unreadable
+    /// inputs retain their last valid metadata and report a sanitized discovery error.
+    pub fn list_with_preferences(
+        &self,
+        preferences: &KubernetesPreferences,
+    ) -> Result<CatalogSnapshot> {
+        self.change_inner(|_| Ok(false), false, Some(preferences), None)
     }
 
     pub(crate) fn connection_target(&self, id: &str) -> Result<ConnectionTarget> {
@@ -366,12 +377,14 @@ impl CatalogEngine {
         })
     }
     fn change(&self, update: impl FnOnce(&mut Store) -> Result<bool>) -> Result<CatalogSnapshot> {
-        self.change_inner(update, false)
+        self.change_inner(update, false, None, None)
     }
     fn change_inner(
         &self,
         update: impl FnOnce(&mut Store) -> Result<bool>,
         discover: bool,
+        preferences: Option<&KubernetesPreferences>,
+        manual_path: Option<&str>,
     ) -> Result<CatalogSnapshot> {
         let _guard = self
             .operations
@@ -382,6 +395,8 @@ impl CatalogEngine {
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage::sql_error)?;
+        // Separate metadata-only ownership ledger avoids changing legacy catalog schemas.
+        transaction.execute_batch("CREATE TABLE IF NOT EXISTS kubeconfig_sync_ownership (id TEXT PRIMARY KEY NOT NULL, alias TEXT NOT NULL) STRICT;").map_err(storage::sql_error)?;
         let mut store = storage::load(&transaction)?;
         let mut changed = update(&mut store)?;
         let mut discovery_error = None;
@@ -390,6 +405,26 @@ impl CatalogEngine {
                 Ok(import_changed) => changed |= import_changed,
                 Err(error) => discovery_error = Some(error),
             }
+        }
+        if let Some(path) = manual_path {
+            // Explicit imports take ownership, including an already-synchronized source.
+            let source = fs::canonicalize(path).map_err(|_| CatalogError::InputUnavailable)?;
+            for record in &store.clusters {
+                if Path::new(&record.source_path) == source {
+                    transaction
+                        .execute(
+                            "DELETE FROM kubeconfig_sync_ownership WHERE id=?1",
+                            [&record.id],
+                        )
+                        .map_err(storage::sql_error)?;
+                }
+            }
+        }
+        if let Some(preferences) = preferences {
+            let (sync_changed, error) =
+                sync_preferences(&mut store, &transaction, self.home.as_deref(), preferences)?;
+            changed |= sync_changed;
+            discovery_error = error;
         }
         changed |= store.reconcile_pins();
         if changed {
@@ -410,7 +445,12 @@ impl CatalogEngine {
         {
             return Err(CatalogError::InvalidInput);
         }
-        self.change(|store| reconcile(store, Path::new(&request.path)))
+        self.change_inner(
+            |store| reconcile(store, Path::new(&request.path)),
+            false,
+            None,
+            Some(&request.path),
+        )
     }
     pub fn reorder_pins(&self, request: ReorderPinsRequest) -> Result<CatalogSnapshot> {
         self.change(|store| {
@@ -548,6 +588,170 @@ fn color_with(store: &Store, mut fill: impl FnMut(&mut [u8]) -> Result<()>) -> R
     }
     Err(CatalogError::StoreUnavailable)
 }
+// At most 64 roots, 512 directory entries and 64 files (64 MiB of input) per refresh.
+// Never recurse: a sync folder is a collection of kubeconfig files, not a filesystem crawl.
+fn sync_preferences(
+    store: &mut Store,
+    transaction: &rusqlite::Transaction<'_>,
+    home: Option<&Path>,
+    preferences: &KubernetesPreferences,
+) -> Result<(bool, Option<CatalogError>)> {
+    let mut ownership: HashMap<String, String> = {
+        let mut statement = transaction
+            .prepare("SELECT id, alias FROM kubeconfig_sync_ownership LIMIT 1001")
+            .map_err(storage::sql_error)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(storage::sql_error)?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(storage::sql_error)?
+    };
+    if ownership.len() > MAX_ENTRIES {
+        return Err(CatalogError::StoreCorrupt);
+    }
+    if preferences.kubeconfig_sync_paths.len() > 64 {
+        return Ok((false, Some(CatalogError::LimitExceeded)));
+    }
+    let before = serde_json::to_vec(&store.clusters).map_err(|_| CatalogError::StoreUnavailable)?;
+    let mut roots = preferences
+        .kubeconfig_sync_paths
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    if preferences.discover_default_kubeconfig
+        && let Some(home) = home
+    {
+        roots.push(home.join(".kube/config"));
+    }
+    let mut error = None;
+    let mut candidates = Vec::new();
+    let mut retained_aliases = HashSet::new();
+    let mut entries = 0;
+    // On an incomplete folder scan retain all its previous rows: absence is not proven.
+    for root in roots {
+        let Some(alias) = root.to_str().filter(|path| valid_source_path(path)) else {
+            error.get_or_insert(CatalogError::InvalidInput);
+            // Invalid preferences must not accidentally delete previously synchronized rows.
+            retained_aliases.extend(ownership.values().cloned());
+            continue;
+        };
+        match fs::metadata(&root) {
+            Ok(metadata) if metadata.is_dir() => {
+                let scan = (|| -> Result<Vec<PathBuf>> {
+                    let mut files = Vec::new();
+                    for entry in fs::read_dir(&root).map_err(|_| CatalogError::InputUnavailable)? {
+                        entries += 1;
+                        if entries > 512 {
+                            return Err(CatalogError::LimitExceeded);
+                        }
+                        let entry = entry.map_err(|_| CatalogError::InputUnavailable)?;
+                        let kind = entry
+                            .file_type()
+                            .map_err(|_| CatalogError::InputUnavailable)?;
+                        if kind.is_file() {
+                            files.push(entry.path());
+                        }
+                    }
+                    files.sort();
+                    Ok(files)
+                })();
+                match scan {
+                    Ok(files) => candidates.extend(files),
+                    Err(problem) => {
+                        error.get_or_insert(problem);
+                        retained_aliases.extend(
+                            ownership
+                                .values()
+                                .filter(|alias| Path::new(alias).parent() == Some(root.as_path()))
+                                .cloned(),
+                        );
+                    }
+                }
+            }
+            Ok(metadata) if metadata.is_file() => candidates.push(root),
+            Err(problem) if problem.kind() == std::io::ErrorKind::NotFound => {
+                // A broken symlink is not confirmed deletion. Keep its last valid rows.
+                if fs::symlink_metadata(&root).is_ok() {
+                    retained_aliases.insert(alias.to_owned());
+                    retained_aliases.extend(
+                        ownership
+                            .values()
+                            .filter(|alias| Path::new(alias).parent() == Some(root.as_path()))
+                            .cloned(),
+                    );
+                    error.get_or_insert(CatalogError::InputUnavailable);
+                }
+            }
+            _ => {
+                retained_aliases.insert(alias.to_owned());
+                retained_aliases.extend(
+                    ownership
+                        .values()
+                        .filter(|alias| Path::new(alias).parent() == Some(root.as_path()))
+                        .cloned(),
+                );
+                error.get_or_insert(CatalogError::InputUnavailable);
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() > 64 {
+        return Ok((false, Some(CatalogError::LimitExceeded)));
+    }
+    for path in candidates {
+        let Some(alias) = path.to_str().filter(|alias| valid_source_path(alias)) else {
+            error.get_or_insert(CatalogError::InvalidInput);
+            continue;
+        };
+        retained_aliases.insert(alias.to_owned());
+        // Independently imported sources are never rewritten or removed by sync.
+        if let Ok(source) = fs::canonicalize(&path)
+            && store.clusters.iter().any(|record| {
+                (Path::new(&record.source_path) == source || record.provenance_path == alias)
+                    && !ownership.contains_key(&record.id)
+            })
+        {
+            continue;
+        }
+        match reconcile(store, &path) {
+            Ok(_) => {
+                ownership.retain(|_, owner| owner != alias);
+                for record in &store.clusters {
+                    if record.provenance_path == alias {
+                        ownership.insert(record.id.clone(), alias.to_owned());
+                    }
+                }
+            }
+            Err(problem) => {
+                error.get_or_insert(problem);
+            }
+        }
+    }
+    store.clusters.retain(|record| {
+        ownership
+            .get(&record.id)
+            .is_none_or(|alias| retained_aliases.contains(alias))
+    });
+    ownership.retain(|id, _| store.clusters.iter().any(|record| &record.id == id));
+    transaction
+        .execute("DELETE FROM kubeconfig_sync_ownership", [])
+        .map_err(storage::sql_error)?;
+    for (id, alias) in ownership {
+        transaction
+            .execute(
+                "INSERT INTO kubeconfig_sync_ownership (id, alias) VALUES (?1, ?2)",
+                rusqlite::params![id, alias],
+            )
+            .map_err(storage::sql_error)?;
+    }
+    Ok((
+        before
+            != serde_json::to_vec(&store.clusters).map_err(|_| CatalogError::StoreUnavailable)?,
+        error,
+    ))
+}
+
 fn discover_default(store: &mut Store, input: &Path) -> Result<bool> {
     match fs::symlink_metadata(input) {
         Ok(_) => reconcile(store, input),
@@ -767,3 +971,6 @@ mod section_pin_tests;
 
 #[cfg(test)]
 mod pin_order_tests;
+
+#[cfg(test)]
+mod sync_tests;

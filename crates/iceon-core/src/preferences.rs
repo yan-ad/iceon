@@ -11,6 +11,9 @@ const DATABASE: &str = "preferences.sqlite3";
 const MAX_DATABASE: u64 = 8 * 1024 * 1024;
 const DEFAULT_FONT_FAMILY: &str = "RobotoMono, monospace";
 
+#[path = "app_integration.rs"]
+pub mod app_integration;
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum PreferencesError {
@@ -18,6 +21,19 @@ pub enum PreferencesError {
     Conflict,
     StoreUnavailable,
     StoreCorrupt,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApplyPreferencesError {
+    #[error("preference store: {0:?}")]
+    Store(PreferencesError),
+    #[error(transparent)]
+    Integration(#[from] app_integration::IntegrationError),
+    #[error("preference store: {store:?}; OS rollback failed: {rollback}")]
+    Rollback {
+        store: PreferencesError,
+        rollback: app_integration::IntegrationError,
+    },
 }
 
 /// HTTP is accepted only for literal loopback hosts (local mirrors/tests).
@@ -57,6 +73,8 @@ pub struct AppPreferences {
     pub open_at_login: bool,
     pub show_tray_icon: bool,
     #[serde(default)]
+    pub auto_hide_hotbar: bool,
+    #[serde(default)]
     pub restore_last_page: bool,
 }
 
@@ -68,6 +86,7 @@ impl Default for AppPreferences {
             persistent_search: false,
             open_at_login: false,
             show_tray_icon: false,
+            auto_hide_hotbar: false,
             restore_last_page: false,
         }
     }
@@ -330,6 +349,74 @@ pub struct PreferencesEngine {
 }
 
 impl PreferencesEngine {
+    /// Startup hook: reconcile persisted settings with the actual OS. Callers
+    /// must surface errors (in particular settings unsupported by this build).
+    pub fn apply_app_startup(
+        &self,
+        integration: &mut impl app_integration::AppIntegration,
+    ) -> std::result::Result<(), ApplyPreferencesError> {
+        let snapshot = self.snapshot().map_err(ApplyPreferencesError::Store)?;
+        integration.apply(&AppPreferences::default(), &snapshot.preferences.app)?;
+        Ok(())
+    }
+
+    /// Save hook for the UI: validate/conflict-check under a SQLite transaction,
+    /// apply OS effects before committing, and restore OS state on store failure.
+    /// Do not use plain `save` for changes to OS preferences.
+    pub fn save_with_app_integration(
+        &self,
+        request: SavePreferencesRequest,
+        integration: &mut impl app_integration::AppIntegration,
+    ) -> std::result::Result<PreferencesSnapshot, ApplyPreferencesError> {
+        validate(&request.preferences).map_err(ApplyPreferencesError::Store)?;
+        let mut conn = self
+            .connection
+            .lock()
+            .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreUnavailable))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreUnavailable))?;
+        let (revision, payload): (i64, String) = tx
+            .query_row(
+                "SELECT revision, payload FROM preferences_store WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreUnavailable))?;
+        if revision as u64 != request.revision {
+            return Err(ApplyPreferencesError::Store(PreferencesError::Conflict));
+        }
+        let previous: Preferences = serde_json::from_str(&payload)
+            .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreCorrupt))?;
+        let next_revision = revision.checked_add(1).ok_or(ApplyPreferencesError::Store(
+            PreferencesError::StoreUnavailable,
+        ))?;
+        let json = serde_json::to_string(&request.preferences)
+            .map_err(|_| ApplyPreferencesError::Store(PreferencesError::InvalidInput))?;
+        integration.apply(&previous.app, &request.preferences.app)?;
+        let store_result = (|| {
+            tx.execute(
+                "UPDATE preferences_store SET revision = ?, payload = ? WHERE singleton = 1",
+                params![next_revision, json],
+            )
+            .map_err(|_| PreferencesError::StoreUnavailable)?;
+            if !request.preferences.app.restore_last_page {
+                tx.execute("DELETE FROM route_history", [])
+                    .map_err(|_| PreferencesError::StoreUnavailable)?;
+            }
+            tx.commit().map_err(|_| PreferencesError::StoreUnavailable)
+        })();
+        if let Err(store) = store_result {
+            return match integration.apply(&request.preferences.app, &previous.app) {
+                Ok(()) => Err(ApplyPreferencesError::Store(store)),
+                Err(rollback) => Err(ApplyPreferencesError::Rollback { store, rollback }),
+            };
+        }
+        Ok(PreferencesSnapshot {
+            revision: next_revision as u64,
+            preferences: request.preferences,
+        })
+    }
     pub fn route_history_get(&self) -> Result<Option<crate::route_history::SavedRoute>> {
         crate::route_history::get(&self.connection)
     }

@@ -3,12 +3,13 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::inspector_view::editor_surface::EditorSurface;
 use crate::navigation::{cell_value, format_age, resource_view_by_kind};
 use gpui_kit::component::{
     ActiveTheme as _, ColorName, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, Input},
+    input::Input,
     scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
@@ -870,6 +871,15 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) {
         let normalized = normalize_destination(&section);
+        if normalized != self.active_cluster_section
+            && !self.preferences_draft.app.persistent_search
+        {
+            self.resource_filter_input
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        if normalized != self.active_cluster_section {
+            self.selected_status_filter = None;
+        }
         self.active_cluster_section = normalized.clone();
         self.cluster_error = None;
         self.current_continue_token = None;
@@ -1259,12 +1269,16 @@ impl IceonApp {
             },
             read_id,
         };
+        let helm_preferences =
+            iceon_core::connection::helm::HelmPreferences::from(&self.preferences_draft);
         let connection = self.connection.clone();
         self.cluster_loading = true;
         cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
-            let result = connection.helm_table(req).await;
+            let result = connection
+                .helm_table_with_preferences(req, helm_preferences)
+                .await;
             let _ = this.update_in(cx, |this, _, cx| {
                 this.cluster_loading = false;
                 match result {
@@ -1514,9 +1528,13 @@ impl IceonApp {
             dry_run,
             values_yaml,
         };
+        let helm_preferences =
+            iceon_core::connection::helm::HelmPreferences::from(&self.preferences_draft);
         let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res: std::result::Result<HelmInstallResult, _> = connection.helm_install(req).await;
+            let res: std::result::Result<HelmInstallResult, _> = connection
+                .helm_install_with_preferences(req, helm_preferences, false)
+                .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match res {
                     Ok(installed) => {
@@ -1707,10 +1725,38 @@ impl IceonApp {
             && (!self.pod_dock_tabs.is_empty() || !self.port_forwards.is_empty());
         let inspector_open = self.inspector_open && self.inspector.target.is_some();
         let area = self.workspace_dock.as_mut().map(|dock| {
-            dock.sync(sidebar_open, console_open, inspector_open, window, cx);
+            dock.sync(console_open, window, cx);
             dock.dock_area.clone()
         });
-        div().size_full().min_w_0().min_h_0().children(area)
+        h_flex()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .when(sidebar_open, |row| {
+                let cluster_id = self
+                    .cluster_session
+                    .as_ref()
+                    .map(|session| session.cluster_id.clone())
+                    .unwrap_or_default();
+                row.child(
+                    div()
+                        .w(px(252.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .child(self.render_cluster_sidebar(&cluster_id, cx)),
+                )
+            })
+            .child(div().flex_1().min_w_0().h_full().children(area))
+            .when(inspector_open, |row| {
+                row.child(
+                    div()
+                        .w(px(420.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .child(self.render_inspector_drawer(window, cx)),
+                )
+            })
     }
 
     pub(crate) fn render_cluster_main(
@@ -2132,7 +2178,10 @@ impl IceonApp {
                     .border_color(cx.theme().border)
                     .rounded(px(6.0))
                     .overflow_hidden()
-                    .child(Editor::new(&self.create_yaml_editor).h_full()),
+                    .child(EditorSurface::new(
+                        &self.create_yaml_editor,
+                        &self.preferences_draft.editor,
+                    )),
             )
     }
 
@@ -3160,7 +3209,10 @@ impl IceonApp {
                                 .border_color(cx.theme().border)
                                 .rounded(px(6.0))
                                 .overflow_hidden()
-                                .child(Editor::new(&self.helm_values_editor).h_full()),
+                                .child(EditorSurface::new(
+                                    &self.helm_values_editor,
+                                    &self.preferences_draft.editor,
+                                )),
                         ),
                 )
             })

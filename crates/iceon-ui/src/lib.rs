@@ -3,7 +3,13 @@
 pub mod badge;
 pub mod catalog_view;
 pub mod cluster_view;
+mod console_font;
+#[cfg(debug_assertions)]
+mod console_probe;
+#[cfg(debug_assertions)]
+pub use console_probe::run as run_console_probe;
 pub mod inspector_view;
+mod kubectl_tools;
 mod native_menu;
 pub mod navigation;
 pub mod pod_dock_view;
@@ -15,6 +21,7 @@ mod shell_header;
 mod shell_theme;
 mod sidebar_view;
 mod terminal_surface;
+mod tray;
 mod workspace_dock;
 
 use std::sync::Arc;
@@ -45,7 +52,6 @@ use iceon_core::secrets;
 use inspector_view::InspectorState;
 use navigation::{NavigationHistory, Route, active_group_id, destination_label};
 use pod_dock_view::PodDockTab;
-use preferences_view::PreferencesSection;
 use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
@@ -72,7 +78,6 @@ pub struct IceonApp {
     pub(crate) search_modal_open: bool,
     pub(crate) preferences_open: bool,
     pub(crate) preferences_window: Option<AnyWindowHandle>,
-    pub(crate) preferences_section: PreferencesSection,
     pub(crate) preferences_revision: u64,
     runtime_editor_preferences: Option<iceon_core::preferences::EditorPreferences>,
     pub(crate) preferences_draft: Preferences,
@@ -130,7 +135,6 @@ pub struct IceonApp {
     pub(crate) status_select_items: Vec<cluster_view::NamespaceChoice>,
     pub(crate) scale_replicas_input: Entity<InputState>,
     pub(crate) service_port_input: Entity<InputState>,
-    pub(crate) pod_terminal_input: Entity<InputState>,
     pub(crate) pod_log_filter_input: Entity<InputState>,
     pub(crate) helm_release_name_input: Entity<InputState>,
     pub(crate) helm_namespace_input: Entity<InputState>,
@@ -140,15 +144,8 @@ pub struct IceonApp {
     pub(crate) inspector_yaml_editor: Entity<EditorState>,
     pub(crate) helm_values_editor: Entity<EditorState>,
 
-    pub(crate) pref_timezone_input: Entity<InputState>,
-    pub(crate) pref_proxy_input: Entity<InputState>,
-    pub(crate) pref_helm_path_input: Entity<InputState>,
-    pub(crate) pref_editor_font_family_input: Entity<InputState>,
     pub(crate) pref_editor_font_size_input: Entity<InputState>,
-    pub(crate) pref_editor_tab_size_input: Entity<InputState>,
-    pub(crate) pref_terminal_font_family_input: Entity<InputState>,
     pub(crate) pref_terminal_font_size_input: Entity<InputState>,
-    pub(crate) pref_terminal_shell_input: Entity<InputState>,
 
     pub(crate) secret_name_input: Entity<InputState>,
     pub(crate) secret_address_input: Entity<InputState>,
@@ -176,12 +173,18 @@ impl IceonApp {
             Err(_) => (1, Preferences::default()),
         };
 
-        let catalog_snapshot = catalog.list().unwrap_or(CatalogSnapshot {
-            revision: 0,
-            clusters: vec![],
-            pinned_items: vec![],
-            discovery_error: None,
-        });
+        let startup_error = preferences_engine
+            .apply_app_startup(&mut preferences_view::StartupAppIntegration)
+            .err()
+            .map(|error| error.to_string());
+        let catalog_snapshot = catalog
+            .list_with_preferences(&preferences_draft.kubernetes)
+            .unwrap_or(CatalogSnapshot {
+                revision: 0,
+                clusters: vec![],
+                pinned_items: vec![],
+                discovery_error: None,
+            });
 
         let mut cluster_order = Vec::new();
         for pin in &catalog_snapshot.pinned_items {
@@ -226,8 +229,7 @@ impl IceonApp {
         let status_select = cluster_view::create_status_select(window, cx);
         let scale_replicas_input = cx.new(|cx| InputState::new(window, cx).default_value("1"));
         let service_port_input = cx.new(|cx| InputState::new(window, cx).default_value("80"));
-        let pod_terminal_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Enter shell command..."));
+
         let pod_log_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter log lines..."));
         let helm_release_name_input =
@@ -253,41 +255,14 @@ impl IceonApp {
                 .line_number(true)
         });
 
-        let pref_timezone_input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(preferences_draft.app.timezone.clone())
-        });
-        let pref_proxy_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("https://proxy.example:8443")
-                .default_value(preferences_draft.proxy.https_proxy.clone())
-        });
-        let pref_helm_path_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("/opt/homebrew/bin/helm")
-                .default_value(preferences_draft.kubernetes.helm_binary_path.clone())
-        });
-        let pref_editor_font_family_input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(preferences_draft.editor.font_family.clone())
-        });
         let pref_editor_font_size_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(preferences_draft.editor.font_size.to_string())
         });
-        let pref_editor_tab_size_input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(preferences_draft.editor.tab_size.to_string())
-        });
-        let pref_terminal_font_family_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(preferences_draft.terminal.font_family.clone())
-        });
+
         let pref_terminal_font_size_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(preferences_draft.terminal.font_size.to_string())
-        });
-        let pref_terminal_shell_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("/bin/sh")
-                .default_value(preferences_draft.terminal.shell_path.clone())
         });
 
         let secret_name_input =
@@ -331,7 +306,6 @@ impl IceonApp {
             search_modal_open: false,
             preferences_open: false,
             preferences_window: None,
-            preferences_section: PreferencesSection::App,
             preferences_revision,
             runtime_editor_preferences: None,
             preferences_draft: preferences_draft.clone(),
@@ -381,7 +355,6 @@ impl IceonApp {
             status_select_items: Vec::new(),
             scale_replicas_input,
             service_port_input,
-            pod_terminal_input,
             pod_log_filter_input,
             helm_release_name_input,
             helm_namespace_input,
@@ -389,15 +362,8 @@ impl IceonApp {
             create_yaml_editor,
             inspector_yaml_editor,
             helm_values_editor,
-            pref_timezone_input,
-            pref_proxy_input,
-            pref_helm_path_input,
-            pref_editor_font_family_input,
             pref_editor_font_size_input,
-            pref_editor_tab_size_input,
-            pref_terminal_font_family_input,
             pref_terminal_font_size_input,
-            pref_terminal_shell_input,
             secret_name_input,
             secret_address_input,
             secret_namespace_input,
@@ -423,7 +389,19 @@ impl IceonApp {
             ),
         );
         shell_theme::apply(initial_mode, Some(window), cx);
+        app.preferences_error = startup_error;
         app.sync_runtime_preferences(window, cx);
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(5))
+                    .await;
+                if this.update(cx, |app, cx| app.refresh_catalog(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         let owner = cx.entity().downgrade();
         window
             .observe_window_appearance(move |window, cx| {
@@ -475,7 +453,7 @@ impl IceonApp {
             ] {
                 state.update(cx, |state, cx| {
                     state.set_line_number(
-                        editor.line_numbers != iceon_core::preferences::LineNumbers::Off,
+                        editor.line_numbers == iceon_core::preferences::LineNumbers::On,
                         window,
                         cx,
                     );
@@ -768,11 +746,13 @@ pub fn run() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            console_font::init(cx);
             terminal_surface::init(cx);
             native_menu::init(cx);
             let shutdown_connection = connection.clone();
             let shutdown_secrets = secrets_engine.clone();
             cx.on_app_quit(move |_| {
+                let _ = tray::shutdown();
                 shutdown_connection.shutdown();
                 shutdown_secrets.shutdown();
                 let connection = shutdown_connection.clone();
@@ -799,7 +779,7 @@ pub fn run() {
                 window_background: shell_theme::background_appearance(),
                 ..TitleBar::window_options()
             };
-            gpui_kit::open_window(options, cx, move |window, cx| {
+            let (main_window, main_app) = gpui_kit::open_window(options, cx, move |window, cx| {
                 let app = cx.new(|cx| {
                     IceonApp::new(
                         catalog,
@@ -816,6 +796,15 @@ pub fn run() {
                 app
             })
             .expect("failed to open Iceon GPUI window");
+            let tray_result = tray::register_main_window(main_window, cx).and_then(|()| {
+                tray::set_visible(main_app.read(cx).preferences_draft.app.show_tray_icon)
+            });
+            if let Err(error) = tray_result {
+                main_app.update(cx, |app, cx| {
+                    app.preferences_error = Some(error);
+                    cx.notify();
+                });
+            }
             cx.activate(true);
         });
 }

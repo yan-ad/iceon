@@ -10,3 +10,8 @@ vt100.workspace = true
 iceon-core.workspace = true
 jiff.workspace = true
 tokio.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSImage", "objc2-core-foundation"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSGeometry"] }

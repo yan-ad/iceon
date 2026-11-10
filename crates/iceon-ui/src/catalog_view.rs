@@ -457,7 +457,10 @@ impl IceonApp {
     }
 
     pub(crate) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
-        match self.catalog.list() {
+        match self
+            .catalog
+            .list_with_preferences(&self.preferences_draft.kubernetes)
+        {
             Ok(mut snapshot) => {
                 let _ = self.connection.project_catalog_statuses(&mut snapshot);
                 self.catalog_snapshot = snapshot;

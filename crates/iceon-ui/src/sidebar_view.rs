@@ -406,7 +406,9 @@ impl IceonApp {
         cx.notify();
     }
 
-    /// Always visible, even when the resource sidebar is hidden.
+    /// The hotbar is the narrow cluster rail, not the resource sidebar. Retain
+    /// an 8px hover target when auto-hidden; the full rail remains independent
+    /// of resource-sidebar visibility.
     pub(crate) fn render_primary_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let route = self.history.current().clone();
         let is_dark = cx.theme().mode.is_dark();
@@ -426,7 +428,7 @@ impl IceonApp {
             rgb(0x71717a).into()
         };
 
-        v_flex()
+        let rail = v_flex()
             .w(px(60.0))
             .flex_shrink_0()
             .h_full()
@@ -661,7 +663,16 @@ impl IceonApp {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_preferences(window, cx);
                     })),
-            )
+            );
+        div()
+            .h_full()
+            .flex_shrink_0()
+            .overflow_hidden()
+            .w(px(60.0))
+            .when(self.preferences_draft.app.auto_hide_hotbar, |el| {
+                el.w(px(8.0)).hover(|style| style.w(px(60.0)))
+            })
+            .child(rail)
     }
 
     pub(crate) fn render_cluster_sidebar(

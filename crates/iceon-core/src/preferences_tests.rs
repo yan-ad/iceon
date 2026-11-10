@@ -199,3 +199,82 @@ fn corrupt_store_fails_closed() {
         assert!(engine.snapshot().is_err());
     }
 }
+
+#[test]
+fn legacy_app_preferences_default_auto_hide_hotbar_to_false() {
+    let mut json = serde_json::to_value(AppPreferences::default()).unwrap();
+    json.as_object_mut().unwrap().remove("autoHideHotbar");
+    let app: AppPreferences = serde_json::from_value(json).unwrap();
+    assert!(!app.auto_hide_hotbar);
+}
+
+#[test]
+fn integrated_save_rejects_failure_without_persisting_and_rolls_back_store_failure() {
+    use app_integration::{AppIntegration, IntegrationError};
+    #[derive(Default)]
+    struct Fake {
+        enabled: bool,
+        calls: usize,
+        fail: bool,
+    }
+    impl AppIntegration for Fake {
+        fn apply(
+            &mut self,
+            _: &AppPreferences,
+            next: &AppPreferences,
+        ) -> std::result::Result<(), IntegrationError> {
+            self.calls += 1;
+            if self.fail {
+                return Err(IntegrationError::Unsupported("test"));
+            }
+            self.enabled = next.open_at_login;
+            Ok(())
+        }
+    }
+    let dir = tempdir().unwrap();
+    let engine = PreferencesEngine::new(dir.path().into()).unwrap();
+    let original = engine.snapshot().unwrap();
+    let mut next = original.preferences.clone();
+    next.app.open_at_login = true;
+    let mut fake = Fake {
+        fail: true,
+        ..Fake::default()
+    };
+    let request = || SavePreferencesRequest {
+        revision: original.revision,
+        preferences: next.clone(),
+    };
+    assert!(
+        engine
+            .save_with_app_integration(request(), &mut fake)
+            .is_err()
+    );
+    assert_eq!(engine.snapshot().unwrap(), original);
+    fake.fail = false;
+    engine.connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_save BEFORE UPDATE ON preferences_store BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
+    assert!(
+        engine
+            .save_with_app_integration(request(), &mut fake)
+            .is_err()
+    );
+    assert!(!fake.enabled);
+    assert_eq!(fake.calls, 3);
+    assert_eq!(engine.snapshot().unwrap(), original);
+    engine
+        .connection
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_save;")
+        .unwrap();
+    let saved = engine
+        .save_with_app_integration(request(), &mut fake)
+        .unwrap();
+    assert!(fake.enabled);
+    assert!(saved.preferences.app.open_at_login);
+    let calls = fake.calls;
+    assert!(matches!(
+        engine.save_with_app_integration(request(), &mut fake),
+        Err(ApplyPreferencesError::Store(PreferencesError::Conflict))
+    ));
+    assert_eq!(fake.calls, calls);
+}

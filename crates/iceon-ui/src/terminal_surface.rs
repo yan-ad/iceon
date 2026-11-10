@@ -323,6 +323,21 @@ fn ansi_color(color: vt100::Color, foreground: bool, bold: bool) -> u32 {
     }
 }
 
+fn push_text_run(runs: &mut Vec<TextRun>, run: TextRun) {
+    if let Some(last) = runs.last_mut() {
+        if last.font == run.font
+            && last.color == run.color
+            && last.background_color == run.background_color
+            && last.underline == run.underline
+            && last.strikethrough == run.strikethrough
+        {
+            last.len += run.len;
+            return;
+        }
+    }
+    runs.push(run);
+}
+
 impl Render for TerminalSurface {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let preferences = cx
@@ -330,6 +345,11 @@ impl Render for TerminalSurface {
             .map(|state| state.preferences.terminal.clone())
             .unwrap_or_default();
         let font_family = crate::preference_runtime::font_family(&preferences.font_family, cx);
+        let console_font = if font_family.as_ref() == crate::console_font::FAMILY {
+            crate::console_font::font(cx)
+        } else {
+            gpui_kit::font(font_family.clone())
+        };
         let font_size = f32::from(preferences.font_size);
         let line_height = font_size * 1.5;
         let dark = gpui_kit::component::theme::Theme::global(cx).mode.is_dark();
@@ -339,9 +359,7 @@ impl Render for TerminalSurface {
         let cell_width = window
             .text_system()
             .ch_advance(
-                window
-                    .text_system()
-                    .resolve_font(&font(font_family.clone())),
+                window.text_system().resolve_font(&console_font),
                 px(font_size),
             )
             .unwrap_or(px(8.0));
@@ -395,25 +413,28 @@ impl Render for TerminalSurface {
                         foreground = 0xffffff;
                     }
                 }
-                let mut face = font(font_family.clone());
+                let mut face = console_font.clone();
                 if cell.bold() {
                     face = face.bold();
                 }
                 if cell.italic() {
                     face = face.italic();
                 }
-                runs.push(TextRun {
-                    len: content.len(),
-                    font: face,
-                    color: rgb(foreground).into(),
-                    background_color: Some(rgb(background).into()),
-                    underline: cell.underline().then_some(UnderlineStyle {
-                        thickness: px(1.0),
-                        color: Some(rgb(foreground).into()),
-                        wavy: false,
-                    }),
-                    strikethrough: None,
-                });
+                push_text_run(
+                    &mut runs,
+                    TextRun {
+                        len: content.len(),
+                        font: face,
+                        color: rgb(foreground).into(),
+                        background_color: Some(rgb(background).into()),
+                        underline: cell.underline().then_some(UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(rgb(foreground).into()),
+                            wavy: false,
+                        }),
+                        strikethrough: None,
+                    },
+                );
             }
             lines.push(
                 div()
@@ -538,6 +559,30 @@ impl Render for TerminalSurface {
 mod tests {
     use super::{ansi_color, dimensions, encode_key, encode_paste, parser};
     use gpui_kit::{Keystroke, Modifiers};
+
+    #[::core::prelude::v1::test]
+    fn adjacent_cells_with_same_style_share_one_text_run() {
+        let mut runs = Vec::new();
+        let run = gpui_kit::TextRun {
+            len: 1,
+            font: gpui_kit::font("JetBrains Mono"),
+            color: gpui_kit::rgb(0xffffff).into(),
+            ..Default::default()
+        };
+        for _ in 0..300 {
+            super::push_text_run(&mut runs, run.clone());
+        }
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].len, 300);
+        super::push_text_run(
+            &mut runs,
+            gpui_kit::TextRun {
+                color: gpui_kit::rgb(0xff0000).into(),
+                ..run
+            },
+        );
+        assert_eq!(runs.len(), 2);
+    }
 
     fn key(name: &str, control: bool, alt: bool, shift: bool) -> Keystroke {
         Keystroke {

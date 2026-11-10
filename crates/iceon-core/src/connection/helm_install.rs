@@ -274,7 +274,8 @@ impl ConnectionEngine {
         request: HelmInstallRequest,
         expected: HelmUpgradePreconditions,
     ) -> Result<HelmInstallResult> {
-        self.helm_upgrade_with_preferences(request, expected, HelmPreferences::default(), false).await
+        self.helm_upgrade_with_preferences(request, expected, HelmPreferences::default(), false)
+            .await
     }
     pub async fn helm_upgrade_with_preferences(
         &self,

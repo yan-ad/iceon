@@ -1,12 +1,13 @@
 //! Bottom operational dock for Pod Logs, Interactive Exec Shell, Attach, and Port-Forwards.
 
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
+    menu::{DropdownMenu as _, PopupMenuItem},
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tab::{Tab, TabBar},
     tag::Tag,
@@ -42,9 +43,11 @@ impl SelectItem for ContainerChoice {
 }
 type ContainerSelectState = SelectState<SearchableVec<ContainerChoice>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PodDockTab {
     pub id: String,
+    // UI identity is independent of the backend ID (opening/reconnect replace it).
+    key: u64,
     pub pod_name: String,
     pub namespace: String,
     pub uid: String,
@@ -52,7 +55,7 @@ pub struct PodDockTab {
     pub available_containers: Vec<String>,
     pub mode: PodStreamMode,
     pub status: String,
-    pub output_lines: Vec<String>,
+    pub output_lines: Rc<Vec<String>>,
     pub previous: bool,
     pub timestamps: bool,
     pub tail_lines: u32,
@@ -65,9 +68,65 @@ pub struct PodDockTab {
     pub log_scroll: UniformListScrollHandle,
     pub follow: bool,
     pub word_wrap: bool,
-    pub log_pending: String,
+    pub log_pending: Rc<String>,
     container_select: Option<Entity<ContainerSelectState>>,
     log_columns: usize,
+    presentation: Option<LogPresentation>,
+    filter_observer: Option<Rc<Subscription>>,
+}
+
+impl std::fmt::Debug for PodDockTab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PodDockTab")
+            .field("id", &self.id)
+            .field("key", &self.key)
+            .field("pod_name", &self.pod_name)
+            .field("container", &self.container)
+            .field("mode", &self.mode)
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone)]
+struct LogPresentation {
+    filter: String,
+    timezone: String,
+    columns: Option<usize>,
+    rows: Rc<Vec<SharedString>>,
+}
+
+// Output-only terminal updates belong to TerminalSurface, not the workspace.
+fn poll_needs_update(
+    output: &str,
+    old_status: &str,
+    status: &str,
+    old_truncated: bool,
+    truncated: bool,
+) -> bool {
+    !output.is_empty() || old_status != status || old_truncated != truncated
+}
+
+fn poll_notifies_parent(
+    status_changed: bool,
+    logs: bool,
+    active: bool,
+    output_changed: bool,
+) -> bool {
+    status_changed || (logs && active && output_changed)
+}
+
+fn active_after_close(active: Option<usize>, closed: usize, remaining: usize) -> Option<usize> {
+    if remaining == 0 {
+        return None;
+    }
+    active.map(|active| {
+        if active > closed {
+            active - 1
+        } else {
+            active.min(remaining - 1)
+        }
+    })
 }
 
 impl PodDockTab {
@@ -135,8 +194,8 @@ impl IceonApp {
 
         let connection = self.connection.clone();
         let req = PodRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
             namespace: namespace.clone(),
             name: pod_name.clone(),
             uid: None,
@@ -145,6 +204,12 @@ impl IceonApp {
             let result = connection.pod_detail(req).await;
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(pod) => {
+                    if !this.cluster_session.as_ref().is_some_and(|current| {
+                        current.cluster_id == session.cluster_id
+                            && current.session_id == session.session_id
+                    }) {
+                        return;
+                    }
                     let containers: Vec<String> =
                         pod.containers.iter().map(|c| c.name.clone()).collect();
                     let default_container = pod
@@ -235,7 +300,8 @@ impl IceonApp {
             cx.notify();
             return;
         }
-        let placeholder_id = format!("opening-{}", self.next_operation_id());
+        let key = self.next_operation_id();
+        let placeholder_id = format!("opening-{key}");
         // An empty default preserves the backend's /bin/sh fallback. Send an
         // explicit saved path unchanged: unsupported paths produce a real
         // backend InvalidInput error rather than silently launching another shell.
@@ -247,6 +313,7 @@ impl IceonApp {
 
         let tab = PodDockTab {
             id: placeholder_id.clone(),
+            key,
             pod_name: pod_name.clone(),
             namespace: namespace.clone(),
             uid: uid.clone(),
@@ -254,7 +321,7 @@ impl IceonApp {
             available_containers,
             mode,
             status: "opening".into(),
-            output_lines: Vec::new(),
+            output_lines: Rc::new(Vec::new()),
             previous: false,
             timestamps: true,
             tail_lines: 500,
@@ -267,11 +334,25 @@ impl IceonApp {
             log_scroll: UniformListScrollHandle::new(),
             follow: true,
             word_wrap: false,
-            log_pending: String::new(),
+            log_pending: Rc::new(String::new()),
             container_select: None,
             log_columns: 120,
+            presentation: None,
+            filter_observer: None,
         };
         self.pod_dock_tabs.push(tab);
+        // Keep the subscription with the tab: closing it releases the observer.
+        // Editing the filter redraws only the selected log view, never restarts a stream.
+        let observer = cx.observe(&self.pod_log_filter_input, move |this, _, cx| {
+            if this
+                .active_pod_tab
+                .and_then(|index| this.pod_dock_tabs.get(index))
+                .is_some_and(|tab| tab.key == key && tab.mode == PodStreamMode::Logs)
+            {
+                cx.notify();
+            }
+        });
+        self.pod_dock_tabs.last_mut().unwrap().filter_observer = Some(Rc::new(observer));
         let tab_index = self.pod_dock_tabs.len() - 1;
         if let Some(terminal) = self.pod_dock_tabs[tab_index].terminal.clone() {
             cx.subscribe_in(
@@ -388,11 +469,12 @@ impl IceonApp {
             tab.id = placeholder_id.clone();
             tab.status = "opening".into();
             tab.paused = false;
-            tab.log_pending.clear();
+            Rc::make_mut(&mut tab.log_pending).clear();
             if let Some(terminal) = &tab.terminal {
                 terminal.update(cx, |terminal, cx| terminal.reset(cx));
             }
-            tab.output_lines.clear();
+            Rc::make_mut(&mut tab.output_lines).clear();
+            tab.presentation = None;
         }
         cx.notify();
 
@@ -461,7 +543,6 @@ impl IceonApp {
                             .iter_mut()
                             .find(|t| t.id == placeholder_id)
                         {
-                            tab.status = "error".into();
                             tab.status = format!("error: {err:?}");
                         }
                         cx.notify();
@@ -471,11 +552,16 @@ impl IceonApp {
             };
 
             let stream_id = opened.stream_id.clone();
-            let initial_output = opened.output.clone();
+            let initial_output = opened.output;
             let initial_status = opened.status.to_string();
 
             let mut tab_present = false;
             let _ = this.update_in(cx, |this, _, cx| {
+                if !this.cluster_session.as_ref().is_some_and(|session| {
+                    session.cluster_id == cluster_id && session.session_id == session_id
+                }) {
+                    return;
+                }
                 if let Some(tab) = this
                     .pod_dock_tabs
                     .iter_mut()
@@ -516,21 +602,19 @@ impl IceonApp {
                 return;
             }
 
+            let mut last_truncated = opened.truncated;
             loop {
                 tokio::time::sleep(Duration::from_millis(120)).await;
                 // Do not drain the backend ring while paused: resume reads the retained
                 // bounded backlog, rather than silently discarding every paused chunk.
-                let mut paused = false;
-                let mut present = false;
-                let _ = this.update_in(cx, |this, _, _| {
-                    if let Some(tab) = this.pod_dock_tabs.iter().find(|t| t.id == stream_id) {
-                        present = true;
-                        paused = tab.mode == PodStreamMode::Logs && tab.paused;
-                    }
-                });
-                if !present {
+                let Ok(Some(paused)) = this.read_with(cx, |this, _| {
+                    this.pod_dock_tabs
+                        .iter()
+                        .find(|tab| tab.id == stream_id)
+                        .map(|tab| tab.mode == PodStreamMode::Logs && tab.paused)
+                }) else {
                     break;
-                }
+                };
                 if paused {
                     continue;
                 }
@@ -544,29 +628,103 @@ impl IceonApp {
                 };
 
                 let is_done = matches!(snapshot.status, "exited" | "error");
-                let mut still_open = false;
-                let _ = this.update_in(cx, |this, _, cx| {
-                    if let Some(tab) = this.pod_dock_tabs.iter_mut().find(|t| t.id == stream_id) {
-                        still_open = true;
-                        tab.status = snapshot.status.to_string();
-                        if !snapshot.output.is_empty() {
-                            feed_tab_output(tab, &snapshot.output, cx);
-                        }
-                        if let Some(err) = snapshot.error {
-                            tab.status = format!("error: {err:?}");
-                        } else if snapshot.status == "exited" {
-                            tab.status = "exited".into();
-                        }
-                        cx.notify();
+                let status = snapshot
+                    .error
+                    .as_ref()
+                    .map(|error| format!("error: {error:?}"))
+                    .unwrap_or_else(|| snapshot.status.to_owned());
+                let truncated = snapshot.truncated;
+                let Ok(Some(needs_update)) = this.read_with(cx, |this, _| {
+                    this.pod_dock_tabs
+                        .iter()
+                        .find(|tab| tab.id == stream_id)
+                        .map(|tab| {
+                            poll_needs_update(
+                                &snapshot.output,
+                                &tab.status,
+                                &status,
+                                last_truncated,
+                                truncated,
+                            )
+                        })
+                }) else {
+                    break;
+                };
+                if !needs_update && !is_done {
+                    continue;
+                }
+                let updated = this.update_in(cx, |this, _, cx| {
+                    let active_key = this
+                        .active_pod_tab
+                        .and_then(|index| this.pod_dock_tabs.get(index))
+                        .map(|tab| tab.key);
+                    let Some(tab) = this
+                        .pod_dock_tabs
+                        .iter_mut()
+                        .find(|tab| tab.id == stream_id)
+                    else {
+                        return false;
+                    };
+                    let status_changed = tab.status != status || last_truncated != truncated;
+                    tab.status = status;
+                    let output_changed = !snapshot.output.is_empty();
+                    if output_changed {
+                        feed_tab_output(tab, &snapshot.output, cx);
                     }
+                    if poll_notifies_parent(
+                        status_changed,
+                        tab.mode == PodStreamMode::Logs,
+                        active_key == Some(tab.key),
+                        output_changed,
+                    ) {
+                        if let Some(dock) = &this.workspace_dock {
+                            dock.notify_console(cx);
+                        } else {
+                            cx.notify();
+                        }
+                    }
+                    true
                 });
-
-                if !still_open || is_done {
+                last_truncated = truncated;
+                if !matches!(updated, Ok(true)) || is_done {
                     break;
                 }
             }
+            // Idempotent close also covers dropped owners and failed polling updates.
+            let _ = connection.pod_stream_close(PodStreamRequest {
+                cluster_id,
+                session_id,
+                stream_id,
+            });
         })
         .detach();
+    }
+
+    fn duplicate_pod_console(
+        &mut self,
+        key: u64,
+        mode: Option<PodStreamMode>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self
+            .pod_dock_tabs
+            .iter()
+            .find(|tab| tab.key == key)
+            .cloned()
+        else {
+            return;
+        };
+        self.open_pod_stream_with_containers(
+            tab.namespace,
+            tab.pod_name,
+            tab.uid,
+            tab.container,
+            tab.available_containers,
+            mode.unwrap_or(tab.mode),
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn close_pod_tab(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -587,38 +745,8 @@ impl IceonApp {
             self.active_pod_tab = None;
             self.pod_dock_open = false;
         } else {
-            self.active_pod_tab = Some(index.min(self.pod_dock_tabs.len() - 1));
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn resize_active_pod_terminal(
-        &mut self,
-        cols: u16,
-        rows: u16,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(active_idx) = self.active_pod_tab else {
-            return;
-        };
-        let Some(tab) = self.pod_dock_tabs.get_mut(active_idx) else {
-            return;
-        };
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        tab.cols = cols;
-        tab.rows = rows;
-        if !tab.id.starts_with("opening-") {
-            let _ = self.connection.pod_stream_resize(PodResizeRequest {
-                stream: PodStreamRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    stream_id: tab.id.clone(),
-                },
-                cols,
-                rows,
-            });
+            self.active_pod_tab =
+                active_after_close(self.active_pod_tab, index, self.pod_dock_tabs.len());
         }
         cx.notify();
     }
@@ -724,12 +852,104 @@ impl IceonApp {
                 self.pod_dock_tabs[active_idx].container_select = Some(select);
             }
         }
+        let filter = self.pod_log_filter_input.read(cx).value().to_lowercase();
+        let timezone = self.preferences_draft.app.timezone.clone();
+        if let Some(tab) = self
+            .pod_dock_tabs
+            .get_mut(active_idx)
+            .filter(|tab| tab.mode == PodStreamMode::Logs)
+        {
+            let columns = tab.word_wrap.then_some(tab.log_columns);
+            let valid = tab.presentation.as_ref().is_some_and(|cache| {
+                cache.filter == filter && cache.timezone == timezone && cache.columns == columns
+            });
+            if !valid {
+                let rows = tab
+                    .output_lines
+                    .iter()
+                    .filter(|line| filter.is_empty() || line.to_lowercase().contains(&filter))
+                    .flat_map(|line| {
+                        visual_log_rows(
+                            &crate::preference_runtime::log_line(line, &timezone),
+                            columns,
+                        )
+                    })
+                    .map(SharedString::from)
+                    .collect();
+                tab.presentation = Some(LogPresentation {
+                    filter,
+                    timezone,
+                    columns,
+                    rows: Rc::new(rows),
+                });
+            }
+        }
+        // All output and visual rows are Rc-backed: this snapshot never copies log history.
         let active = self.pod_dock_tabs.get(active_idx).cloned();
+        let tab_keys = self
+            .pod_dock_tabs
+            .iter()
+            .map(|tab| tab.key)
+            .collect::<Vec<_>>();
         let tabs = self
             .pod_dock_tabs
             .iter()
-            .map(|tab| Tab::new().label(format!("{} · {}", tab.mode_label(), tab.pod_name)))
+            .map(|tab| {
+                let key = tab.key;
+                Tab::new()
+                    .label(format!("{} — {}", tab.pod_name, tab.container))
+                    .prefix(
+                        gpui_kit::component::Icon::new(if tab.mode == PodStreamMode::Logs {
+                            IconName::FileText
+                        } else {
+                            IconName::SquareTerminal
+                        })
+                        .small(),
+                    )
+                    .suffix(
+                        Button::new(SharedString::from(format!("close-console-{key}")))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Close)
+                            .tooltip("Close console")
+                            .accessibility_label("Close console")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(index) =
+                                    this.pod_dock_tabs.iter().position(|tab| tab.key == key)
+                                {
+                                    this.close_pod_tab(index, cx);
+                                }
+                            })),
+                    )
+            })
             .collect::<Vec<_>>();
+        let duplicate_key = active.as_ref().map(|tab| tab.key);
+        let menu_owner = cx.entity().downgrade();
+        let new_menu = Button::new("pod-console-new-menu")
+            .small()
+            .ghost()
+            .icon(IconName::ChevronDown)
+            .tooltip("New console")
+            .accessibility_label("New console")
+            .disabled(duplicate_key.is_none())
+            .dropdown_menu(move |mut menu, _, _| {
+                for (label, mode) in [
+                    ("New terminal", PodStreamMode::Shell),
+                    ("New logs", PodStreamMode::Logs),
+                    ("New attach", PodStreamMode::Attach),
+                ] {
+                    let owner = menu_owner.clone();
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            if let Some(key) = duplicate_key {
+                                this.duplicate_pod_console(key, Some(mode), window, cx);
+                            }
+                        });
+                    }));
+                }
+                menu
+            });
         v_flex()
             .size_full()
             .min_h_0()
@@ -741,11 +961,37 @@ impl IceonApp {
                     .small()
                     .selected_index(active_idx)
                     .children(tabs)
-                    .on_click(cx.listener(|this, index: &usize, window, cx| {
-                        this.active_pod_tab = Some(*index);
+                    .suffix(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("pod-console-new")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Plus)
+                                    .tooltip("Duplicate active console")
+                                    .accessibility_label("Duplicate active console")
+                                    .disabled(duplicate_key.is_none())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(key) = duplicate_key {
+                                            this.duplicate_pod_console(key, None, window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(new_menu),
+                    )
+                    .on_click(cx.listener(move |this, index: &usize, window, cx| {
+                        let Some(key) = tab_keys.get(*index) else {
+                            return;
+                        };
+                        let Some(index) = this.pod_dock_tabs.iter().position(|tab| tab.key == *key)
+                        else {
+                            return;
+                        };
+                        this.active_pod_tab = Some(index);
                         if let Some(terminal) = this
                             .pod_dock_tabs
-                            .get(*index)
+                            .get(index)
                             .filter(|tab| tab.mode != PodStreamMode::Logs)
                             .and_then(|tab| tab.terminal.as_ref())
                         {
@@ -756,32 +1002,22 @@ impl IceonApp {
             )
             .when_some(active, |el, tab| {
                 let logs = tab.mode == PodStreamMode::Logs;
-                let filter = self.pod_log_filter_input.read(cx).value().to_lowercase();
+                let active_key = tab.key;
                 let lines = tab
-                    .output_lines
-                    .iter()
-                    .filter(|line| filter.is_empty() || line.to_lowercase().contains(&filter))
-                    .map(|line| {
-                        crate::preference_runtime::log_line(
-                            line,
-                            &self.preferences_draft.app.timezone,
-                        )
-                    })
-                    .flat_map(|line| {
-                        visual_log_rows(&line, tab.word_wrap.then_some(tab.log_columns))
-                    })
-                    .collect::<Vec<_>>();
+                    .presentation
+                    .as_ref()
+                    .map(|cache| cache.rows.clone())
+                    .unwrap_or_default();
                 let terminal_preferences = &self.preferences_draft.terminal;
-                let log_font =
-                    crate::preference_runtime::font_family(&terminal_preferences.font_family, cx);
+                let log_font = crate::preference_runtime::font_family(
+                    &self.preferences_draft.terminal.font_family,
+                    cx,
+                );
                 let log_font_size = f32::from(terminal_preferences.font_size);
                 let (log_bg, log_fg) = crate::preference_runtime::terminal_colors(
                     terminal_preferences.theme,
                     cx.theme().mode.is_dark(),
                 );
-                if tab.follow {
-                    tab.log_scroll.scroll_to_bottom();
-                }
                 el.child(
                     h_flex()
                         .w_full()
@@ -820,7 +1056,15 @@ impl IceonApp {
                                 .ghost()
                                 .icon(IconName::Copy)
                                 .tooltip("Copy console output")
+                                .accessibility_label("Copy console output")
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    let Some(active_idx) = this
+                                        .pod_dock_tabs
+                                        .iter()
+                                        .position(|tab| tab.key == active_key)
+                                    else {
+                                        return;
+                                    };
                                     if logs {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             this.pod_dock_tabs
@@ -845,10 +1089,21 @@ impl IceonApp {
                                     .ghost()
                                     .icon(IconName::ChevronDown)
                                     .tooltip("Toggle following output")
+                                    .accessibility_label("Toggle following output")
                                     .selected(tab.follow)
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        let Some(active_idx) = this
+                                            .pod_dock_tabs
+                                            .iter()
+                                            .position(|tab| tab.key == active_key)
+                                        else {
+                                            return;
+                                        };
                                         if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
                                             tab.follow = !tab.follow;
+                                            if tab.follow {
+                                                tab.log_scroll.scroll_to_bottom();
+                                            }
                                         }
                                         cx.notify();
                                     })),
@@ -860,18 +1115,16 @@ impl IceonApp {
                                 .ghost()
                                 .icon(IconName::Undo2)
                                 .tooltip("Reconnect stream")
+                                .accessibility_label("Reconnect stream")
                                 .on_click(cx.listener(move |this, _, window, cx| {
+                                    let Some(active_idx) = this
+                                        .pod_dock_tabs
+                                        .iter()
+                                        .position(|tab| tab.key == active_key)
+                                    else {
+                                        return;
+                                    };
                                     this.reopen_pod_tab(active_idx, window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("pod-console-close")
-                                .small()
-                                .ghost()
-                                .icon(IconName::Close)
-                                .tooltip("Close console")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.close_pod_tab(active_idx, cx)
                                 })),
                         ),
                 )
@@ -884,17 +1137,26 @@ impl IceonApp {
                         .bg(rgb(log_bg))
                         .overflow_hidden()
                         .when(logs, |el| {
-                            el.on_scroll_wheel(cx.listener(move |this, _: &ScrollEvent, _, cx| {
+                            el.on_scroll(cx.listener(move |this, _: &ScrollEvent, _, cx| {
+                                let Some(active_idx) = this
+                                    .pod_dock_tabs
+                                    .iter()
+                                    .position(|tab| tab.key == active_key)
+                                else {
+                                    return;
+                                };
                                 if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
-                                    tab.follow = false;
+                                    if tab.follow {
+                                        tab.follow = false;
+                                        cx.notify();
+                                    }
                                 }
-                                cx.notify();
                             }))
                         })
                         .when(logs, |el| {
                             el.child(
                                 uniform_list(
-                                    "pod-log-output",
+                                    ("pod-log-output", active_key),
                                     lines.len(),
                                     cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
                                         range
@@ -908,7 +1170,12 @@ impl IceonApp {
                                                     .line_height(px(log_font_size * 1.5))
                                                     .whitespace_nowrap()
                                                     .child(gpui_kit::base::SelectableText::new(
-                                                        ("pod-log-row", index),
+                                                        (
+                                                            SharedString::from(format!(
+                                                                "pod-log-row-{active_key}"
+                                                            )),
+                                                            index,
+                                                        ),
                                                         lines[index].clone(),
                                                     ))
                                             })
@@ -933,12 +1200,18 @@ impl IceonApp {
                                         if bounds.size.width > px(0.0) && measured != columns {
                                             window.on_next_frame(move |_, cx| {
                                                 let _ = weak.update(cx, |this, cx| {
-                                                    if let Some(tab) =
-                                                        this.pod_dock_tabs.get_mut(active_idx)
+                                                    if let Some(tab) = this
+                                                        .pod_dock_tabs
+                                                        .iter_mut()
+                                                        .find(|tab| tab.key == active_key)
                                                     {
-                                                        tab.log_columns = measured;
+                                                        if tab.log_columns != measured {
+                                                            tab.log_columns = measured;
+                                                            if tab.word_wrap {
+                                                                cx.notify();
+                                                            }
+                                                        }
                                                     }
-                                                    cx.notify();
                                                 });
                                             });
                                         }
@@ -966,6 +1239,13 @@ impl IceonApp {
                                     .checked(tab.timestamps)
                                     .on_click(cx.listener(
                                         move |this, checked: &bool, window, cx| {
+                                            let Some(active_idx) = this
+                                                .pod_dock_tabs
+                                                .iter()
+                                                .position(|tab| tab.key == active_key)
+                                            else {
+                                                return;
+                                            };
                                             if let Some(tab) =
                                                 this.pod_dock_tabs.get_mut(active_idx)
                                             {
@@ -981,6 +1261,13 @@ impl IceonApp {
                                     .checked(tab.previous)
                                     .on_click(cx.listener(
                                         move |this, checked: &bool, window, cx| {
+                                            let Some(active_idx) = this
+                                                .pod_dock_tabs
+                                                .iter()
+                                                .position(|tab| tab.key == active_key)
+                                            else {
+                                                return;
+                                            };
                                             if let Some(tab) =
                                                 this.pod_dock_tabs.get_mut(active_idx)
                                             {
@@ -995,6 +1282,13 @@ impl IceonApp {
                                     .label("Word wrap")
                                     .checked(tab.word_wrap)
                                     .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                        let Some(active_idx) = this
+                                            .pod_dock_tabs
+                                            .iter()
+                                            .position(|tab| tab.key == active_key)
+                                        else {
+                                            return;
+                                        };
                                         if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
                                             tab.word_wrap = *checked;
                                         }
@@ -1005,9 +1299,25 @@ impl IceonApp {
                                 Button::new("pod-log-pause")
                                     .small()
                                     .ghost()
-                                    .label(if tab.paused { "Resume" } else { "Pause" })
+                                    .icon(if tab.paused {
+                                        IconName::Play
+                                    } else {
+                                        IconName::Pause
+                                    })
+                                    .accessibility_label(if tab.paused {
+                                        "Resume logs"
+                                    } else {
+                                        "Pause logs"
+                                    })
                                     .tooltip("Pause reading; resume retained backend logs")
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        let Some(active_idx) = this
+                                            .pod_dock_tabs
+                                            .iter()
+                                            .position(|tab| tab.key == active_key)
+                                        else {
+                                            return;
+                                        };
                                         if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
                                             tab.paused = !tab.paused;
                                         }
@@ -1018,8 +1328,16 @@ impl IceonApp {
                                 Button::new("pod-log-bottom")
                                     .small()
                                     .ghost()
+                                    .ml_auto()
                                     .label("To bottom")
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        let Some(active_idx) = this
+                                            .pod_dock_tabs
+                                            .iter()
+                                            .position(|tab| tab.key == active_key)
+                                        else {
+                                            return;
+                                        };
                                         if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
                                             tab.follow = true;
                                             tab.log_scroll.scroll_to_bottom();
@@ -1034,6 +1352,13 @@ impl IceonApp {
                                     .label("Download")
                                     .tooltip("Save retained logs (up to 2500 lines / 1 MiB)")
                                     .on_click(cx.listener(move |this, _, window, cx| {
+                                        let Some(active_idx) = this
+                                            .pod_dock_tabs
+                                            .iter()
+                                            .position(|tab| tab.key == active_key)
+                                        else {
+                                            return;
+                                        };
                                         let Some(tab) = this.pod_dock_tabs.get(active_idx) else {
                                             return;
                                         };
@@ -1210,7 +1535,18 @@ fn visual_log_rows(line: &str, columns: Option<usize>) -> Vec<String> {
 
 fn feed_tab_output(tab: &mut PodDockTab, chunk: &str, cx: &mut Context<IceonApp>) {
     if tab.mode == PodStreamMode::Logs {
-        append_log_chunk(&mut tab.output_lines, &mut tab.log_pending, chunk);
+        if chunk.is_empty() {
+            return;
+        }
+        append_log_chunk(
+            Rc::make_mut(&mut tab.output_lines),
+            Rc::make_mut(&mut tab.log_pending),
+            chunk,
+        );
+        tab.presentation = None;
+        if tab.follow {
+            tab.log_scroll.scroll_to_bottom();
+        }
     } else if let Some(terminal) = &tab.terminal {
         terminal.update(cx, |terminal, cx| terminal.feed(chunk, cx));
     }
@@ -1219,6 +1555,36 @@ fn feed_tab_output(tab: &mut PodDockTab, chunk: &str, cx: &mut Context<IceonApp>
 #[cfg(test)]
 mod chunk_tests {
     use super::append_log_chunk;
+    #[test]
+    fn idle_snapshots_do_not_schedule_updates() {
+        assert!(!super::poll_needs_update(
+            "", "running", "running", false, false
+        ));
+        assert!(super::poll_needs_update(
+            "chunk", "running", "running", false, false
+        ));
+        assert!(super::poll_needs_update(
+            "", "running", "exited", false, false
+        ));
+        assert!(super::poll_needs_update(
+            "", "running", "running", false, true
+        ));
+    }
+    #[test]
+    fn terminal_and_inactive_log_output_do_not_invalidate_workspace() {
+        assert!(!super::poll_notifies_parent(false, false, true, true));
+        assert!(!super::poll_notifies_parent(false, true, false, true));
+        assert!(super::poll_notifies_parent(false, true, true, true));
+        assert!(super::poll_notifies_parent(true, true, false, false));
+        assert!(!super::poll_notifies_parent(false, true, true, false));
+    }
+    #[test]
+    fn closing_a_background_tab_preserves_selection() {
+        assert_eq!(super::active_after_close(Some(2), 0, 3), Some(1));
+        assert_eq!(super::active_after_close(Some(0), 2, 3), Some(0));
+        assert_eq!(super::active_after_close(Some(2), 2, 2), Some(1));
+        assert_eq!(super::active_after_close(Some(0), 0, 0), None);
+    }
     #[test]
     fn split_lines_and_crlf_are_preserved() {
         let (mut rows, mut pending) = (Vec::new(), String::new());

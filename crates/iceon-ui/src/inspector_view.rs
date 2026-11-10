@@ -4,7 +4,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, Input},
+    input::Input,
     scroll::ScrollableElement as _,
     tag::Tag,
     v_flex,
@@ -31,6 +31,10 @@ use iceon_core::connection::{
 };
 
 use crate::IceonApp;
+
+#[path = "editor_surface.rs"]
+pub(crate) mod editor_surface;
+use editor_surface::EditorSurface;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteTarget {
@@ -231,6 +235,8 @@ impl IceonApp {
             return;
         };
         let read_id = self.next_operation_id();
+        let helm_preferences =
+            iceon_core::connection::helm::HelmPreferences::from(&self.preferences_draft);
         let connection = self.connection.clone();
         let req = HelmDetailRequest {
             cluster_id: session.cluster_id,
@@ -242,7 +248,9 @@ impl IceonApp {
             version,
         };
         cx.spawn_in(window, async move |this, cx| {
-            let result = connection.helm_detail(req).await;
+            let result = connection
+                .helm_detail_with_preferences(req, helm_preferences)
+                .await;
             let _ = this.update_in(cx, |this, _, cx| {
                 this.inspector.loading = false;
                 match result {
@@ -2957,7 +2965,10 @@ impl IceonApp {
                     .border_color(cx.theme().border)
                     .rounded(px(6.0))
                     .overflow_hidden()
-                    .child(Editor::new(&self.inspector_yaml_editor).h_full()),
+                    .child(EditorSurface::new(
+                        &self.inspector_yaml_editor,
+                        &self.preferences_draft.editor,
+                    )),
             )
     }
 

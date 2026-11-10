@@ -27,6 +27,7 @@ pub mod detail_metadata;
 pub mod details;
 pub mod event_diagnostic;
 pub mod helm;
+pub mod kubectl_tools;
 #[cfg(test)]
 mod lifecycle_tests;
 mod metrics;

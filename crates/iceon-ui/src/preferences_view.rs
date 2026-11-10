@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _, StyledExt as _, TitleBar,
+    button::{Button, ButtonVariants as _},
     group_box::GroupBoxVariant,
     h_flex,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
@@ -16,7 +17,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::IceonApp;
-use crate::navigation::preferences_error_message;
+#[path = "kubernetes_preferences.rs"]
+mod kubernetes_preferences;
 use iceon_core::preferences::{
     AppTheme, LineNumbers, MinimapSide, Preferences, PreferencesEngine, SavePreferencesRequest,
     TerminalTheme,
@@ -33,7 +35,15 @@ pub enum PreferencesSection {
 
 #[cfg(test)]
 mod tests {
-    use super::{SelectItem as _, TimezoneChoice, timezone_choices};
+    use super::{PREFERENCE_SECTIONS, SelectItem as _, TimezoneChoice, timezone_choices};
+
+    #[test]
+    fn preferences_navigation_has_only_the_requested_sections_in_order() {
+        assert_eq!(
+            PREFERENCE_SECTIONS,
+            ["App", "Proxy", "Kubernetes", "Editor", "Terminal"]
+        );
+    }
 
     #[test]
     fn timezone_choices_pin_system_and_utc_before_sorted_unique_names() {
@@ -128,6 +138,8 @@ fn timezone_choices(current: &str) -> Vec<TimezoneChoice> {
 
 type TimezoneSelectState = SelectState<SearchableVec<TimezoneChoice>>;
 
+const PREFERENCE_SECTIONS: [&str; 5] = ["App", "Proxy", "Kubernetes", "Editor", "Terminal"];
+
 pub(crate) struct GlobalPreferencesState {
     pub engine: Arc<PreferencesEngine>,
     pub revision: u64,
@@ -144,6 +156,51 @@ fn current_prefs(cx: &App) -> Preferences {
         .unwrap_or_default()
 }
 
+/// OS hooks are applied inside the preference transaction, including rollback.
+pub(crate) struct RuntimeAppIntegration;
+pub(crate) struct StartupAppIntegration;
+impl iceon_core::preferences::app_integration::AppIntegration for StartupAppIntegration {
+    fn apply(
+        &mut self,
+        previous: &iceon_core::preferences::AppPreferences,
+        next: &iceon_core::preferences::AppPreferences,
+    ) -> Result<(), iceon_core::preferences::app_integration::IntegrationError> {
+        use iceon_core::preferences::app_integration::NativeAppIntegration;
+        let mut previous = previous.clone();
+        let mut next = next.clone();
+        previous.show_tray_icon = false;
+        next.show_tray_icon = false;
+        NativeAppIntegration.apply(&previous, &next)
+    }
+}
+impl iceon_core::preferences::app_integration::AppIntegration for RuntimeAppIntegration {
+    fn apply(
+        &mut self,
+        previous: &iceon_core::preferences::AppPreferences,
+        next: &iceon_core::preferences::AppPreferences,
+    ) -> Result<(), iceon_core::preferences::app_integration::IntegrationError> {
+        use iceon_core::preferences::app_integration::IntegrationError;
+        if previous.open_at_login == next.open_at_login
+            && previous.show_tray_icon == next.show_tray_icon
+        {
+            return Ok(());
+        }
+        crate::tray::set_visible(next.show_tray_icon).map_err(IntegrationError::Tray)?;
+        if previous.open_at_login != next.open_at_login
+            && let Err(operation) = StartupAppIntegration.apply(previous, next)
+        {
+            if let Err(rollback) = crate::tray::set_visible(previous.show_tray_icon) {
+                return Err(IntegrationError::Rollback {
+                    operation: Box::new(operation),
+                    rollback: Box::new(IntegrationError::Tray(rollback)),
+                });
+            }
+            return Err(operation);
+        }
+        Ok(())
+    }
+}
+
 fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
     if !cx.has_global::<GlobalPreferencesState>() {
         return;
@@ -158,10 +215,13 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
                 next.app.timezone = "system".into();
             }
 
-            let res = state.engine.save(SavePreferencesRequest {
-                revision: state.revision,
-                preferences: next,
-            });
+            let res = state.engine.save_with_app_integration(
+                SavePreferencesRequest {
+                    revision: state.revision,
+                    preferences: next,
+                },
+                &mut RuntimeAppIntegration,
+            );
             match &res {
                 Ok(snapshot) => {
                     state.revision = snapshot.revision;
@@ -169,7 +229,7 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
                     state.error = None;
                 }
                 Err(err) => {
-                    state.error = Some(preferences_error_message(err.clone()).to_string());
+                    state.error = Some(err.to_string());
                 }
             }
 
@@ -181,7 +241,8 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
     if let Some(theme) = maybe_theme_change {
         let mode = match theme {
             AppTheme::Light => ThemeMode::Light,
-            AppTheme::Dark | AppTheme::System => ThemeMode::Dark,
+            AppTheme::Dark => ThemeMode::Dark,
+            AppTheme::System => ThemeMode::from(cx.window_appearance()),
         };
         crate::shell_theme::apply(mode, None, cx);
     }
@@ -189,7 +250,12 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
     if let Some(snapshot) = snapshot_result {
         let _ = main_app.update(cx, |app, cx| {
             app.preferences_revision = snapshot.revision;
+            let discovery_changed =
+                app.preferences_draft.kubernetes != snapshot.preferences.kubernetes;
             app.preferences_draft = snapshot.preferences;
+            if discovery_changed {
+                app.refresh_catalog(cx);
+            }
             app.preferences_error = None;
             cx.notify();
         });
@@ -201,6 +267,9 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
 pub struct PreferencesWindow {
     focus_handle: FocusHandle,
     timezone_select: Entity<TimezoneSelectState>,
+    terminal_font_select: Entity<SelectState<SearchableVec<String>>>,
+    section: usize,
+    kubernetes_preferences: Entity<kubernetes_preferences::KubernetesPreferencesView>,
 }
 
 impl PreferencesWindow {
@@ -230,15 +299,41 @@ impl PreferencesWindow {
             },
         )
         .detach();
+        let terminal_font = current_prefs(cx).terminal.font_family;
+        let mut fonts = cx.text_system().all_font_names();
+        fonts.push(terminal_font.clone());
+        fonts.sort_unstable();
+        fonts.dedup();
+        let terminal_font_select = cx.new(|cx| {
+            let mut state =
+                SelectState::new(SearchableVec::new(fonts), None, window, cx).searchable(true);
+            state.set_selected_value(&terminal_font, window, cx);
+            state
+        });
+        cx.subscribe(
+            &terminal_font_select,
+            |_, _, event: &SelectEvent<SearchableVec<String>>, cx| {
+                if let SelectEvent::Confirm(Some(font)) = event {
+                    mutate_preferences(cx, |prefs| prefs.terminal.font_family = font.clone());
+                }
+            },
+        )
+        .detach();
+        let kubernetes_preferences =
+            cx.new(|cx| kubernetes_preferences::KubernetesPreferencesView::new(window, cx));
         Self {
             focus_handle,
             timezone_select,
+            terminal_font_select,
+            section: 0,
+            kubernetes_preferences,
         }
     }
 
-    fn build_pages(&self) -> Vec<SettingPage> {
+    fn build_pages(&self, cx: &App) -> Vec<SettingPage> {
         let defaults = Preferences::default();
         let timezone_select = self.timezone_select.clone();
+        let terminal_font_select = self.terminal_font_select.clone();
 
         let app_page = SettingPage::new("App")
             .icon(IconName::Settings2)
@@ -272,7 +367,7 @@ impl PreferencesWindow {
                                     });
                                 },
                             )
-                            .default_value(SharedString::from("dark")),
+                            .default_value(SharedString::from("system")),
                         )
                         .description("Select the application color scheme across all windows."),
                         SettingItem::new(
@@ -307,6 +402,42 @@ impl PreferencesWindow {
                     .title("Navigation & Session")
                     .description("Control how search filters and active routes behave.")
                     .items([
+                        SettingItem::new(
+                            "Open at Login",
+                            SettingField::switch(
+                                |cx: &App| current_prefs(cx).app.open_at_login,
+                                |enabled, cx| mutate_preferences(cx, |prefs| prefs.app.open_at_login = enabled),
+                            ).default_value(false),
+                        ).disabled(!cfg!(target_os = "macos"))
+                            .description("Start Iceon when you sign in to macOS. Changes update Iceon's login registration."),
+                        SettingItem::new(
+                            "Auto-hide Hotbar",
+                            SettingField::switch(
+                                |cx: &App| current_prefs(cx).app.auto_hide_hotbar,
+                                |enabled, cx| mutate_preferences(cx, |prefs| prefs.app.auto_hide_hotbar = enabled),
+                            ).default_value(false),
+                        ).description("Hide the cluster icon rail until you hover over the left edge."),
+                        SettingItem::new(
+                            "Show Tray Icon",
+                            SettingField::switch(
+                                |cx: &App| current_prefs(cx).app.show_tray_icon,
+                                |enabled, cx| mutate_preferences(cx, |prefs| prefs.app.show_tray_icon = enabled),
+                            ),
+                        ).disabled(!crate::tray::supported()).description("Show a macOS menu-bar icon. Click it to bring Iceon forward."),
+                        SettingItem::new(
+                            "Reset Sidebar Order",
+                            SettingField::render(|_, _, _| {
+                                Button::new("reset-sidebar-order").label("Reset").on_click(|_, _, cx| {
+                                    let main = cx.try_global::<GlobalPreferencesState>().map(|state| state.main_app.clone());
+                                    if let Some(main) = main {
+                                        let _ = main.update(cx, |app, cx| {
+                                            app.cluster_order = app.catalog_snapshot.clusters.iter().map(|cluster| cluster.id.clone()).collect();
+                                            cx.notify();
+                                        });
+                                    }
+                                })
+                            }),
+                        ).description("Restore the cluster icon rail to catalog order."),
                         SettingItem::new(
                             "Persistent Search",
                             SettingField::switch(
@@ -345,7 +476,7 @@ impl PreferencesWindow {
             .description("Configure outbound proxy routing and certificate settings.")
             .groups([SettingGroup::new()
                 .title("Upstream Proxy")
-                .description("Used when connecting to remote Kubernetes API servers.")
+                .description("For kubectl downloads and Helm chart/repository requests; cluster API TLS policy is unchanged.")
                 .items([
                     SettingItem::new(
                         "HTTPS Proxy URL",
@@ -359,7 +490,7 @@ impl PreferencesWindow {
                         )
                         .default_value(SharedString::from(defaults.proxy.https_proxy)),
                     )
-                    .description("Optional upstream proxy address for cluster connections."),
+                    .description("HTTP(S) proxy for application downloads and Helm. Does not route cluster API traffic."),
                     SettingItem::new(
                         "Allow Untrusted Certificate Authorities",
                         SettingField::switch(
@@ -372,60 +503,16 @@ impl PreferencesWindow {
                         )
                         .default_value(defaults.proxy.allow_untrusted_cas),
                     )
-                    .description("Allow custom certificate authorities recorded in preferences."),
+                    .description("Skip certificate validation for application downloads and Helm repositories only. Kubernetes API certificate verification is unchanged."),
                 ])]);
 
         let kubernetes_page = SettingPage::new("Kubernetes")
-            .icon(IconName::LayoutDashboard)
-            .description("Configure local kubeconfig discovery and Helm integration.")
-            .groups([SettingGroup::new()
-                .title("Kubeconfig & Helm")
-                .description("Manage how Iceon discovers clusters and runs Helm operations.")
-                .items([
-                    SettingItem::new(
-                        "Auto-discover Default Kubeconfig",
-                        SettingField::switch(
-                            |cx: &App| {
-                                current_prefs(cx).kubernetes.discover_default_kubeconfig
-                            },
-                            |checked: bool, cx: &mut App| {
-                                mutate_preferences(cx, |prefs| {
-                                    prefs.kubernetes.discover_default_kubeconfig = checked;
-                                });
-                            },
-                        )
-                        .default_value(defaults.kubernetes.discover_default_kubeconfig),
-                    )
-                    .description("Automatically scan and import contexts from default kubeconfig in Catalog."),
-                    SettingItem::new(
-                        "Custom Helm Binary Path",
-                        SettingField::input(
-                            |cx: &App| {
-                                SharedString::from(current_prefs(cx).kubernetes.helm_binary_path)
-                            },
-                            |val: SharedString, cx: &mut App| {
-                                mutate_preferences(cx, |prefs| {
-                                    prefs.kubernetes.helm_binary_path = val.trim().to_string();
-                                });
-                            },
-                        )
-                        .default_value(SharedString::from(defaults.kubernetes.helm_binary_path)),
-                    )
-                    .description("Optional custom path to the helm binary."),
-                    SettingItem::new(
-                        "Helm Server-Side Dry Run",
-                        SettingField::switch(
-                            |cx: &App| current_prefs(cx).kubernetes.helm_server_side,
-                            |checked: bool, cx: &mut App| {
-                                mutate_preferences(cx, |prefs| {
-                                    prefs.kubernetes.helm_server_side = checked;
-                                });
-                            },
-                        )
-                        .default_value(defaults.kubernetes.helm_server_side),
-                    )
-                    .description("Use server-side validation for Helm chart operations."),
-                ])]);
+            .description("Kubernetes tools, Helm repositories, and kubeconfig synchronization.")
+            .resettable(false)
+            .groups(kubernetes_preferences::groups(
+                &self.kubernetes_preferences,
+                cx,
+            ));
 
         let editor_page = SettingPage::new("Editor")
             .icon(IconName::File)
@@ -574,20 +661,27 @@ impl PreferencesWindow {
                     .items([
                         SettingItem::new(
                             "Terminal Font Family",
-                            SettingField::input(
-                                |cx: &App| {
-                                    SharedString::from(current_prefs(cx).terminal.font_family)
+                            SettingField::render(move |options, _, _| {
+                                Select::new(&terminal_font_select)
+                                    .accessibility_label("Terminal font family")
+                                    .search_placeholder("Search installed fonts...")
+                                    .menu_max_h(px(320.0))
+                                    .with_size(options.size())
+                                    .w(px(240.0))
+                                    .when(options.layout() == Axis::Vertical, |el| el.w_full())
+                            })
+                            .on_reset(
+                                |cx| {
+                                    current_prefs(cx).terminal.font_family
+                                        != Preferences::default().terminal.font_family
                                 },
-                                |val: SharedString, cx: &mut App| {
+                                |_, cx| {
                                     mutate_preferences(cx, |prefs| {
-                                        let trimmed = val.trim();
-                                        if !trimmed.is_empty() {
-                                            prefs.terminal.font_family = trimmed.to_string();
-                                        }
-                                    });
+                                        prefs.terminal.font_family =
+                                            Preferences::default().terminal.font_family
+                                    })
                                 },
-                            )
-                            .default_value(SharedString::from(defaults.terminal.font_family)),
+                            ),
                         )
                         .description(
                             "Monospace font family used in Pod logs and interactive sessions.",
@@ -620,15 +714,13 @@ impl PreferencesWindow {
                                 |val: SharedString, cx: &mut App| {
                                     mutate_preferences(cx, |prefs| {
                                         let trimmed = val.trim();
-                                        if !trimmed.is_empty() {
-                                            prefs.terminal.shell_path = trimmed.to_string();
-                                        }
+                                        prefs.terminal.shell_path = trimmed.to_string();
                                     });
                                 },
                             )
                             .default_value(SharedString::from(defaults.terminal.shell_path)),
                         )
-                        .description("Default shell binary used for Pod sessions."),
+                        .description("Shell executable inside the container for new Pod sessions; it must exist in the selected container. Empty uses /bin/sh."),
                     ]),
                 SettingGroup::new().title("Appearance & Clipboard").items([
                     SettingItem::new(
@@ -695,6 +787,11 @@ impl Render for PreferencesWindow {
                 state.set_selected_value(&timezone, window, cx);
             });
         }
+        let font = current_prefs(cx).terminal.font_family;
+        if self.terminal_font_select.read(cx).selected_value() != Some(&font) {
+            self.terminal_font_select
+                .update(cx, |state, cx| state.set_selected_value(&font, window, cx));
+        }
         let error = cx
             .try_global::<GlobalPreferencesState>()
             .and_then(|s| s.error.clone());
@@ -740,17 +837,50 @@ impl Render for PreferencesWindow {
                 )
             })
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .min_h_0()
                     .w_full()
                     .bg(cx.theme().background)
                     .overflow_hidden()
                     .child(
-                        Settings::new("iceon-settings")
-                            .sidebar_width(px(210.0))
-                            .with_group_variant(GroupBoxVariant::Outline)
-                            .pages(self.build_pages()),
+                        v_flex()
+                            .w(px(150.0))
+                            .h_full()
+                            .flex_shrink_0()
+                            .p_3()
+                            .gap_1()
+                            .border_r_1()
+                            .border_color(cx.theme().border)
+                            .children(PREFERENCE_SECTIONS.into_iter().enumerate().map(
+                                |(ix, name)| {
+                                    Button::new(("preferences-section", ix))
+                                        .label(name)
+                                        .ghost()
+                                        .w_full()
+                                        .justify_start()
+                                        .when(self.section == ix, |button| {
+                                            button.bg(cx.theme().secondary)
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.section = ix;
+                                            cx.notify();
+                                        }))
+                                },
+                            )),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().h_full().child(
+                            Settings::new(("iceon-settings-page", self.section))
+                                .sidebar_width(px(0.0))
+                                .sidebar_size_range(px(0.0)..px(0.0))
+                                .sidebar_style(&StyleRefinement {
+                                    display: Some(Display::None),
+                                    ..Default::default()
+                                })
+                                .with_group_variant(GroupBoxVariant::Normal)
+                                .page(self.build_pages(cx).remove(self.section)),
+                        ),
                     ),
             )
     }
@@ -801,18 +931,5 @@ impl IceonApp {
             self.preferences_window = Some(handle);
         }
         cx.notify();
-    }
-
-    pub(crate) fn apply_theme(
-        &self,
-        theme: AppTheme,
-        window: Option<&mut Window>,
-        cx: &mut Context<Self>,
-    ) {
-        let mode = match theme {
-            AppTheme::Light => ThemeMode::Light,
-            AppTheme::Dark | AppTheme::System => ThemeMode::Dark,
-        };
-        crate::shell_theme::apply(mode, window, cx);
     }
 }
