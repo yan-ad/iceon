@@ -6,7 +6,7 @@ use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::Input,
+    input::{Editor, Input},
     scroll::ScrollableElement as _,
     tag::Tag,
     v_flex,
@@ -705,42 +705,30 @@ impl IceonApp {
             status: None,
             group,
         };
-        let inst_req = crd_name.map(|definition_name| CustomResourceRequest {
-            cluster_id: session.cluster_id.clone(),
-            session_id: session.session_id.clone(),
-            read_id: self.next_operation_id(),
-            target: CustomResourceTarget {
-                definition_name,
-                definition_uid: None,
-            },
-            namespace: self.selected_namespace.clone(),
-            continue_token: None,
-        });
         let connection = self.connection.clone();
         self.cluster_loading = true;
         cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
             let defs = connection.resources(def_req).await;
-            let instances = if let Some(ireq) = inst_req {
-                Some(connection.custom_resources(ireq).await)
-            } else {
-                None
-            };
             let _ = this.update_in(cx, |this, window, cx| {
                 this.cluster_loading = false;
                 if let Ok(page) = defs {
-                    let auto_first = instances
-                        .is_none()
-                        .then(|| page.items.first().map(|item| (item.name.clone(), item.uid.clone())))
-                        .flatten();
+                    let selected_crd = if let Some(ref target_name) = crd_name {
+                        page.items
+                            .iter()
+                            .find(|item| &item.name == target_name)
+                            .or_else(|| page.items.first())
+                            .and_then(|item| item.uid.clone().map(|uid| (item.name.clone(), uid)))
+                    } else {
+                        page.items
+                            .first()
+                            .and_then(|item| item.uid.clone().map(|uid| (item.name.clone(), uid)))
+                    };
                     this.custom_definitions_page = Some(page);
-                    if let Some((first_crd, first_uid)) = auto_first {
-                        this.load_crd_instances_only(first_crd, first_uid, window, cx);
+                    if let Some((def_name, def_uid)) = selected_crd {
+                        this.load_crd_instances_only(def_name, def_uid, window, cx);
                     }
-                }
-                if let Some(Ok(inst)) = instances {
-                    this.custom_instances_page = Some(inst);
                 }
                 cx.notify();
             });
@@ -751,7 +739,7 @@ impl IceonApp {
     fn load_crd_instances_only(
         &mut self,
         definition_name: String,
-        definition_uid: Option<String>,
+        definition_uid: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1188,7 +1176,7 @@ impl IceonApp {
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().tokens.chrome)
+            .bg(cx.theme().table_head)
             .child(
                 h_flex()
                     .w_full()
@@ -1435,7 +1423,11 @@ impl IceonApp {
                 div()
                     .flex_1()
                     .w_full()
-                    .child(Input::new(&self.create_yaml_editor).h_full()),
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(px(6.0))
+                    .overflow_hidden()
+                    .child(Editor::new(&self.create_yaml_editor).h_full()),
             )
     }
 
@@ -1529,7 +1521,7 @@ impl IceonApp {
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().tokens.elevated_surface)
+                            .bg(cx.theme().secondary)
                             .child(
                                 h_flex()
                                     .justify_between()
@@ -1587,7 +1579,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .text_sm()
@@ -1766,7 +1758,7 @@ impl IceonApp {
                     .py_2()
                     .gap_2()
                     .rounded(px(6.0))
-                    .bg(cx.theme().tokens.chrome)
+                    .bg(cx.theme().table_head)
                     .border_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -1826,7 +1818,7 @@ impl IceonApp {
                     .rounded(px(6.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .w(px(220.0))
@@ -2174,7 +2166,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             h_flex()
                                 .justify_between()
@@ -2239,7 +2231,11 @@ impl IceonApp {
                             div()
                                 .h(px(180.0))
                                 .w_full()
-                                .child(Input::new(&self.helm_values_editor).h_full()),
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded(px(6.0))
+                                .overflow_hidden()
+                                .child(Editor::new(&self.helm_values_editor).h_full()),
                         ),
                 )
             })
@@ -2258,7 +2254,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         v_flex()
                             .gap_0p5()
@@ -2345,7 +2341,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .text_sm()
@@ -2374,12 +2370,14 @@ impl IceonApp {
                                             .outline()
                                             .label(def.name)
                                             .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.load_crd_instances_only(
-                                                    crd_name.clone(),
-                                                    crd_uid.clone(),
-                                                    window,
-                                                    cx,
-                                                );
+                                                if let Some(uid) = crd_uid.clone() {
+                                                    this.load_crd_instances_only(
+                                                        crd_name.clone(),
+                                                        uid,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
                                             })),
                                     )
                                     .child(
@@ -2409,16 +2407,16 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             div()
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(format!(
                                     "{} ({}/{}) · {} instances",
-                                    page.definition.kind,
-                                    page.definition.group,
-                                    page.definition.version,
+                                    page.kind,
+                                    page.group,
+                                    page.version,
                                     page.items.len()
                                 )),
                         )
@@ -2487,7 +2485,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         h_flex()
                             .justify_between()
@@ -2642,7 +2640,7 @@ impl IceonApp {
                                                 .rounded(px(6.0))
                                                 .border_1()
                                                 .border_color(cx.theme().border)
-                                                .bg(cx.theme().tokens.surface)
+                                                .bg(cx.theme().background)
                                                 .child(
                                                     h_flex()
                                                         .gap_2()
@@ -2719,7 +2717,7 @@ impl IceonApp {
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(cx.theme().border)
-                                .bg(cx.theme().tokens.surface)
+                                .bg(cx.theme().background)
                                 .child(
                                     h_flex()
                                         .justify_between()
@@ -2842,7 +2840,7 @@ impl IceonApp {
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().tokens.elevated_surface)
+                            .bg(cx.theme().secondary)
                             .child(
                                 h_flex()
                                     .justify_between()

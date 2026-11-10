@@ -632,7 +632,7 @@ impl IceonApp {
             .flex_shrink_0()
             .border_t_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().tokens.surface)
+            .bg(cx.theme().background)
             .overflow_hidden()
             .child(
                 h_flex()
@@ -643,7 +643,7 @@ impl IceonApp {
                     .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.chrome)
+                    .bg(cx.theme().table_head)
                     .child(
                         h_flex()
                             .gap_1p5()
@@ -769,7 +769,7 @@ impl IceonApp {
                         .items_center()
                         .border_b_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             h_flex()
                                 .gap_1()
@@ -1060,7 +1060,7 @@ impl IceonApp {
                             .items_center()
                             .border_t_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().tokens.elevated_surface)
+                            .bg(cx.theme().secondary)
                             .child(
                                 Tag::secondary()
                                     .small()

@@ -4,7 +4,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::Input,
+    input::{Editor, Input},
     scroll::ScrollableElement as _,
     tag::Tag,
     v_flex,
@@ -57,18 +57,6 @@ pub fn supported_collections_for_kind(kind: ResourceKind) -> Vec<CollectionKind>
     };
     out.push(CollectionKind::Events);
     out
-}
-
-pub fn collection_item_kind(collection: CollectionKind) -> ResourceKind {
-    match collection {
-        CollectionKind::Pods => ResourceKind::Pods,
-        CollectionKind::ReplicaSets => ResourceKind::ReplicaSets,
-        CollectionKind::Jobs => ResourceKind::Jobs,
-        CollectionKind::EndpointSlices => ResourceKind::EndpointSlices,
-        CollectionKind::ResourceQuotas => ResourceKind::ResourceQuotas,
-        CollectionKind::LimitRanges => ResourceKind::LimitRanges,
-        CollectionKind::Events => ResourceKind::Events,
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -892,7 +880,7 @@ impl IceonApp {
             .h_full()
             .border_l_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().tokens.surface)
+            .bg(cx.theme().background)
             .overflow_hidden()
             .child(
                 h_flex()
@@ -903,7 +891,7 @@ impl IceonApp {
                     .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.chrome)
+                    .bg(cx.theme().table_head)
                     .child(
                         div()
                             .text_sm()
@@ -952,7 +940,7 @@ impl IceonApp {
                         .gap_1()
                         .border_b_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.chrome)
+                        .bg(cx.theme().table_head)
                         .children(
                             [
                                 (InspectorTab::Summary, "Summary".to_string()),
@@ -1096,7 +1084,7 @@ impl IceonApp {
             .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().tokens.elevated_surface)
+            .bg(cx.theme().secondary)
             .when(can_scale, |el| el.child(self.scale_controls(cx)))
             .when(can_restart, |el| {
                 el.child(
@@ -1419,7 +1407,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         h_flex()
                             .justify_between()
@@ -1527,7 +1515,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             h_flex()
                                 .justify_between()
@@ -1570,7 +1558,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .text_xs()
@@ -1635,7 +1623,7 @@ impl IceonApp {
             .rounded(px(8.0))
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().tokens.elevated_surface)
+            .bg(cx.theme().secondary)
             .child(
                 h_flex()
                     .justify_between()
@@ -1755,7 +1743,7 @@ impl IceonApp {
             .rounded(px(8.0))
             .border_1()
             .border_color(cx.theme().danger)
-            .bg(cx.theme().tokens.elevated_surface)
+            .bg(cx.theme().secondary)
             .child(
                 h_flex()
                     .justify_between()
@@ -1849,7 +1837,7 @@ impl IceonApp {
             .rounded(px(8.0))
             .border_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().tokens.elevated_surface)
+            .bg(cx.theme().secondary)
             .child(
                 h_flex()
                     .justify_between()
@@ -1919,7 +1907,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         h_flex()
                             .justify_between()
@@ -2051,7 +2039,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             div()
                                 .text_xs()
@@ -2085,7 +2073,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .text_xs()
@@ -2123,7 +2111,7 @@ impl IceonApp {
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().tokens.surface)
+                            .bg(cx.theme().background)
                             .child(
                                 h_flex()
                                     .justify_between()
@@ -2322,7 +2310,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         h_flex()
                             .justify_between()
@@ -2374,7 +2362,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .text_xs()
@@ -2430,7 +2418,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .text_xs()
@@ -2468,7 +2456,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             div()
                                 .text_xs()
@@ -2534,7 +2522,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             div()
                                 .text_xs()
@@ -2584,7 +2572,6 @@ impl IceonApp {
                     .filter(|col| col.collection != CollectionKind::Events)
                     .map(|col| {
                         let is_pods = col.collection == CollectionKind::Pods;
-                        let item_kind = collection_item_kind(col.collection);
                         let state_badge = match col.state {
                             CollectionState::Complete => Tag::success().small().child("Complete"),
                             CollectionState::Partial => Tag::warning().small().child("Partial"),
@@ -2600,7 +2587,7 @@ impl IceonApp {
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().tokens.elevated_surface)
+                            .bg(cx.theme().secondary)
                             .child(
                                 h_flex()
                                     .justify_between()
@@ -2618,14 +2605,9 @@ impl IceonApp {
                                     .child(state_badge),
                             )
                             .children(col.items.iter().enumerate().map(|(idx, item)| {
-                                let target = ResourceReference {
-                                    kind: item_kind,
-                                    name: item.name.clone(),
-                                    namespace: item.namespace.clone(),
-                                    uid: item.uid.clone(),
-                                };
-                                let pod_ns = item.namespace.clone().unwrap_or_default();
-                                let pod_name = item.name.clone();
+                                let target = item.reference.clone();
+                                let pod_ns = item.reference.namespace.clone().unwrap_or_default();
+                                let pod_name = item.reference.name.clone();
                                 let pod_ns_shell = pod_ns.clone();
                                 let pod_name_shell = pod_name.clone();
                                 let summary_cols: String = item
@@ -2643,7 +2625,7 @@ impl IceonApp {
                                     .rounded(px(6.0))
                                     .border_1()
                                     .border_color(cx.theme().border)
-                                    .bg(cx.theme().tokens.surface)
+                                    .bg(cx.theme().background)
                                     .child(
                                         h_flex()
                                             .justify_between()
@@ -2656,7 +2638,7 @@ impl IceonApp {
                                                         div()
                                                             .text_xs()
                                                             .font_weight(FontWeight::MEDIUM)
-                                                            .child(item.name.clone()),
+                                                            .child(item.reference.name.clone()),
                                                     )
                                                     .child(status_tag(&item.status)),
                                             )
@@ -2763,7 +2745,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             div()
                                 .text_xs()
@@ -2788,7 +2770,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             h_flex()
                                 .justify_between()
@@ -2850,7 +2832,7 @@ impl IceonApp {
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().tokens.elevated_surface)
+                    .bg(cx.theme().secondary)
                     .child(
                         div()
                             .text_xs()
@@ -2866,12 +2848,7 @@ impl IceonApp {
                         )
                     })
                     .children(col.items.into_iter().enumerate().map(|(idx, item)| {
-                        let target = ResourceReference {
-                            kind: ResourceKind::Events,
-                            name: item.name.clone(),
-                            namespace: item.namespace.clone(),
-                            uid: item.uid.clone(),
-                        };
+                        let target = item.reference.clone();
                         let reason = item.columns.get("reason").cloned().unwrap_or_default();
                         let count = item
                             .columns
@@ -2998,7 +2975,11 @@ impl IceonApp {
                 div()
                     .flex_1()
                     .w_full()
-                    .child(Input::new(&self.inspector_yaml_editor).h_full()),
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(px(6.0))
+                    .overflow_hidden()
+                    .child(Editor::new(&self.inspector_yaml_editor).h_full()),
             )
     }
 
@@ -3024,7 +3005,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             v_flex()
                                 .gap_0p5()
@@ -3064,7 +3045,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             div()
                                 .text_xs()
@@ -3099,7 +3080,7 @@ impl IceonApp {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().tokens.elevated_surface)
+                        .bg(cx.theme().secondary)
                         .child(
                             div()
                                 .text_xs()
