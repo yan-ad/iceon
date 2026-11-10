@@ -8,9 +8,60 @@ use gpui_kit::component::{
     h_flex,
     input::{Editor, Input},
     scroll::ScrollableElement as _,
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
     v_flex,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NamespaceChoice {
+    pub(crate) name: String,
+}
+
+impl SelectItem for NamespaceChoice {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.name.clone().into()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.name
+    }
+    fn matches(&self, query: &str) -> bool {
+        self.name
+            .to_lowercase()
+            .contains(&query.trim().to_lowercase())
+    }
+}
+
+pub(crate) type NamespaceSelectState = SelectState<SearchableVec<NamespaceChoice>>;
+
+pub(crate) fn create_namespace_select(
+    window: &mut Window,
+    cx: &mut Context<IceonApp>,
+) -> (Entity<NamespaceSelectState>, Vec<NamespaceChoice>) {
+    let items = vec![NamespaceChoice {
+        name: "All Namespaces".into(),
+    }];
+    let select = cx.new(|cx| {
+        SelectState::new(SearchableVec::new(items.clone()), None, window, cx).searchable(true)
+    });
+    cx.subscribe_in(
+        &select,
+        window,
+        |this, _, event: &SelectEvent<SearchableVec<NamespaceChoice>>, window, cx| {
+            let SelectEvent::Confirm(Some(namespace)) = event else {
+                return;
+            };
+            this.selected_namespace = (namespace != "All Namespaces").then(|| namespace.clone());
+            this.current_continue_token = None;
+            this.continue_token_history.clear();
+            this.reload_active_section(window, cx);
+        },
+    )
+    .detach();
+    (select, items)
+}
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -1547,10 +1598,10 @@ impl IceonApp {
     }
 
     fn render_cluster_toolbar(
-        &self,
+        &mut self,
         section: &str,
         active_kind: Option<ResourceKind>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let session = self.cluster_session.clone();
@@ -1558,6 +1609,30 @@ impl IceonApp {
         let selected_ns = self.selected_namespace.clone();
         let show_ns_selector = active_kind.is_none_or(namespaced_kind);
         let dock_count = self.pod_dock_tabs.len() + self.port_forwards.len();
+        let namespace_items = std::iter::once(NamespaceChoice {
+            name: "All Namespaces".into(),
+        })
+        .chain(
+            namespaces
+                .iter()
+                .cloned()
+                .map(|name| NamespaceChoice { name }),
+        )
+        .collect::<Vec<_>>();
+        if self.namespace_select_items != namespace_items {
+            self.namespace_select.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(namespace_items.clone()), window, cx);
+            });
+            self.namespace_select_items = namespace_items.clone();
+        }
+        let namespace_value = selected_ns
+            .clone()
+            .unwrap_or_else(|| "All Namespaces".into());
+        if self.namespace_select.read(cx).selected_value() != Some(&namespace_value) {
+            self.namespace_select.update(cx, |state, cx| {
+                state.set_selected_value(&namespace_value, window, cx);
+            });
+        }
 
         v_flex()
             .w_full()
@@ -1612,16 +1687,18 @@ impl IceonApp {
                                             .cleanable(true),
                                     ),
                                 )
-                                .child(
-                                    Button::new("apply-resource-filter-btn")
-                                        .xsmall()
-                                        .outline()
-                                        .label("Filter")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.current_continue_token = None;
-                                            this.continue_token_history.clear();
-                                            this.reload_active_section(window, cx);
-                                        })),
+                            })
+                            .when(show_ns_selector && !namespaces.is_empty(), |el| {
+                                el.child(
+                                    div().w(px(190.0)).child(
+                                        Select::new(&self.namespace_select)
+                                            .id("namespace-select")
+                                            .small()
+                                            .w_full()
+                                            .placeholder("Namespace")
+                                            .search_placeholder("Search namespaces…")
+                                            .menu_width(px(240.0)),
+                                    ),
                                 )
                             })
                             .when_some(active_kind, |el, kind| {
@@ -1661,43 +1738,6 @@ impl IceonApp {
                             ),
                     ),
             )
-            .when(show_ns_selector && !namespaces.is_empty(), |el| {
-                el.child(
-                    h_flex()
-                        .w_full()
-                        .gap_1()
-                        .items_center()
-                        .overflow_x_scrollbar()
-                        .child(
-                            Button::new("ns-pill-all")
-                                .xsmall()
-                                .ghost()
-                                .selected(selected_ns.is_none())
-                                .label("All Namespaces")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.selected_namespace = None;
-                                    this.current_continue_token = None;
-                                    this.continue_token_history.clear();
-                                    this.reload_active_section(window, cx);
-                                })),
-                        )
-                        .children(namespaces.into_iter().take(24).map(|ns| {
-                            let active = selected_ns.as_deref() == Some(ns.as_str());
-                            let target_ns = ns.clone();
-                            Button::new(SharedString::from(format!("ns-pill-{ns}")))
-                                .xsmall()
-                                .ghost()
-                                .selected(active)
-                                .label(ns)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.selected_namespace = Some(target_ns.clone());
-                                    this.current_continue_token = None;
-                                    this.continue_token_history.clear();
-                                    this.reload_active_section(window, cx);
-                                }))
-                        })),
-                )
-            })
     }
 
     fn render_cluster_section_body(
@@ -2058,6 +2098,32 @@ impl IceonApp {
             .filter(|p| p.kind == kind)
             .map(|p| p.items.clone())
             .unwrap_or_default();
+        let query = self
+            .resource_filter_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let items: Vec<ResourceItem> = if query.is_empty() {
+            items
+        } else {
+            items
+                .into_iter()
+                .filter(|item| {
+                    item.name.to_lowercase().contains(&query)
+                        || item
+                            .namespace
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .contains(&query)
+                        || item
+                            .columns
+                            .values()
+                            .any(|value| value.to_lowercase().contains(&query))
+                })
+                .collect()
+        };
         let next_token = self
             .resource_page
             .as_ref()

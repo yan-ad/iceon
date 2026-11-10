@@ -113,6 +113,8 @@ pub struct IceonApp {
     pub(crate) global_search_input: Entity<InputState>,
     pub(crate) catalog_search_input: Entity<InputState>,
     pub(crate) resource_filter_input: Entity<InputState>,
+    pub(crate) namespace_select: Entity<cluster_view::NamespaceSelectState>,
+    pub(crate) namespace_select_items: Vec<cluster_view::NamespaceChoice>,
     pub(crate) scale_replicas_input: Entity<InputState>,
     pub(crate) service_port_input: Entity<InputState>,
     pub(crate) pod_terminal_input: Entity<InputState>,
@@ -191,6 +193,8 @@ impl IceonApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter clusters..."));
         let resource_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources by name..."));
+        let (namespace_select, namespace_select_items) =
+            cluster_view::create_namespace_select(window, cx);
         let scale_replicas_input = cx.new(|cx| InputState::new(window, cx).default_value("1"));
         let service_port_input = cx.new(|cx| InputState::new(window, cx).default_value("80"));
         let pod_terminal_input =
@@ -336,6 +340,8 @@ impl IceonApp {
             global_search_input,
             catalog_search_input,
             resource_filter_input,
+            namespace_select,
+            namespace_select_items,
             scale_replicas_input,
             service_port_input,
             pod_terminal_input,
