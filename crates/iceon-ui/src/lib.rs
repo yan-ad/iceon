@@ -8,6 +8,7 @@ mod native_menu;
 pub mod navigation;
 pub mod pod_dock_view;
 pub mod preferences_view;
+mod resource_scroll;
 pub mod secrets_view;
 mod shell_header;
 mod shell_theme;
@@ -82,6 +83,7 @@ pub struct IceonApp {
 
     pub(crate) overview_snapshot: OverviewSnapshot,
     pub(crate) resource_page: Option<ResourcePage>,
+    pub(crate) resource_scroll: resource_scroll::ResourceScrollState,
     pub(crate) current_continue_token: Option<String>,
     pub(crate) continue_token_history: Vec<Option<String>>,
     pub(crate) active_pod_sync_id: Option<String>,
@@ -332,6 +334,7 @@ impl IceonApp {
             operation_counter: 1,
             overview_snapshot: OverviewSnapshot::default(),
             resource_page: None,
+            resource_scroll: resource_scroll::ResourceScrollState::default(),
             current_continue_token: None,
             continue_token_history: vec![],
             active_pod_sync_id: None,

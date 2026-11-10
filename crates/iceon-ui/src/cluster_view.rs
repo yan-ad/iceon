@@ -2324,6 +2324,20 @@ impl IceonApp {
             items
         };
         let item_count = items.len();
+        let scroll_handle =
+            self.resource_scroll
+                .for_scope(crate::resource_scroll::ResourceScrollScope {
+                    cluster_id: self
+                        .cluster_session
+                        .as_ref()
+                        .map(|s| s.cluster_id.clone())
+                        .unwrap_or_default(),
+                    kind,
+                    namespace: self.selected_namespace.clone(),
+                    query,
+                    status: active_status.clone(),
+                    page_token: self.current_continue_token.clone(),
+                });
         let shared_items = Rc::new(items);
         let item_sizes = Rc::new(vec![size(px(42.0), px(42.0)); item_count]);
         let entity = cx.entity();
@@ -2501,12 +2515,6 @@ impl IceonApp {
                     SharedString::from(format!("virtual-resource-table-{kind:?}")),
                     item_sizes,
                     move |this, visible_range, _window, cx| {
-                        if std::env::var_os("ICEON_TRACE_RESOURCE_LAYOUT").is_some() {
-                            eprintln!(
-                                "resource-layout {kind:?}: count={} range={visible_range:?}",
-                                shared_items.len()
-                            );
-                        }
                         visible_range
                             .filter_map(|idx| {
                                 let item = shared_items.get(idx)?.clone();
@@ -2524,6 +2532,7 @@ impl IceonApp {
                             .collect()
                     },
                 )
+                .track_scroll(&scroll_handle)
                 .flex_1()
                 .min_h_0()
                 .w_full(),

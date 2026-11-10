@@ -204,7 +204,7 @@ pub(crate) fn cluster_tile_palette(color: &str, seed: &str, is_dark: bool) -> Cl
         l.clamp(0.26, 0.44)
     };
 
-    let bg_rgb = hsl_to_rgb(h, tuned_s, tuned_l);
+    let mut bg_rgb = hsl_to_rgb(h, tuned_s, tuned_l);
     let hover_rgb = hsl_to_rgb(
         h,
         tuned_s,
@@ -240,6 +240,17 @@ pub(crate) fn cluster_tile_palette(color: &str, seed: &str, is_dark: bool) -> Cl
     } else {
         DARK_INK_RGB
     };
+    // Off-white/off-black ink can leave a small contrast gap around mid-tones.
+    // Preserve hue and saturation, adjusting only the surface's lightness.
+    let mut accessible_l = tuned_l;
+    for _ in 0..100 {
+        if wcag_contrast_ratio(bg_rgb, fg_rgb) >= 4.5 {
+            break;
+        }
+        accessible_l =
+            (accessible_l + if fg_rgb == LIGHT_INK_RGB { -0.01 } else { 0.01 }).clamp(0.0, 1.0);
+        bg_rgb = hsl_to_rgb(h, tuned_s, accessible_l);
+    }
 
     ClusterTilePalette {
         bg_rgb,
@@ -468,165 +479,173 @@ impl IceonApp {
                         let success = cx.theme().success;
                         let warning = cx.theme().warning;
                         let danger = cx.theme().danger;
-                        ordered.into_iter().map(|cluster| {
-                            let cid = cluster.id.clone();
-                            let selected = matches!(
-                                &route,
-                                Route::Cluster { cluster_id, .. } if cluster_id == &cid
-                            );
-                            let palette =
-                                cluster_tile_palette(&cluster.color, &cluster.id, is_dark);
-                            let tile_bg: Hsla = rgb(palette.bg_rgb).into();
-                            let tile_fg: Hsla = rgb(palette.fg_rgb).into();
-                            let tile_hover: Hsla = rgb(palette.hover_rgb).into();
-                            let tile_active: Hsla = rgb(palette.active_rgb).into();
-                            let tile_border: Hsla = if selected {
-                                sidebar_foreground
-                            } else {
-                                rgb(palette.border_rgb).into()
-                            };
+                        ordered
+                            .into_iter()
+                            .map(|cluster| {
+                                let cid = cluster.id.clone();
+                                let selected = matches!(
+                                    &route,
+                                    Route::Cluster { cluster_id, .. } if cluster_id == &cid
+                                );
+                                let palette =
+                                    cluster_tile_palette(&cluster.color, &cluster.id, is_dark);
+                                let tile_bg: Hsla = rgb(palette.bg_rgb).into();
+                                let tile_fg: Hsla = rgb(palette.fg_rgb).into();
+                                let tile_hover: Hsla = rgb(palette.hover_rgb).into();
+                                let tile_active: Hsla = rgb(palette.active_rgb).into();
+                                let tile_border: Hsla = if selected {
+                                    sidebar_foreground
+                                } else {
+                                    rgb(palette.border_rgb).into()
+                                };
 
-                            let (status_fill, status_border): (Hsla, Hsla) = match cluster.status {
-                                "connected" => (success, disconnected_dot_border),
-                                "connecting" => (warning, disconnected_dot_border),
-                                "error" => (danger, disconnected_dot_border),
-                                _ => (disconnected_dot_fill, disconnected_dot_border),
-                            };
+                                let (status_fill, status_border): (Hsla, Hsla) =
+                                    match cluster.status {
+                                        "connected" => (success, disconnected_dot_border),
+                                        "connecting" => (warning, disconnected_dot_border),
+                                        "error" => (danger, disconnected_dot_border),
+                                        _ => (disconnected_dot_fill, disconnected_dot_border),
+                                    };
 
-                            let raw_initials = cluster_initials(&cluster.name);
-                            let is_three_chars = raw_initials.chars().count() >= 3;
-                            let initials: SharedString = raw_initials.into();
-                            let preview_label = initials.clone();
+                                let raw_initials = cluster_initials(&cluster.name);
+                                let is_three_chars = raw_initials.chars().count() >= 3;
+                                let initials: SharedString = raw_initials.into();
+                                let preview_label = initials.clone();
 
-                            div()
-                                .id(SharedString::from(format!("rail-cluster-drag-{cid}")))
-                                .w_full()
-                                .flex()
-                                .justify_center()
-                                .on_drag(DragCluster(cid.clone()), move |_, _, _, cx| {
-                                    cx.new(|_| ClusterDragPreview {
-                                        label: preview_label.clone(),
-                                        bg_rgb: palette.bg_rgb,
-                                        fg_rgb: palette.fg_rgb,
-                                    })
-                                })
-                                .drag_over::<DragCluster>(|style, _, _, cx| {
-                                    style.rounded(px(8.0)).bg(cx.theme().tokens.sidebar_accent)
-                                })
-                                .on_drop(cx.listener({
-                                    let target_id = cid.clone();
-                                    move |this, dragged: &DragCluster, window, cx| {
-                                        this.reorder_rail_cluster(
-                                            &dragged.0, &target_id, window, cx,
-                                        );
-                                    }
-                                }))
-                                .child(
-                                    h_flex()
-                                        .relative()
-                                        .w_full()
-                                        .justify_center()
-                                        .when(selected, |row| {
-                                            row.child(
-                                                div()
-                                                    .absolute()
-                                                    .left_0()
-                                                    .top(px(8.0))
-                                                    .bottom(px(8.0))
-                                                    .w(px(3.0))
-                                                    .rounded_r(px(2.0))
-                                                    .bg(cx.theme().sidebar_foreground),
-                                            )
+                                div()
+                                    .id(SharedString::from(format!("rail-cluster-drag-{cid}")))
+                                    .w_full()
+                                    .flex()
+                                    .justify_center()
+                                    .on_drag(DragCluster(cid.clone()), move |_, _, _, cx| {
+                                        cx.new(|_| ClusterDragPreview {
+                                            label: preview_label.clone(),
+                                            bg_rgb: palette.bg_rgb,
+                                            fg_rgb: palette.fg_rgb,
                                         })
-                                        .child(
-                                            div()
-                                                .relative()
-                                                .size(px(40.0))
-                                                .child(
-                                                    Button::new(SharedString::from(format!(
-                                                        "rail-cluster-{cid}"
-                                                    )))
-                                                    .small()
+                                    })
+                                    .drag_over::<DragCluster>(|style, _, _, cx| {
+                                        style.rounded(px(8.0)).bg(cx.theme().tokens.sidebar_accent)
+                                    })
+                                    .on_drop(cx.listener({
+                                        let target_id = cid.clone();
+                                        move |this, dragged: &DragCluster, window, cx| {
+                                            this.reorder_rail_cluster(
+                                                &dragged.0, &target_id, window, cx,
+                                            );
+                                        }
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .relative()
+                                            .w_full()
+                                            .justify_center()
+                                            .when(selected, |row| {
+                                                row.child(
+                                                    div()
+                                                        .absolute()
+                                                        .left_0()
+                                                        .top(px(8.0))
+                                                        .bottom(px(8.0))
+                                                        .w(px(3.0))
+                                                        .rounded_r(px(2.0))
+                                                        .bg(cx.theme().sidebar_foreground),
+                                                )
+                                            })
+                                            .child(
+                                                div()
+                                                    .relative()
                                                     .size(px(40.0))
-                                                    .rounded(px(8.0))
-                                                    .border_1()
-                                                    .border_color(tile_border)
-                                                    .custom(
-                                                        ButtonCustomVariant::new(cx)
-                                                            .color(tile_bg)
-                                                            .foreground(tile_fg)
-                                                            .hover(tile_hover)
-                                                            .active(tile_active),
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "rail-cluster-{cid}"
+                                                        )))
+                                                        .small()
+                                                        .size(px(40.0))
+                                                        .rounded(px(8.0))
+                                                        .border_1()
+                                                        .border_color(tile_border)
+                                                        .custom(
+                                                            ButtonCustomVariant::new(cx)
+                                                                .color(tile_bg)
+                                                                .foreground(tile_fg)
+                                                                .hover(tile_hover)
+                                                                .active(tile_active),
+                                                        )
+                                                        .accessibility_label(format!(
+                                                            "{}: {}",
+                                                            cluster.name, cluster.status
+                                                        ))
+                                                        .tooltip(format!(
+                                                            "{} · {}",
+                                                            cluster.name, cluster.status
+                                                        ))
+                                                        .child(
+                                                            div()
+                                                                .relative()
+                                                                .size_full()
+                                                                .flex()
+                                                                .items_center()
+                                                                .justify_center()
+                                                                .when(is_three_chars, |el| {
+                                                                    el.text_xs()
+                                                                })
+                                                                .when(!is_three_chars, |el| {
+                                                                    el.text_sm()
+                                                                })
+                                                                .font_semibold()
+                                                                .child(initials)
+                                                                .child(
+                                                                    div()
+                                                                        .absolute()
+                                                                        .top(px(3.5))
+                                                                        .left(px(3.5))
+                                                                        .size(px(8.0))
+                                                                        .rounded_full()
+                                                                        .bg(status_fill)
+                                                                        .border_1()
+                                                                        .border_color(
+                                                                            status_border,
+                                                                        ),
+                                                                ),
+                                                        )
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.navigate(
+                                                                    Route::Cluster {
+                                                                        cluster_id: cid.clone(),
+                                                                        section: "overview".into(),
+                                                                    },
+                                                                    true,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
                                                     )
-                                                    .accessibility_label(format!(
-                                                        "{}: {}",
-                                                        cluster.name, cluster.status
-                                                    ))
-                                                    .tooltip(format!(
-                                                        "{} · {}",
-                                                        cluster.name, cluster.status
-                                                    ))
                                                     .child(
                                                         div()
-                                                            .relative()
-                                                            .size_full()
+                                                            .absolute()
+                                                            .right(px(-3.0))
+                                                            .bottom(px(-3.0))
+                                                            .size(px(17.0))
+                                                            .rounded_full()
+                                                            .bg(rail_surface)
+                                                            .border_1()
+                                                            .border_color(cx.theme().sidebar_border)
                                                             .flex()
                                                             .items_center()
                                                             .justify_center()
-                                                            .when(is_three_chars, |el| el.text_xs())
-                                                            .when(!is_three_chars, |el| {
-                                                                el.text_sm()
-                                                            })
-                                                            .font_semibold()
-                                                            .child(initials)
                                                             .child(
-                                                                div()
-                                                                    .absolute()
-                                                                    .top(px(3.5))
-                                                                    .left(px(3.5))
-                                                                    .size(px(8.0))
-                                                                    .rounded_full()
-                                                                    .bg(status_fill)
-                                                                    .border_1()
-                                                                    .border_color(status_border),
+                                                                Icon::new(IconName::Network)
+                                                                    .size(px(10.0))
+                                                                    .text_color(sidebar_foreground),
                                                             ),
-                                                    )
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.navigate(
-                                                                Route::Cluster {
-                                                                    cluster_id: cid.clone(),
-                                                                    section: "overview".into(),
-                                                                },
-                                                                true,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .absolute()
-                                                        .right(px(-3.0))
-                                                        .bottom(px(-3.0))
-                                                        .size(px(17.0))
-                                                        .rounded_full()
-                                                        .bg(rail_surface)
-                                                        .border_1()
-                                                        .border_color(cx.theme().sidebar_border)
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .child(
-                                                            Icon::new(IconName::Network)
-                                                                .size(px(10.0))
-                                                                .text_color(sidebar_foreground),
-                                                        ),
-                                                ),
-                                        ),
-                                )
-                        }).collect::<Vec<_>>()
+                                                    ),
+                                            ),
+                                    )
+                            })
+                            .collect::<Vec<_>>()
                     }),
             )
             .child(
