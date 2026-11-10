@@ -1,60 +1,243 @@
-//! Cluster Workspace View: session lifecycle, namespace selector, Cluster Overview,
-//! Workloads Overview, generic Resource Table (all 41 kinds + live Pod sync + YAML create + delete),
-//! Helm Charts/Releases & Install modal, Port Forwarding table, Access Control > Users (Managed RBAC),
-//! and Custom Resources.
-
-use std::time::Duration;
+//! Cluster workspace views: Overview, 41 Kubernetes Resource tables, Helm, Custom Resources, and RBAC Users.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, Input},
-    resizable::{h_resizable, resizable_panel, v_resizable},
+    input::Input,
     scroll::ScrollableElement as _,
     tag::Tag,
-    switch::Switch,
-    v_flex, IconName,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::IceonApp;
-use crate::navigation::{
-    ResourceView, cell_value, connection_error_message, destination_label, format_age,
-    normalize_destination, resource_view, yaml_scaffold,
-};
 use iceon_core::connection::{
-    ConnectionSnapshot, OpenRequest, ResourceItem, ResourceKind, ResourceRequest,
-    SessionRequest,
-    create::CreateRequest,
-    custom_resources::{
-        CustomDefinitionRequest, CustomResourcePage, CustomResourceRequest, CustomResourceTarget,
-    },
-    delete::DeleteRequest,
+    OpenRequest, ResourceItem, ResourceKind, ResourcePage, ResourceRequest, SessionRequest,
+    create::{CreateRequest, ResourceCreateResult},
+    custom_resources::{CustomResourcePage, CustomResourcesRequest},
+    delete::ResourceDeleteTarget,
     details::ResourceReference,
-    helm::{HelmRequest, HelmView, install::HelmInstallRequest},
-    namespace_cache::NamespaceRefreshRequest,
-    pod_sync::PodSyncRequest,
+    helm::{
+        HelmPage, HelmRequest, HelmView,
+        install::{HelmInstallRequest, HelmInstallResult},
+    },
+    namespace_cache::NamespaceRequest,
+    node_actions::NodeAction,
+    pod_runtime::PodStreamMode,
+    pod_sync::{PodSyncEvent, PodSyncRequest, PodSyncStopRequest},
     rbac::{RbacUsersRequest, RbacUsersResponse},
     rbac_management::{
-        ApplyRequest, ClusterAccess, ManagementRequest, ManagementSnapshot, ManagedUser,
-        PlanOperation, PlanRequest, UserPlan,
+        ApplyRequest, Assignment, ClusterAccess, ManagedUser, ManagementRequest,
+        ManagementSnapshot, PlanOperation, PlanRequest, TemplateIdentity,
+    },
+    workload_actions::WorkloadAction,
+};
+
+use crate::{
+    IceonApp,
+    navigation::{
+        Route, destination_label, normalize_destination, parse_custom_resource_target,
+        section_to_resource_kind,
     },
 };
 
-#[derive(Default, Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct OverviewSnapshot {
-    pub nodes: Vec<ResourceItem>,
-    pub pods: Vec<ResourceItem>,
-    pub deployments: Vec<ResourceItem>,
-    pub daemon_sets: Vec<ResourceItem>,
-    pub stateful_sets: Vec<ResourceItem>,
-    pub replica_sets: Vec<ResourceItem>,
-    pub replication_controllers: Vec<ResourceItem>,
-    pub jobs: Vec<ResourceItem>,
-    pub cron_jobs: Vec<ResourceItem>,
-    pub events: Vec<ResourceItem>,
+    pub nodes: Option<ResourcePage>,
+    pub namespaces: Option<ResourcePage>,
+    pub pods: Option<ResourcePage>,
+    pub deployments: Option<ResourcePage>,
+    pub daemonsets: Option<ResourcePage>,
+    pub statefulsets: Option<ResourcePage>,
+    pub replicasets: Option<ResourcePage>,
+    pub jobs: Option<ResourcePage>,
+    pub cronjobs: Option<ResourcePage>,
+    pub events: Option<ResourcePage>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ColumnDef {
+    pub header: &'static str,
+    pub key: &'static str,
+    pub width: f32,
+}
+
+pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
+    use ResourceKind::*;
+    match kind {
+        Nodes => &[
+            ColumnDef { header: "Roles", key: "roles", width: 140.0 },
+            ColumnDef { header: "Version", key: "version", width: 120.0 },
+            ColumnDef { header: "Schedulable", key: "schedulable", width: 100.0 },
+        ],
+        Pods => &[
+            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
+            ColumnDef { header: "Restarts", key: "restarts", width: 80.0 },
+            ColumnDef { header: "Controlled By", key: "controlledBy", width: 150.0 },
+            ColumnDef { header: "Node", key: "node", width: 140.0 },
+            ColumnDef { header: "QoS", key: "qos", width: 100.0 },
+        ],
+        Deployments | StatefulSets | ReplicaSets | ReplicationControllers => &[
+            ColumnDef { header: "Desired", key: "desired", width: 80.0 },
+            ColumnDef { header: "Replicas", key: "replicas", width: 80.0 },
+            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
+            ColumnDef { header: "Available", key: "available", width: 90.0 },
+        ],
+        DaemonSets => &[
+            ColumnDef { header: "Desired", key: "desired", width: 80.0 },
+            ColumnDef { header: "Scheduled", key: "scheduled", width: 90.0 },
+            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
+            ColumnDef { header: "Available", key: "available", width: 90.0 },
+        ],
+        Jobs => &[
+            ColumnDef { header: "Completions", key: "completions", width: 100.0 },
+            ColumnDef { header: "Active", key: "active", width: 80.0 },
+            ColumnDef { header: "Failed", key: "failed", width: 80.0 },
+        ],
+        CronJobs => &[
+            ColumnDef { header: "Schedule", key: "schedule", width: 130.0 },
+            ColumnDef { header: "Suspend", key: "suspend", width: 80.0 },
+            ColumnDef { header: "Active", key: "active", width: 80.0 },
+            ColumnDef { header: "Last Schedule", key: "lastSchedule", width: 160.0 },
+        ],
+        Services => &[
+            ColumnDef { header: "Type", key: "type", width: 110.0 },
+            ColumnDef { header: "Cluster IP", key: "clusterIP", width: 130.0 },
+            ColumnDef { header: "Ports", key: "ports", width: 150.0 },
+        ],
+        Endpoints => &[
+            ColumnDef { header: "Subsets", key: "subsets", width: 85.0 },
+            ColumnDef { header: "Ready", key: "readyAddresses", width: 85.0 },
+            ColumnDef { header: "Not Ready", key: "notReadyAddresses", width: 95.0 },
+            ColumnDef { header: "Ports", key: "ports", width: 85.0 },
+        ],
+        EndpointSlices => &[
+            ColumnDef { header: "Address Type", key: "addressType", width: 110.0 },
+            ColumnDef { header: "Endpoints", key: "endpoints", width: 95.0 },
+            ColumnDef { header: "Ready", key: "ready", width: 80.0 },
+            ColumnDef { header: "Ports", key: "ports", width: 80.0 },
+        ],
+        Ingresses => &[
+            ColumnDef { header: "Class", key: "class", width: 120.0 },
+            ColumnDef { header: "Rules", key: "rules", width: 80.0 },
+            ColumnDef { header: "TLS", key: "tls", width: 80.0 },
+        ],
+        IngressClasses => &[
+            ColumnDef { header: "Controller", key: "controller", width: 220.0 },
+            ColumnDef { header: "Params Kind", key: "parametersKind", width: 120.0 },
+        ],
+        NetworkPolicies => &[
+            ColumnDef { header: "Policy Types", key: "policyTypes", width: 140.0 },
+            ColumnDef { header: "Ingress", key: "ingressRules", width: 80.0 },
+            ColumnDef { header: "Egress", key: "egressRules", width: 80.0 },
+        ],
+        PersistentVolumes => &[
+            ColumnDef { header: "Capacity", key: "capacity", width: 100.0 },
+            ColumnDef { header: "Access Modes", key: "accessModes", width: 130.0 },
+            ColumnDef { header: "Storage Class", key: "storageClass", width: 130.0 },
+            ColumnDef { header: "Claim", key: "claim", width: 140.0 },
+        ],
+        PersistentVolumeClaims => &[
+            ColumnDef { header: "Storage Class", key: "storageClass", width: 130.0 },
+            ColumnDef { header: "Capacity", key: "capacity", width: 100.0 },
+            ColumnDef { header: "Requested", key: "requested", width: 100.0 },
+            ColumnDef { header: "Access Modes", key: "accessModes", width: 130.0 },
+        ],
+        StorageClasses => &[
+            ColumnDef { header: "Provisioner", key: "provisioner", width: 200.0 },
+            ColumnDef { header: "Reclaim", key: "reclaim", width: 100.0 },
+            ColumnDef { header: "Binding Mode", key: "bindingMode", width: 140.0 },
+        ],
+        HorizontalPodAutoscalers => &[
+            ColumnDef { header: "Target", key: "target", width: 140.0 },
+            ColumnDef { header: "Min", key: "min", width: 65.0 },
+            ColumnDef { header: "Max", key: "max", width: 65.0 },
+            ColumnDef { header: "Current", key: "current", width: 75.0 },
+            ColumnDef { header: "Desired", key: "desired", width: 75.0 },
+        ],
+        VerticalPodAutoscalers => &[
+            ColumnDef { header: "Target", key: "target", width: 150.0 },
+            ColumnDef { header: "Kind", key: "targetKind", width: 110.0 },
+            ColumnDef { header: "Update Mode", key: "updateMode", width: 110.0 },
+        ],
+        PodDisruptionBudgets => &[
+            ColumnDef { header: "Min Avail", key: "minAvailable", width: 90.0 },
+            ColumnDef { header: "Max Unavail", key: "maxUnavailable", width: 95.0 },
+            ColumnDef { header: "Allowed", key: "allowedDisruptions", width: 80.0 },
+            ColumnDef { header: "Healthy", key: "currentHealthy", width: 80.0 },
+        ],
+        ResourceQuotas => &[
+            ColumnDef { header: "CPU Used", key: "cpuUsed", width: 90.0 },
+            ColumnDef { header: "CPU Hard", key: "cpuHard", width: 90.0 },
+            ColumnDef { header: "Mem Used", key: "memoryUsed", width: 95.0 },
+            ColumnDef { header: "Mem Hard", key: "memoryHard", width: 95.0 },
+        ],
+        LimitRanges => &[
+            ColumnDef { header: "Limits", key: "limits", width: 75.0 },
+            ColumnDef { header: "Types", key: "types", width: 150.0 },
+            ColumnDef { header: "Default CPU", key: "defaultCpu", width: 100.0 },
+            ColumnDef { header: "Default Mem", key: "defaultMemory", width: 100.0 },
+        ],
+        PriorityClasses => &[
+            ColumnDef { header: "Value", key: "value", width: 95.0 },
+            ColumnDef { header: "Global Default", key: "globalDefault", width: 110.0 },
+            ColumnDef { header: "Preemption", key: "preemptionPolicy", width: 140.0 },
+        ],
+        RuntimeClasses => &[
+            ColumnDef { header: "Handler", key: "handler", width: 150.0 },
+            ColumnDef { header: "Overhead CPU", key: "overheadCpu", width: 110.0 },
+            ColumnDef { header: "Overhead Mem", key: "overheadMemory", width: 110.0 },
+        ],
+        Leases => &[
+            ColumnDef { header: "Holder", key: "holder", width: 200.0 },
+            ColumnDef { header: "Duration (s)", key: "durationSeconds", width: 95.0 },
+            ColumnDef { header: "Renewed", key: "renewed", width: 165.0 },
+        ],
+        Events => &[
+            ColumnDef { header: "Reason", key: "reason", width: 130.0 },
+            ColumnDef { header: "Object", key: "involvedObject", width: 170.0 },
+            ColumnDef { header: "Count", key: "count", width: 65.0 },
+            ColumnDef { header: "Message", key: "message", width: 280.0 },
+        ],
+        Roles | ClusterRoles => &[ColumnDef { header: "Rules", key: "rules", width: 90.0 }],
+        RoleBindings | ClusterRoleBindings => &[
+            ColumnDef { header: "Role Ref", key: "roleRef", width: 170.0 },
+            ColumnDef { header: "Subjects", key: "subjects", width: 90.0 },
+        ],
+        ServiceAccounts => &[
+            ColumnDef { header: "Secrets", key: "secrets", width: 85.0 },
+            ColumnDef { header: "Automount", key: "automountToken", width: 95.0 },
+        ],
+        CustomResourceDefinitions => &[
+            ColumnDef { header: "Group", key: "group", width: 180.0 },
+            ColumnDef { header: "Kind", key: "kind", width: 140.0 },
+            ColumnDef { header: "Scope", key: "scope", width: 100.0 },
+            ColumnDef { header: "Versions", key: "versions", width: 120.0 },
+        ],
+        _ => &[],
+    }
+}
+
+pub fn namespaced_kind(kind: ResourceKind) -> bool {
+    !matches!(
+        kind,
+        ResourceKind::Nodes
+            | ResourceKind::Namespaces
+            | ResourceKind::PersistentVolumes
+            | ResourceKind::StorageClasses
+            | ResourceKind::PriorityClasses
+            | ResourceKind::RuntimeClasses
+            | ResourceKind::IngressClasses
+            | ResourceKind::MutatingWebhookConfigurations
+            | ResourceKind::ValidatingWebhookConfigurations
+            | ResourceKind::ValidatingAdmissionPolicies
+            | ResourceKind::ValidatingAdmissionPolicyBindings
+            | ResourceKind::PodSecurityPolicies
+            | ResourceKind::ClusterRoles
+            | ResourceKind::ClusterRoleBindings
+            | ResourceKind::CustomResourceDefinitions
+    )
 }
 
 impl IceonApp {
@@ -66,19 +249,24 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) {
         let normalized = normalize_destination(&section);
-        self.active_cluster_section = normalized;
+        self.active_cluster_section = normalized.clone();
         self.cluster_error = None;
+        self.current_continue_token = None;
+        self.continue_token_history.clear();
 
-        let already_open = self
+        let same_cluster = self
             .cluster_session
             .as_ref()
-            .is_some_and(|s| s.cluster_id == cluster_id);
-        if already_open {
-            self.refresh_active_cluster_view(window, cx);
+            .is_some_and(|s| s.cluster_id == cluster_id && s.status == "connected");
+
+        if same_cluster {
+            self.load_active_cluster_section(window, cx);
             return;
         }
 
-        self.close_active_pod_sync();
+        self.stop_active_pod_sync();
+        self.cluster_loading = true;
+        self.namespaces.clear();
         self.resource_page = None;
         self.helm_page = None;
         self.custom_definitions_page = None;
@@ -86,51 +274,62 @@ impl IceonApp {
         self.rbac_users_response = None;
         self.rbac_management_snapshot = None;
         self.rbac_active_plan = None;
-        self.namespaces = vec![];
-        self.selected_namespace = None;
-        self.inspector.target = None;
+        self.rbac_apply_response = None;
+        cx.notify();
 
-        let engine = self.connection.clone();
+        let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let opened = engine
+            let opened = match connection
                 .open(OpenRequest {
                     cluster_id: cluster_id.clone(),
                 })
-                .await;
-            let Ok(snapshot) = opened else {
-                let _ = this.update(cx, |this, cx| {
-                    if let Err(err) = opened {
-                        this.cluster_error = Some(connection_error_message(err).into());
-                    }
-                    cx.notify();
-                });
-                return;
+                .await
+            {
+                Ok(snap) => snap,
+                Err(err) => {
+                    let _ = this.update_in(cx, |this, _, cx| {
+                        this.cluster_loading = false;
+                        this.cluster_error = Some(format!("Failed to open cluster: {err:?}"));
+                        cx.notify();
+                    });
+                    return;
+                }
             };
-            let _ = this.update(cx, |this, cx| {
-                this.cluster_session = Some(snapshot.clone());
-                this.refresh_catalog(cx);
-            });
 
-            let connected = engine
+            let connected = connection
                 .connect(SessionRequest {
-                    cluster_id: snapshot.cluster_id.clone(),
-                    session_id: snapshot.session_id.clone(),
+                    cluster_id: opened.cluster_id.clone(),
+                    session_id: opened.session_id.clone(),
                 })
                 .await;
 
+            let ns_list = connection
+                .namespaces(NamespaceRequest {
+                    cluster_id: opened.cluster_id.clone(),
+                    session_id: opened.session_id.clone(),
+                })
+                .await
+                .ok()
+                .map(|r| r.items)
+                .unwrap_or_default();
+
             let _ = this.update_in(cx, |this, window, cx| {
+                this.cluster_loading = false;
                 match connected {
                     Ok(snap) => {
-                        let is_connected = snap.status == "connected";
+                        let status = snap.status;
+                        let err = snap.error;
                         this.cluster_session = Some(snap);
+                        this.namespaces = ns_list;
                         this.refresh_catalog(cx);
-                        if is_connected {
-                            this.refresh_namespaces(window, cx);
-                            this.refresh_active_cluster_view(window, cx);
+                        if status == "connected" {
+                            this.load_active_cluster_section(window, cx);
+                        } else if let Some(e) = err {
+                            this.cluster_error = Some(format!("Connection error: {e:?}"));
                         }
                     }
                     Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
+                        this.cluster_error = Some(format!("Connect failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -139,68 +338,138 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn reconnect_active_cluster(
+    pub(crate) fn stop_active_pod_sync(&mut self) {
+        if let (Some(sync_id), Some(session)) =
+            (self.active_pod_sync_id.take(), self.cluster_session.as_ref())
+        {
+            let _ = self.connection.pod_sync_stop(PodSyncStopRequest {
+                cluster_id: session.cluster_id.clone(),
+                session_id: session.session_id.clone(),
+                sync_id,
+            });
+        }
+    }
+
+    pub(crate) fn reload_active_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.load_active_cluster_section(window, cx);
+    }
+
+    pub(crate) fn load_active_cluster_section(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        self.cluster_session = None;
+        self.stop_active_pod_sync();
         let section = self.active_cluster_section.clone();
-        self.open_cluster_workspace(session.cluster_id, section, window, cx);
-    }
 
-    pub(crate) fn disconnect_active_cluster(&mut self, cx: &mut Context<Self>) {
-        self.close_active_pod_sync();
-        if let Some(session) = self.cluster_session.take() {
-            let _ = self.connection.disconnect(SessionRequest {
-                cluster_id: session.cluster_id,
-                session_id: session.session_id,
-            });
+        if section == "overview" || section == "workloads/overview" {
+            self.load_overview_snapshot(window, cx);
+            return;
         }
-        self.refresh_catalog(cx);
+        if section == "helm/charts" {
+            self.load_helm_section(HelmView::Charts, window, cx);
+            return;
+        }
+        if section == "helm/releases" {
+            self.load_helm_section(HelmView::Releases, window, cx);
+            return;
+        }
+        if section == "access-control/users" {
+            self.load_rbac_users_section(window, cx);
+            return;
+        }
+        if let Some((group, crd_name)) = parse_custom_resource_target(&section) {
+            self.load_custom_resources_section(group, crd_name, window, cx);
+            return;
+        }
+        if let Some(kind) = section_to_resource_kind(&section) {
+            self.load_resource_table(kind, window, cx);
+            if kind == ResourceKind::Pods {
+                self.start_pod_sync(window, cx);
+            }
+        }
     }
 
-    pub(crate) fn refresh_namespaces(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn load_overview_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let read_id = self.next_operation_id();
-        let engine = self.connection.clone();
+        if session.status != "connected" {
+            return;
+        }
+        let namespace = self.selected_namespace.clone();
+        let connection = self.connection.clone();
+        let kinds = [
+            ResourceKind::Nodes,
+            ResourceKind::Namespaces,
+            ResourceKind::Pods,
+            ResourceKind::Deployments,
+            ResourceKind::DaemonSets,
+            ResourceKind::StatefulSets,
+            ResourceKind::ReplicaSets,
+            ResourceKind::Jobs,
+            ResourceKind::CronJobs,
+            ResourceKind::Events,
+        ];
+        let requests: Vec<(ResourceKind, ResourceRequest)> = kinds
+            .into_iter()
+            .map(|kind| {
+                let read_id = self.next_operation_id();
+                (
+                    kind,
+                    ResourceRequest {
+                        cluster_id: session.cluster_id.clone(),
+                        session_id: session.session_id.clone(),
+                        kind,
+                        read_id,
+                        namespace: if namespaced_kind(kind) {
+                            namespace.clone()
+                        } else {
+                            None
+                        },
+                        continue_token: None,
+                        query: None,
+                        status: None,
+                        group: None,
+                    },
+                )
+            })
+            .collect();
+
+        self.cluster_loading = true;
+        cx.notify();
+
         cx.spawn_in(window, async move |this, cx| {
-            let cached = engine
-                .namespace_cache_get(SessionRequest {
-                    cluster_id: session.cluster_id.clone(),
-                    session_id: session.session_id.clone(),
-                })
-                .await;
-            if let Ok(Some(snap)) = cached {
-                let _ = this.update(cx, |this, cx| {
-                    this.namespaces = snap.names;
-                    cx.notify();
-                });
+            let mut snap = OverviewSnapshot::default();
+            for (kind, req) in requests {
+                if let Ok(page) = connection.resources(req).await {
+                    match kind {
+                        ResourceKind::Nodes => snap.nodes = Some(page),
+                        ResourceKind::Namespaces => snap.namespaces = Some(page),
+                        ResourceKind::Pods => snap.pods = Some(page),
+                        ResourceKind::Deployments => snap.deployments = Some(page),
+                        ResourceKind::DaemonSets => snap.daemonsets = Some(page),
+                        ResourceKind::StatefulSets => snap.statefulsets = Some(page),
+                        ResourceKind::ReplicaSets => snap.replicasets = Some(page),
+                        ResourceKind::Jobs => snap.jobs = Some(page),
+                        ResourceKind::CronJobs => snap.cronjobs = Some(page),
+                        ResourceKind::Events => snap.events = Some(page),
+                        _ => {}
+                    }
+                }
             }
-            if let Ok(fresh) = engine
-                .namespace_cache_refresh(NamespaceRefreshRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    read_id,
-                })
-                .await
-            {
-                let _ = this.update(cx, |this, cx| {
-                    this.namespaces = fresh.names;
-                    cx.notify();
-                });
-            }
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.cluster_loading = false;
+                this.overview_snapshot = snap;
+                cx.notify();
+            });
         })
         .detach();
     }
 
-    pub(crate) fn refresh_active_cluster_view(
+    pub(crate) fn load_resource_table(
         &mut self,
+        kind: ResourceKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -210,181 +479,41 @@ impl IceonApp {
         if session.status != "connected" {
             return;
         }
-        let section = self.active_cluster_section.clone();
-        self.cluster_loading = true;
-        self.cluster_error = None;
-
-        if section == "overview" || section == "workloads-overview" {
-            self.load_cluster_overview(window, cx);
-            return;
-        }
-        if section == "helm-charts" || section == "helm-releases" {
-            let view = if section == "helm-charts" {
-                HelmView::Charts
-            } else {
-                HelmView::Releases
-            };
-            self.load_helm_view(view, window, cx);
-            return;
-        }
-        if section == "port-forwarding" {
-            self.cluster_loading = false;
-            self.refresh_port_forwards(cx);
-            return;
-        }
-        if section == "users" {
-            self.load_rbac_users_view(window, cx);
-            return;
-        }
-        if section == "custom-resource-definitions" {
-            self.load_custom_definitions(window, cx);
-            return;
-        }
-        if let Some(crd_name) = section.strip_prefix("crd:") {
-            self.load_custom_instances(crd_name.to_string(), window, cx);
-            return;
-        }
-        if let Some(view) = resource_view(&section) {
-            self.load_resource_table(view, window, cx);
-        } else {
-            self.cluster_loading = false;
-        }
-    }
-
-    fn load_cluster_overview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let ns = self.selected_namespace.clone();
-        let base_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let req = |kind: ResourceKind, offset: u64, namespaced: bool| ResourceRequest {
-                cluster_id: session.cluster_id.clone(),
-                session_id: session.session_id.clone(),
-                kind,
-                read_id: base_id + offset,
-                namespace: if namespaced { ns.clone() } else { None },
-                continue_token: None,
-                query: None,
-                status: None,
-                group: None,
-            };
-            let nodes = engine
-                .resources(req(ResourceKind::Nodes, 1, false))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let pods = engine
-                .resources(req(ResourceKind::Pods, 2, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let deployments = engine
-                .resources(req(ResourceKind::Deployments, 3, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let daemon_sets = engine
-                .resources(req(ResourceKind::DaemonSets, 4, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let stateful_sets = engine
-                .resources(req(ResourceKind::StatefulSets, 5, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let replica_sets = engine
-                .resources(req(ResourceKind::ReplicaSets, 6, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let replication_controllers = engine
-                .resources(req(ResourceKind::ReplicationControllers, 7, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let jobs = engine
-                .resources(req(ResourceKind::Jobs, 8, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let cron_jobs = engine
-                .resources(req(ResourceKind::CronJobs, 9, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-            let events = engine
-                .resources(req(ResourceKind::Events, 10, true))
-                .await
-                .map(|p| p.items)
-                .unwrap_or_default();
-
-            let _ = this.update(cx, |this, cx| {
-                this.cluster_loading = false;
-                this.overview_snapshot = OverviewSnapshot {
-                    nodes,
-                    pods,
-                    deployments,
-                    daemon_sets,
-                    stateful_sets,
-                    replica_sets,
-                    replication_controllers,
-                    jobs,
-                    cron_jobs,
-                    events,
-                };
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn load_resource_table(
-        &mut self,
-        view: &'static ResourceView,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
         let read_id = self.next_operation_id();
-        let query = {
+        let query_str = {
             let q = self.resource_filter_input.read(cx).value().trim().to_string();
             (!q.is_empty()).then_some(q)
         };
-        let status = self.selected_status_filter.clone();
-        let namespace = if view.namespaced {
-            self.selected_namespace.clone()
-        } else {
-            None
+        let req = ResourceRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            kind,
+            read_id,
+            namespace: if namespaced_kind(kind) {
+                self.selected_namespace.clone()
+            } else {
+                None
+            },
+            continue_token: self.current_continue_token.clone(),
+            query: query_str,
+            status: self.selected_status_filter.clone(),
+            group: None,
         };
-        let engine = self.connection.clone();
+        let connection = self.connection.clone();
+        self.cluster_loading = true;
+        cx.notify();
+
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .resources(ResourceRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    kind: view.kind,
-                    read_id,
-                    namespace,
-                    continue_token: None,
-                    query,
-                    status,
-                    group: None,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
+            let result = connection.resources(req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
                 this.cluster_loading = false;
-                match res {
+                match result {
                     Ok(page) => {
                         this.resource_page = Some(page);
                         this.cluster_error = None;
                     }
                     Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
+                        this.cluster_error = Some(format!("Resource load failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -393,254 +522,117 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn toggle_pod_live_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_pod_sync_id.is_some() {
-            self.close_active_pod_sync();
-            cx.notify();
-            return;
-        }
+    fn start_pod_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let read_id = self.next_operation_id();
-        let namespace = self.selected_namespace.clone();
-        let engine = self.connection.clone();
+        if session.status != "connected" {
+            return;
+        }
+        let sync_id = format!("pod-sync-{}", self.next_operation_id());
+        self.active_pod_sync_id = Some(sync_id.clone());
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PodSyncEvent>();
+        let connection = self.connection.clone();
+        let req = PodSyncRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            sync_id: sync_id.clone(),
+            namespace: self.selected_namespace.clone(),
+        };
+
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .pod_sync_open(ResourceRequest {
-                    cluster_id: session.cluster_id.clone(),
-                    session_id: session.session_id.clone(),
-                    kind: ResourceKind::Pods,
-                    read_id,
-                    namespace,
-                    continue_token: None,
-                    query: None,
-                    status: None,
-                    group: None,
+            let started = connection
+                .pod_sync_start(req, move |ev| {
+                    let _ = tx.send(ev);
                 })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(snap) => {
-                        let sync_id = snap.sync_id.clone();
-                        this.active_pod_sync_id = Some(sync_id.clone());
-                        if let Some(page) = snap.page {
-                            this.resource_page = Some(page);
-                        }
-                        this.spawn_pod_sync_poller(
-                            session.cluster_id,
-                            session.session_id,
-                            sync_id,
-                            window,
-                            cx,
-                        );
+            if started.is_err() {
+                return;
+            }
+            while let Some(ev) = rx.recv().await {
+                let _ = this.update_in(cx, |this, _, cx| {
+                    if this.active_pod_sync_id.as_deref() != Some(ev.sync_id.as_str()) {
+                        return;
                     }
-                    Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn spawn_pod_sync_poller(
-        &mut self,
-        cluster_id: String,
-        session_id: String,
-        sync_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let engine = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                let keep = this
-                    .update(cx, |this, cx| {
-                        if this.active_pod_sync_id.as_deref() != Some(sync_id.as_str()) {
-                            return false;
-                        }
-                        match engine.pod_sync_read(PodSyncRequest {
-                            cluster_id: cluster_id.clone(),
-                            session_id: session_id.clone(),
-                            sync_id: sync_id.clone(),
-                        }) {
-                            Ok(snap) => {
-                                if let Some(page) = snap.page {
-                                    this.resource_page = Some(page);
-                                    cx.notify();
+                    if let Some(page) = this.resource_page.as_mut()
+                        && page.kind == ResourceKind::Pods
+                    {
+                        match ev.kind {
+                            "snapshot" => {
+                                if let Some(items) = ev.items {
+                                    page.items = items;
                                 }
-                                snap.status != "stopped" && snap.status != "error"
                             }
-                            Err(_) => {
-                                this.active_pod_sync_id = None;
-                                false
+                            "upsert" => {
+                                if let Some(item) = ev.item {
+                                    if let Some(existing) = page.items.iter_mut().find(|x| {
+                                        x.name == item.name && x.namespace == item.namespace
+                                    }) {
+                                        *existing = item;
+                                    } else {
+                                        page.items.push(item);
+                                        page.items.sort_by(|a, b| {
+                                            (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name))
+                                        });
+                                    }
+                                }
                             }
+                            "remove" => {
+                                if let Some(removed) = ev.removed {
+                                    page.items.retain(|x| {
+                                        !(x.name == removed.name
+                                            && x.namespace.as_deref()
+                                                == Some(removed.namespace.as_str()))
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
-                    })
-                    .unwrap_or(false);
-                if !keep {
-                    break;
-                }
+                        cx.notify();
+                    }
+                });
             }
         })
         .detach();
     }
 
-    pub(crate) fn close_active_pod_sync(&mut self) {
-        if let (Some(session), Some(sync_id)) =
-            (self.cluster_session.clone(), self.active_pod_sync_id.take())
-        {
-            let _ = self.connection.pod_sync_close(PodSyncRequest {
-                cluster_id: session.cluster_id,
-                session_id: session.session_id,
-                sync_id,
-            });
-        }
-    }
-
-    pub(crate) fn open_create_resource_modal(
+    fn load_helm_section(
         &mut self,
-        kind: ResourceKind,
+        view: HelmView,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let scaffold = yaml_scaffold(kind, self.selected_namespace.as_deref());
-        self.create_yaml_editor
-            .update(cx, |ed, cx| ed.set_value(scaffold, window, cx));
-        self.creating_resource_kind = Some(kind);
-        self.create_modal_message = None;
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let read_id = self.next_operation_id();
+        let req = HelmRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            view,
+            namespace: if view == HelmView::Releases {
+                self.selected_namespace.clone()
+            } else {
+                None
+            },
+            read_id,
+        };
+        let connection = self.connection.clone();
+        self.cluster_loading = true;
         cx.notify();
-    }
 
-    pub(crate) fn submit_create_resource(
-        &mut self,
-        dry_run: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let Some(kind) = self.creating_resource_kind else {
-            return;
-        };
-        let yaml = self.create_yaml_editor.read(cx).value().to_string();
-        let read_id = self.next_operation_id();
-        let namespace = self.selected_namespace.clone();
-        let engine = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .create(CreateRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    kind,
-                    namespace,
-                    yaml,
-                    dry_run,
-                    read_id,
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(out) => {
-                        if dry_run {
-                            this.create_modal_message = Some(format!(
-                                "Dry-run validated: {} ({:?})",
-                                out.name, out.kind
-                            ));
-                        } else {
-                            this.creating_resource_kind = None;
-                            this.create_modal_message = None;
-                            this.refresh_active_cluster_view(window, cx);
-                        }
-                    }
-                    Err(err) => {
-                        this.create_modal_message =
-                            Some(format!("Error: {}", connection_error_message(err)));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    pub(crate) fn delete_resource_row(
-        &mut self,
-        kind: ResourceKind,
-        item: ResourceItem,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let (Some(uid), Some(rv)) = (item.uid, item.resource_version) else {
-            return;
-        };
-        let read_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .delete(DeleteRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    kind,
-                    namespace: item.namespace,
-                    name: item.name,
-                    uid,
-                    resource_version: rv,
-                    read_id,
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(_) => {
-                        this.refresh_active_cluster_view(window, cx);
-                    }
-                    Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn load_helm_view(&mut self, view: HelmView, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let read_id = self.next_operation_id();
-        let namespace = if view == HelmView::Releases {
-            self.selected_namespace.clone()
-        } else {
-            None
-        };
-        let engine = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .helm_table(HelmRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    view,
-                    namespace,
-                    read_id,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
+            let result = connection.helm_table(req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
                 this.cluster_loading = false;
-                match res {
+                match result {
                     Ok(page) => {
                         this.helm_page = Some(page);
                         this.cluster_error = None;
                     }
                     Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
+                        this.cluster_error = Some(format!("Helm query error: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -649,67 +641,61 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn submit_helm_install(
+    fn load_custom_resources_section(
         &mut self,
-        dry_run: bool,
+        group: Option<String>,
+        crd_name: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let Some(chart) = self.helm_install_chart.clone() else {
-            return;
-        };
-        let release_name = self
-            .helm_release_name_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-        let namespace = self
-            .helm_namespace_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-        let values_yaml = self.helm_values_editor.read(cx).value().to_string();
-        let version = self.helm_install_version.clone();
         let read_id = self.next_operation_id();
-        let engine = self.connection.clone();
+        let def_req = ResourceRequest {
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
+            kind: ResourceKind::CustomResourceDefinitions,
+            read_id,
+            namespace: None,
+            continue_token: None,
+            query: None,
+            status: None,
+            group,
+        };
+        let inst_req = crd_name.map(|definition| CustomResourcesRequest {
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
+            definition,
+            version: None,
+            namespace: self.selected_namespace.clone(),
+            continue_token: None,
+            read_id: self.next_operation_id(),
+        });
+        let connection = self.connection.clone();
+        self.cluster_loading = true;
+        cx.notify();
+
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .helm_install(HelmInstallRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    read_id,
-                    namespace,
-                    release_name,
-                    chart,
-                    version,
-                    values_yaml,
-                    dry_run,
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(out) => {
-                        if dry_run {
-                            this.helm_install_message = Some(format!(
-                                "Helm server dry-run succeeded for release '{}'",
-                                out.release_name
-                            ));
-                        } else {
-                            this.helm_install_chart = None;
-                            this.helm_install_message = None;
-                            this.active_cluster_section = "helm-releases".into();
-                            this.refresh_active_cluster_view(window, cx);
-                        }
+            let defs = connection.resources(def_req).await;
+            let instances = if let Some(ireq) = inst_req {
+                Some(connection.custom_resources(ireq).await)
+            } else {
+                None
+            };
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.cluster_loading = false;
+                if let Ok(page) = defs {
+                    let auto_first = instances.is_none().then(|| {
+                        page.items.first().map(|item| item.name.clone())
+                    }).flatten();
+                    this.custom_definitions_page = Some(page);
+                    if let Some(first_crd) = auto_first {
+                        this.load_crd_instances_only(first_crd, window, cx);
                     }
-                    Err(err) => {
-                        this.helm_install_message =
-                            Some(format!("Error: {}", connection_error_message(err)));
-                    }
+                }
+                if let Some(Ok(inst)) = instances {
+                    this.custom_instances_page = Some(inst);
                 }
                 cx.notify();
             });
@@ -717,33 +703,64 @@ impl IceonApp {
         .detach();
     }
 
-    fn load_rbac_users_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn load_crd_instances_only(
+        &mut self,
+        definition: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let read_id = self.next_operation_id();
-        let mgmt_id = self.next_operation_id();
-        let ns = self.selected_namespace.clone();
-        let mgmt_ns = ns.clone().unwrap_or_else(|| "default".into());
-        let engine = self.connection.clone();
+        let req = CustomResourcesRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            definition,
+            version: None,
+            namespace: self.selected_namespace.clone(),
+            continue_token: None,
+            read_id: self.next_operation_id(),
+        };
+        let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let users_res = engine
-                .rbac_users(RbacUsersRequest {
-                    cluster_id: session.cluster_id.clone(),
-                    session_id: session.session_id.clone(),
-                    read_id,
-                    namespace: ns,
-                })
-                .await;
-            let mgmt_res = engine
-                .rbac_management_snapshot(ManagementRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    read_id: mgmt_id,
-                    namespace: mgmt_ns,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
+            if let Ok(page) = connection.custom_resources(req).await {
+                let _ = this.update_in(cx, |this, _, cx| {
+                    this.custom_instances_page = Some(page);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn load_rbac_users_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let ns = self
+            .selected_namespace
+            .clone()
+            .unwrap_or_else(|| "default".into());
+        let users_req = RbacUsersRequest {
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
+            read_id: self.next_operation_id(),
+            namespace: self.selected_namespace.clone(),
+        };
+        let mgmt_req = ManagementRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            read_id: self.next_operation_id(),
+            namespace: ns,
+        };
+        let connection = self.connection.clone();
+        self.cluster_loading = true;
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let users_res = connection.rbac_users(users_req).await;
+            let mgmt_res = connection.rbac_management_snapshot(mgmt_req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
                 this.cluster_loading = false;
                 if let Ok(u) = users_res {
                     this.rbac_users_response = Some(u);
@@ -757,7 +774,141 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn plan_managed_rbac_user(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_create_resource_modal(
+        &mut self,
+        kind: ResourceKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.creating_resource_kind = Some(kind);
+        self.create_modal_message = None;
+        let ns = self
+            .selected_namespace
+            .as_deref()
+            .unwrap_or("default");
+        let template = default_yaml_template(kind, ns);
+        self.create_yaml_editor.update(cx, |editor, cx| {
+            editor.set_value(template, window, cx);
+        });
+        cx.notify();
+    }
+
+    fn submit_create_resource(
+        &mut self,
+        dry_run: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(kind) = self.creating_resource_kind else {
+            return;
+        };
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let yaml = self.create_yaml_editor.read(cx).value().to_string();
+        let req = CreateRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: self.next_operation_id(),
+            kind,
+            namespace: if namespaced_kind(kind) {
+                Some(
+                    self.selected_namespace
+                        .clone()
+                        .unwrap_or_else(|| "default".into()),
+                )
+            } else {
+                None
+            },
+            yaml,
+            dry_run,
+        };
+        let connection = self.connection.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result: std::result::Result<ResourceCreateResult, _> =
+                connection.resource_create(req).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(res) => {
+                        if res.dry_run {
+                            this.create_modal_message =
+                                Some(format!("Dry-run valid for {}", res.name));
+                        } else {
+                            this.creating_resource_kind = None;
+                            this.create_modal_message = None;
+                            this.reload_active_section(window, cx);
+                        }
+                    }
+                    Err(err) => {
+                        this.create_modal_message = Some(format!("Create failed: {err:?}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn submit_helm_install(
+        &mut self,
+        dry_run: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(chart), Some(version)) = (
+            self.helm_install_chart.clone(),
+            self.helm_install_version.clone(),
+        ) else {
+            return;
+        };
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let release_name = self.helm_release_name_input.read(cx).value().trim().to_string();
+        let namespace = self.helm_namespace_input.read(cx).value().trim().to_string();
+        let values_yaml = self.helm_values_editor.read(cx).value().to_string();
+        let req = HelmInstallRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: self.next_operation_id(),
+            chart,
+            version,
+            release_name,
+            namespace,
+            create_namespace: true,
+            dry_run,
+            values_yaml: (!values_yaml.trim().is_empty()).then_some(values_yaml),
+        };
+        let connection = self.connection.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let res: std::result::Result<HelmInstallResult, _> =
+                connection.helm_install(req).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match res {
+                    Ok(installed) => {
+                        this.helm_install_message = Some(format!(
+                            "{} release {} (rev {}, status {})",
+                            if installed.dry_run { "Dry-run" } else { "Installed" },
+                            installed.release_name,
+                            installed.revision,
+                            installed.status
+                        ));
+                        if !installed.dry_run {
+                            this.helm_install_chart = None;
+                            this.load_helm_section(HelmView::Releases, window, cx);
+                        }
+                    }
+                    Err(err) => {
+                        this.helm_install_message = Some(format!("Helm install error: {err:?}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn create_rbac_user_plan(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -769,34 +920,108 @@ impl IceonApp {
             .selected_namespace
             .clone()
             .unwrap_or_else(|| "default".into());
-        let read_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .rbac_user_plan(PlanRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    read_id,
-                    operation: PlanOperation::Create,
-                    user: ManagedUser {
-                        name,
-                        namespace,
-                        uid: None,
-                        resource_version: None,
-                        assignments: vec![],
-                        cluster_access: ClusterAccess::None,
-                        cluster_template: None,
+
+        let templates = self
+            .rbac_management_snapshot
+            .as_ref()
+            .map(|m| m.templates.clone())
+            .unwrap_or_default();
+
+        let assignments: Vec<Assignment> = self
+            .rbac_selected_templates
+            .iter()
+            .filter_map(|tname| {
+                let tpl = templates
+                    .iter()
+                    .find(|t| &t.name == tname && t.scope == "namespaced")?;
+                Some(Assignment {
+                    template_name: tpl.name.clone(),
+                    template_uid: tpl.uid.clone(),
+                    template_resource_version: tpl.resource_version.clone(),
+                    namespaces: if self.rbac_all_namespaces {
+                        vec![]
+                    } else {
+                        vec![namespace.clone()]
                     },
+                    all_namespaces: self.rbac_all_namespaces,
                 })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                match res {
+            })
+            .collect();
+
+        let cluster_template = if self.rbac_selected_cluster_access != ClusterAccess::None {
+            templates
+                .iter()
+                .find(|t| t.scope == "cluster")
+                .map(|t| TemplateIdentity {
+                    name: t.name.clone(),
+                    uid: t.uid.clone(),
+                    resource_version: t.resource_version.clone(),
+                })
+        } else {
+            None
+        };
+        let cluster_access = if cluster_template.is_some() {
+            self.rbac_selected_cluster_access.clone()
+        } else {
+            ClusterAccess::None
+        };
+
+        let req = PlanRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            read_id: self.next_operation_id(),
+            operation: PlanOperation::Create,
+            user: ManagedUser {
+                name,
+                namespace,
+                uid: None,
+                resource_version: None,
+                assignments,
+                cluster_access,
+                cluster_template,
+            },
+        };
+        self.submit_rbac_plan_request(req, window, cx);
+    }
+
+    fn plan_existing_rbac_user(
+        &mut self,
+        user: ManagedUser,
+        operation: PlanOperation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let req = PlanRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            read_id: self.next_operation_id(),
+            operation,
+            user,
+        };
+        self.submit_rbac_plan_request(req, window, cx);
+    }
+
+    fn submit_rbac_plan_request(
+        &mut self,
+        req: PlanRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let connection = self.connection.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = connection.rbac_user_plan(req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                match result {
                     Ok(plan) => {
+                        this.rbac_apply_response = None;
                         this.rbac_active_plan = Some(plan);
                         this.cluster_error = None;
                     }
                     Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
+                        this.cluster_error = Some(format!("RBAC plan failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -805,7 +1030,7 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn apply_managed_rbac_plan(
+    fn apply_rbac_user_plan(
         &mut self,
         plan_id: String,
         window: &mut Window,
@@ -814,111 +1039,21 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let read_id = self.next_operation_id();
-        let engine = self.connection.clone();
+        let req = ApplyRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            read_id: self.next_operation_id(),
+            plan_id,
+        };
+        let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .rbac_user_apply(ApplyRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    read_id,
-                    plan_id,
-                })
-                .await;
+            let result = connection.rbac_user_apply(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if let Ok(applied) = result {
+                    this.rbac_apply_response = Some(applied);
+                }
                 this.rbac_active_plan = None;
-                match res {
-                    Ok(_) => {
-                        this.load_rbac_users_view(window, cx);
-                    }
-                    Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn load_custom_definitions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let read_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .custom_resource_definitions(CustomDefinitionRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    read_id,
-                    continue_token: None,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.cluster_loading = false;
-                match res {
-                    Ok(page) => {
-                        this.custom_definitions_page = Some(page.clone());
-                        this.resource_page = Some(page);
-                    }
-                    Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn load_custom_instances(
-        &mut self,
-        crd_name: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let uid = self
-            .custom_definitions_page
-            .as_ref()
-            .and_then(|p| p.items.iter().find(|i| i.name == crd_name))
-            .and_then(|i| i.uid.clone())
-            .unwrap_or_default();
-        if uid.is_empty() {
-            self.cluster_loading = false;
-            return;
-        }
-        let read_id = self.next_operation_id();
-        let namespace = self.selected_namespace.clone();
-        let engine = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .custom_resources(CustomResourceRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    read_id,
-                    target: CustomResourceTarget {
-                        definition_name: crd_name,
-                        definition_uid: uid,
-                    },
-                    namespace,
-                    continue_token: None,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.cluster_loading = false;
-                match res {
-                    Ok(page) => {
-                        this.custom_instances_page = Some(page);
-                    }
-                    Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
-                    }
-                }
+                this.load_rbac_users_section(window, cx);
                 cx.notify();
             });
         })
@@ -930,103 +1065,75 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let session = self.cluster_session.clone();
         let section = self.active_cluster_section.clone();
+        let active_kind = section_to_resource_kind(&section);
         let has_inspector = self.inspector.target.is_some();
-        let has_dock = self.pod_dock_open;
+        let has_pod_dock =
+            self.pod_dock_open && (!self.pod_dock_tabs.is_empty() || !self.port_forwards.is_empty());
 
-        let main_body = v_flex()
+        v_flex()
             .size_full()
             .overflow_hidden()
-            .child(self.render_cluster_header(session.as_ref(), window, cx))
-            .when_some(self.cluster_error.clone(), |el, msg| {
+            .child(self.render_cluster_toolbar(&section, active_kind, window, cx))
+            .when_some(self.cluster_error.clone(), |el, err| {
                 el.child(
                     div()
-                        .mx_4()
-                        .mt_3()
-                        .p_2p5()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().danger)
+                        .w_full()
+                        .px_4()
+                        .py_2()
+                        .bg(cx.theme().secondary)
                         .text_xs()
                         .text_color(cx.theme().danger)
-                        .child(msg),
+                        .child(err),
                 )
             })
             .child(
-                v_flex()
+                h_flex()
                     .flex_1()
+                    .min_h_0()
                     .w_full()
                     .overflow_hidden()
-                    .child(match section.as_str() {
-                        "overview" => self.render_cluster_overview_body(cx).into_any_element(),
-                        "workloads-overview" => {
-                            self.render_workloads_overview_body(cx).into_any_element()
-                        }
-                        "helm-charts" | "helm-releases" => {
-                            self.render_helm_body(window, cx).into_any_element()
-                        }
-                        "port-forwarding" => self.render_port_forwards_body(cx).into_any_element(),
-                        "users" => self.render_rbac_users_body(window, cx).into_any_element(),
-                        s if s.starts_with("crd:") => {
-                            self.render_custom_instances_body(cx).into_any_element()
-                        }
-                        other => {
-                            if let Some(view) = resource_view(other) {
-                                self.render_resource_table_body(view, window, cx)
-                                    .into_any_element()
-                            } else {
-                                self.render_cluster_overview_body(cx).into_any_element()
-                            }
-                        }
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .w_full()
+                                    .overflow_y_scrollbar()
+                                    .child(self.render_cluster_section_body(
+                                        &section,
+                                        active_kind,
+                                        window,
+                                        cx,
+                                    )),
+                            )
+                            .when(has_pod_dock, |el| {
+                                el.child(self.render_pod_dock_panel(window, cx))
+                            }),
+                    )
+                    .when(has_inspector, |el| {
+                        el.child(self.render_inspector_drawer(window, cx))
                     }),
-            );
-
-        let with_inspector = if has_inspector {
-            h_resizable("cluster-inspector-split")
-                .child(resizable_panel().child(main_body))
-                .child(
-                    resizable_panel()
-                        .size(px(420.0))
-                        .size_range(px(300.0)..px(760.0))
-                        .child(self.render_inspector_panel(window, cx)),
-                )
-                .into_any_element()
-        } else {
-            main_body.into_any_element()
-        };
-
-        if has_dock {
-            v_resizable("cluster-pod-dock-split")
-                .child(resizable_panel().child(with_inspector))
-                .child(
-                    resizable_panel()
-                        .size(px(260.0))
-                        .size_range(px(160.0)..px(520.0))
-                        .child(self.render_pod_dock_panel(window, cx)),
-                )
-                .into_any_element()
-        } else {
-            with_inspector
-        }
+            )
     }
 
-    fn render_cluster_header(
-        &mut self,
-        session: Option<&ConnectionSnapshot>,
+    fn render_cluster_toolbar(
+        &self,
+        section: &str,
+        active_kind: Option<ResourceKind>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let context_name = session
-            .map(|s| s.context_name.clone())
-            .unwrap_or_else(|| "Cluster".into());
-        let status = session.map(|s| s.status).unwrap_or("disconnected");
-        let api_version = session.and_then(|s| s.api_version.clone());
-        let section_title = destination_label(&self.active_cluster_section);
-        let selected_ns = self
-            .selected_namespace
-            .clone()
-            .unwrap_or_else(|| "All namespaces".into());
+        let session = self.cluster_session.clone();
+        let namespaces = self.namespaces.clone();
+        let selected_ns = self.selected_namespace.clone();
+        let show_ns_selector = active_kind.is_none_or(namespaced_kind);
+        let dock_count = self.pod_dock_tabs.len() + self.port_forwards.len();
 
         v_flex()
             .w_full()
@@ -1035,650 +1142,1008 @@ impl IceonApp {
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
+            .bg(cx.theme().tokens.chrome)
             .child(
                 h_flex()
                     .w_full()
-                    .items_center()
                     .justify_between()
+                    .items_center()
                     .child(
                         h_flex()
-                            .items_center()
                             .gap_2()
-                            .child(div().text_sm().font_semibold().child(context_name))
-                            .child(match status {
-                                "connected" => Tag::success().child("Connected"),
-                                "connecting" => Tag::warning().child("Connecting"),
-                                "error" => Tag::danger().child("Error"),
-                                _ => Tag::secondary().child("Disconnected"),
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(destination_label(section)),
+                            )
+                            .when_some(session.clone(), |el, s| {
+                                el.child(
+                                    match s.status {
+                                        "connected" => Tag::success().small(),
+                                        "connecting" => Tag::warning().small(),
+                                        _ => Tag::secondary().small(),
+                                    }
+                                    .child(format!(
+                                        "{} {}",
+                                        s.status,
+                                        s.api_version.unwrap_or_default()
+                                    )),
+                                )
                             })
-                            .when_some(api_version, |el, ver| {
+                            .when(self.active_pod_sync_id.is_some(), |el| {
+                                el.child(Tag::success().small().child("LIVE WATCH"))
+                            }),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .when(active_kind.is_some(), |el| {
                                 el.child(
                                     div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(ver),
+                                        .w(px(210.0))
+                                        .child(
+                                            Input::new(&self.resource_filter_input)
+                                                .small()
+                                                .cleanable(true),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("apply-resource-filter-btn")
+                                        .xsmall()
+                                        .outline()
+                                        .label("Filter")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.current_continue_token = None;
+                                            this.continue_token_history.clear();
+                                            this.reload_active_section(window, cx);
+                                        })),
+                                )
+                            })
+                            .when_some(active_kind, |el, kind| {
+                                el.child(
+                                    Button::new("open-create-yaml-btn")
+                                        .xsmall()
+                                        .primary()
+                                        .icon(IconName::Plus)
+                                        .label("Create YAML")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_create_resource_modal(kind, window, cx);
+                                        })),
+                                )
+                            })
+                            .when(dock_count > 0, |el| {
+                                el.child(
+                                    Button::new("toggle-pod-dock-btn")
+                                        .xsmall()
+                                        .outline()
+                                        .selected(self.pod_dock_open)
+                                        .label(format!("Dock ({dock_count})"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.pod_dock_open = !this.pod_dock_open;
+                                            cx.notify();
+                                        })),
                                 )
                             })
                             .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("· {section_title}")),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_1p5()
-                            .child(
-                                Button::new("cluster-ns-all-btn")
+                                Button::new("reload-cluster-section-btn")
                                     .xsmall()
-                                    .when(self.selected_namespace.is_none(), |b| b.primary())
-                                    .when(self.selected_namespace.is_some(), |b| b.outline())
-                                    .label(format!("NS: {selected_ns}"))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.selected_namespace = None;
-                                        this.refresh_active_cluster_view(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .children(self.namespaces.iter().take(6).cloned().map(|ns| {
-                                let active =
-                                    self.selected_namespace.as_deref() == Some(ns.as_str());
-                                let ns_click = ns.clone();
-                                Button::new(SharedString::from(format!("ns-chip-{ns}")))
-                                    .xsmall()
-                                    .when(active, |b| b.primary())
-                                    .when(!active, |b| b.ghost())
-                                    .label(ns)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.selected_namespace = Some(ns_click.clone());
-                                        this.refresh_active_cluster_view(window, cx);
-                                        cx.notify();
-                                    }))
-                            }))
-                            .child(
-                                Button::new("cluster-refresh-view-btn")
-                                    .xsmall()
-                                    .outline()
+                                    .ghost()
                                     .icon(IconName::Undo2)
                                     .label("Refresh")
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.refresh_active_cluster_view(window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("cluster-reconnect-btn")
-                                    .xsmall()
-                                    .outline()
-                                    .label("Reconnect")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.reconnect_active_cluster(window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("cluster-disconnect-btn")
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Disconnect")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.disconnect_active_cluster(cx);
+                                        this.reload_active_section(window, cx);
                                     })),
                             ),
                     ),
             )
+            .when(show_ns_selector && !namespaces.is_empty(), |el| {
+                el.child(
+                    h_flex()
+                        .w_full()
+                        .gap_1()
+                        .items_center()
+                        .overflow_x_scrollbar()
+                        .child(
+                            Button::new("ns-pill-all")
+                                .xsmall()
+                                .ghost()
+                                .selected(selected_ns.is_none())
+                                .label("All Namespaces")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.selected_namespace = None;
+                                    this.current_continue_token = None;
+                                    this.continue_token_history.clear();
+                                    this.reload_active_section(window, cx);
+                                })),
+                        )
+                        .children(namespaces.into_iter().take(24).map(|ns| {
+                            let active = selected_ns.as_deref() == Some(ns.as_str());
+                            let target_ns = ns.clone();
+                            Button::new(SharedString::from(format!("ns-pill-{ns}")))
+                                .xsmall()
+                                .ghost()
+                                .selected(active)
+                                .label(ns)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.selected_namespace = Some(target_ns.clone());
+                                    this.current_continue_token = None;
+                                    this.continue_token_history.clear();
+                                    this.reload_active_section(window, cx);
+                                }))
+                        })),
+                )
+            })
     }
 
-    fn render_cluster_overview_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_cluster_section_body(
+        &mut self,
+        section: &str,
+        active_kind: Option<ResourceKind>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some(create_kind) = self.creating_resource_kind {
+            return self
+                .render_create_resource_panel(create_kind, window, cx)
+                .into_any_element();
+        }
+        if section == "overview" || section == "workloads/overview" {
+            return self.render_overview_body(cx).into_any_element();
+        }
+        if section == "helm/charts" || section == "helm/releases" {
+            return self.render_helm_body(window, cx).into_any_element();
+        }
+        if section == "access-control/users" {
+            return self.render_rbac_users_body(window, cx).into_any_element();
+        }
+        if parse_custom_resource_target(section).is_some() {
+            return self.render_custom_resources_body(cx).into_any_element();
+        }
+        if let Some(kind) = active_kind {
+            return self.render_resource_table_body(kind, cx).into_any_element();
+        }
+        div()
+            .p_6()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("Select a resource section from the sidebar.")
+            .into_any_element()
+    }
+
+    fn render_create_resource_panel(
+        &self,
+        kind: ResourceKind,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .h(px(520.0))
+            .p_4()
+            .gap_3()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Create {:?} from YAML", kind)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("create-dry-run-btn")
+                                    .xsmall()
+                                    .outline()
+                                    .label("Dry-Run")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.submit_create_resource(true, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("create-submit-btn")
+                                    .xsmall()
+                                    .primary()
+                                    .label("Create")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.submit_create_resource(false, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("create-cancel-btn")
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.creating_resource_kind = None;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .when_some(self.create_modal_message.clone(), |el, msg| {
+                el.child(
+                    div()
+                        .px_3()
+                        .py_1p5()
+                        .rounded(px(6.0))
+                        .bg(cx.theme().secondary)
+                        .text_xs()
+                        .child(msg),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .child(Input::new(&self.create_yaml_editor).h_full()),
+            )
+    }
+
+    fn render_overview_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let snap = &self.overview_snapshot;
-        let mut cpu_used = 0.0;
-        let mut cpu_total = 0.0;
-        let mut mem_used = 0.0;
-        let mut mem_total = 0.0;
-        for node_item in &snap.nodes {
-            if let Some(node) = &node_item.node {
-                if let Some(u) = node.cpu.used {
-                    cpu_used += u;
-                }
-                if let Some(t) = node.cpu.allocatable.or(node.cpu.capacity) {
-                    cpu_total += t;
-                }
-                if let Some(u) = node.memory.used {
-                    mem_used += u;
-                }
-                if let Some(t) = node.memory.allocatable.or(node.memory.capacity) {
-                    mem_total += t;
+        let current_cid = self
+            .cluster_session
+            .as_ref()
+            .map(|s| s.cluster_id.clone())
+            .unwrap_or_default();
+
+        let count_breakdown = |page: &Option<ResourcePage>| -> (usize, usize, usize) {
+            let Some(p) = page.as_ref() else {
+                return (0, 0, 0);
+            };
+            let total = p.items.len();
+            let mut healthy = 0;
+            let mut warning = 0;
+            for item in &p.items {
+                let s = item.status.to_lowercase();
+                if s.contains("running")
+                    || s.contains("ready")
+                    || s.contains("active")
+                    || s.contains("complete")
+                    || s.contains("succeeded")
+                    || s == "true"
+                {
+                    healthy += 1;
+                } else if s.contains("fail")
+                    || s.contains("error")
+                    || s.contains("pending")
+                    || s.contains("warning")
+                    || s == "false"
+                {
+                    warning += 1;
                 }
             }
-        }
-        let cpu_pct = if cpu_total > 0.0 {
-            ((cpu_used / cpu_total) * 100.0).round() as u64
-        } else {
-            0
-        };
-        let mem_pct = if mem_total > 0.0 {
-            ((mem_used / mem_total) * 100.0).round() as u64
-        } else {
-            0
+            (total, healthy, warning)
         };
 
+        let cards = [
+            ("Nodes", "nodes", count_breakdown(&snap.nodes)),
+            ("Namespaces", "namespaces", count_breakdown(&snap.namespaces)),
+            ("Pods", "workloads/pods", count_breakdown(&snap.pods)),
+            (
+                "Deployments",
+                "workloads/deployments",
+                count_breakdown(&snap.deployments),
+            ),
+            (
+                "DaemonSets",
+                "workloads/daemonsets",
+                count_breakdown(&snap.daemonsets),
+            ),
+            (
+                "StatefulSets",
+                "workloads/statefulsets",
+                count_breakdown(&snap.statefulsets),
+            ),
+            (
+                "ReplicaSets",
+                "workloads/replicasets",
+                count_breakdown(&snap.replicasets),
+            ),
+            ("Jobs", "workloads/jobs", count_breakdown(&snap.jobs)),
+            (
+                "CronJobs",
+                "workloads/cronjobs",
+                count_breakdown(&snap.cronjobs),
+            ),
+        ];
+
+        let events = snap
+            .events
+            .as_ref()
+            .map(|p| p.items.clone())
+            .unwrap_or_default();
+
         v_flex()
-            .flex_1()
+            .w_full()
             .p_4()
             .gap_4()
-            .overflow_y_scrollbar()
             .child(
                 h_flex()
                     .w_full()
-                    .gap_4()
-                    .child(
+                    .gap_3()
+                    .flex_wrap()
+                    .children(cards.into_iter().map(|(label, sec, (total, ok, warn))| {
+                        let cid = current_cid.clone();
+                        let target_sec = sec.to_owned();
                         v_flex()
-                            .flex_1()
-                            .p_4()
-                            .gap_1()
+                            .w(px(176.0))
+                            .p_3()
+                            .gap_1p5()
                             .rounded(px(8.0))
                             .border_1()
                             .border_color(cx.theme().border)
+                            .bg(cx.theme().tokens.elevated_surface)
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(label),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "ov-nav-{sec}"
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("View")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if !cid.is_empty() {
+                                                this.navigate(
+                                                    Route::Cluster {
+                                                        cluster_id: cid.clone(),
+                                                        section: target_sec.clone(),
+                                                    },
+                                                    true,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        })),
+                                    ),
+                            )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Cluster CPU Usage"),
+                                    .text_xl()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(total.to_string()),
                             )
-                            .child(div().text_lg().font_semibold().child(format!(
-                                "{cpu_pct}% ({cpu_used:.2} / {cpu_total:.1} cores)"
-                            ))),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .p_4()
-                            .gap_1()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(cx.theme().border)
                             .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Cluster Memory Usage"),
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(Tag::success().small().child(format!("{ok} ok")))
+                                    .when(warn > 0, |r| {
+                                        r.child(Tag::warning().small().child(format!("{warn} attn")))
+                                    }),
                             )
-                            .child(div().text_lg().font_semibold().child(format!(
-                                "{mem_pct}% ({:.1} / {:.1} GiB)",
-                                mem_used / (1024.0 * 1024.0 * 1024.0),
-                                mem_total / (1024.0 * 1024.0 * 1024.0)
-                            ))),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .p_4()
-                            .gap_1()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Nodes & Pods"),
-                            )
-                            .child(div().text_lg().font_semibold().child(format!(
-                                "{} Nodes · {} Pods",
-                                snap.nodes.len(),
-                                snap.pods.len()
-                            ))),
-                    ),
+                    })),
             )
-            .child(self.render_workloads_cards_grid(cx))
-            .child(self.render_latest_events_card(cx))
-    }
-
-    fn render_workloads_overview_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .flex_1()
-            .p_4()
-            .gap_4()
-            .overflow_y_scrollbar()
-            .child(self.render_workloads_cards_grid(cx))
-            .child(self.render_latest_events_card(cx))
-    }
-
-    fn render_workloads_cards_grid(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let snap = &self.overview_snapshot;
-        let cards = [
-            ("pods", "Pods", snap.pods.len()),
-            ("deployments", "Deployments", snap.deployments.len()),
-            ("daemon-sets", "DaemonSets", snap.daemon_sets.len()),
-            ("stateful-sets", "StatefulSets", snap.stateful_sets.len()),
-            ("replica-sets", "ReplicaSets", snap.replica_sets.len()),
-            ("jobs", "Jobs", snap.jobs.len()),
-            ("cron-jobs", "CronJobs", snap.cron_jobs.len()),
-        ];
-
-        h_flex()
-            .w_full()
-            .gap_3()
-            .flex_wrap()
-            .children(cards.into_iter().map(|(dest, label, count)| {
-                let target_dest = dest.to_string();
+            .child(
                 v_flex()
-                    .w(px(160.0))
+                    .w_full()
                     .p_3()
-                    .gap_1p5()
+                    .gap_2()
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
+                    .bg(cx.theme().tokens.elevated_surface)
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(label),
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Recent Cluster Events ({})", events.len())),
                     )
-                    .child(div().text_xl().font_semibold().child(count.to_string()))
-                    .child(
-                        Button::new(SharedString::from(format!("workload-card-{dest}")))
-                            .xsmall()
-                            .ghost()
-                            .label("View →")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.active_cluster_section = target_dest.clone();
-                                this.refresh_active_cluster_view(window, cx);
-                                cx.notify();
-                            })),
-                    )
-            }))
+                    .children(events.into_iter().take(25).enumerate().map(|(idx, ev)| {
+                        let ev_ref = ResourceReference {
+                            kind: ResourceKind::Events,
+                            name: ev.name.clone(),
+                            namespace: ev.namespace.clone(),
+                            uid: ev.uid.clone(),
+                        };
+                        h_flex()
+                            .w_full()
+                            .py_1()
+                            .gap_2()
+                            .justify_between()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(if ev.status == "Warning" {
+                                        Tag::warning().small().child(ev.status.clone())
+                                    } else {
+                                        Tag::secondary().small().child(ev.status.clone())
+                                    })
+                                    .child(
+                                        div()
+                                            .w(px(130.0))
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .truncate()
+                                            .child(
+                                                ev.columns
+                                                    .get("reason")
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(px(160.0))
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .truncate()
+                                            .child(
+                                                ev.columns
+                                                    .get("involvedObject")
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_xs()
+                                            .truncate()
+                                            .child(
+                                                ev.columns
+                                                    .get("message")
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("ov-ev-insp-{idx}")))
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Inspect")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_resource_inspector(ev_ref.clone(), window, cx);
+                                    })),
+                            )
+                    })),
+            )
     }
 
-    fn render_latest_events_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let events = &self.overview_snapshot.events;
+    fn render_resource_table_body(
+        &self,
+        kind: ResourceKind,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let items: Vec<ResourceItem> = self
+            .resource_page
+            .as_ref()
+            .filter(|p| p.kind == kind)
+            .map(|p| p.items.clone())
+            .unwrap_or_default();
+        let next_token = self
+            .resource_page
+            .as_ref()
+            .filter(|p| p.kind == kind)
+            .and_then(|p| p.continue_token.clone());
+        let has_prev = !self.continue_token_history.is_empty();
+        let page_num = self.continue_token_history.len() + 1;
+
+        let cols = columns_for_kind(kind);
+        let show_ns = namespaced_kind(kind);
+
         v_flex()
             .w_full()
             .p_4()
             .gap_2()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(cx.theme().border)
-            .child(div().text_sm().font_semibold().child("Latest Cluster Events"))
-            .children(events.iter().take(15).map(|ev| {
-                let kind_type = ev
-                    .columns
-                    .get("type")
-                    .cloned()
-                    .unwrap_or_else(|| "Normal".into());
-                let obj = ev
-                    .columns
-                    .get("involvedObject")
-                    .cloned()
-                    .unwrap_or_else(|| ev.name.clone());
-                h_flex()
-                    .w_full()
-                    .py_1p5()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .items_center()
-                    .justify_between()
-                    .text_xs()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(if kind_type == "Warning" {
-                                Tag::warning().child("Warning")
-                            } else {
-                                Tag::secondary().child(kind_type)
-                            })
-                            .child(div().font_medium().child(ev.status.clone()))
-                            .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(obj),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format_age(ev.created_at.as_deref())),
-                    )
-            }))
-    }
-
-    fn render_resource_table_body(
-        &mut self,
-        view: &'static ResourceView,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let items = self
-            .resource_page
-            .as_ref()
-            .filter(|p| p.kind == view.kind)
-            .map(|p| p.items.clone())
-            .unwrap_or_default();
-        let is_pods = view.kind == ResourceKind::Pods;
-        let live_sync_on = self.active_pod_sync_id.is_some();
-
-        v_flex()
-            .flex_1()
-            .p_4()
-            .gap_3()
-            .overflow_hidden()
+            // Table Pagination & Count Header
             .child(
                 h_flex()
                     .w_full()
-                    .items_center()
                     .justify_between()
-                    .gap_2()
+                    .items_center()
                     .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .w(px(240.0))
-                                    .child(
-                                        Input::new(&self.resource_filter_input)
-                                            .small()
-                                            .cleanable(true),
-                                    ),
-                            )
-                            .child(
-                                Button::new("apply-resource-filter-btn")
-                                    .small()
-                                    .outline()
-                                    .label("Filter")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.load_resource_table(view, window, cx);
-                                    })),
-                            )
-                            .children(view.statuses.iter().map(|status| {
-                                let active =
-                                    self.selected_status_filter.as_deref() == Some(*status);
-                                let status_str = (*status).to_string();
-                                Button::new(SharedString::from(format!("status-pill-{status}")))
-                                    .xsmall()
-                                    .when(active, |b| b.primary())
-                                    .when(!active, |b| b.ghost())
-                                    .label(*status)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if this.selected_status_filter.as_deref()
-                                            == Some(status_str.as_str())
-                                        {
-                                            this.selected_status_filter = None;
-                                        } else {
-                                            this.selected_status_filter = Some(status_str.clone());
-                                        }
-                                        this.load_resource_table(view, window, cx);
-                                        cx.notify();
-                                    }))
-                            })),
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "Showing {} {:?} items (Page {page_num})",
+                                items.len(),
+                                kind
+                            )),
                     )
                     .child(
                         h_flex()
+                            .gap_1()
                             .items_center()
-                            .gap_2()
-                            .when(is_pods, |el| {
-                                el.child(
-                                    Switch::new("pods-live-sync-switch")
-                                        .label("Live Watch")
-                                        .checked(live_sync_on)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.toggle_pod_live_sync(window, cx);
+                            .when(has_prev, |row| {
+                                row.child(
+                                    Button::new("tbl-first-page-btn")
+                                        .xsmall()
+                                        .outline()
+                                        .label("First Page")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.continue_token_history.clear();
+                                            this.current_continue_token = None;
+                                            this.load_resource_table(kind, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("tbl-prev-page-btn")
+                                        .xsmall()
+                                        .outline()
+                                        .label("Previous Page")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.current_continue_token =
+                                                this.continue_token_history.pop().flatten();
+                                            this.load_resource_table(kind, window, cx);
                                         })),
                                 )
                             })
-                            .when(view.creatable, |el| {
-                                let kind = view.kind;
-                                el.child(
-                                    Button::new("create-resource-btn")
-                                        .small()
+                            .when_some(next_token, |row, token| {
+                                row.child(
+                                    Button::new("tbl-next-page-btn")
+                                        .xsmall()
                                         .primary()
-                                        .icon(IconName::Plus)
-                                        .label(format!("Create {}", view.label))
+                                        .label("Next Page")
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_create_resource_modal(kind, window, cx);
+                                            let prev = this.current_continue_token.take();
+                                            this.continue_token_history.push(prev);
+                                            this.current_continue_token = Some(token.clone());
+                                            this.load_resource_table(kind, window, cx);
                                         })),
                                 )
                             }),
                     ),
             )
-            .when_some(self.creating_resource_kind, |el, kind| {
-                el.child(
-                    v_flex()
-                        .w_full()
-                        .h(px(260.0))
-                        .p_3()
-                        .gap_2()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .child(format!("Create {:?} from YAML", kind)),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_1p5()
-                                        .child(
-                                            Button::new("create-dry-run-btn")
-                                                .xsmall()
-                                                .outline()
-                                                .label("Server Dry-Run")
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.submit_create_resource(true, window, cx);
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("create-submit-btn")
-                                                .xsmall()
-                                                .primary()
-                                                .label("Create")
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.submit_create_resource(false, window, cx);
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("create-cancel-btn")
-                                                .xsmall()
-                                                .ghost()
-                                                .icon(IconName::Close)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.creating_resource_kind = None;
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                ),
-                        )
-                        .when_some(self.create_modal_message.clone(), |el, msg| {
-                            el.child(div().text_xs().child(msg))
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .w_full()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded(px(6.0))
-                                .overflow_hidden()
-                                .child(Editor::new(&self.create_yaml_editor).h_full()),
-                        ),
-                )
-            })
+            // Table Column Header
             .child(
-                v_flex()
-                    .flex_1()
+                h_flex()
                     .w_full()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .rounded(px(6.0))
+                    .bg(cx.theme().tokens.chrome)
                     .border_1()
                     .border_color(cx.theme().border)
-                    .rounded(px(8.0))
-                    .overflow_hidden()
+                    .child(
+                        div()
+                            .w(px(220.0))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Name"),
+                    )
+                    .when(show_ns, |el| {
+                        el.child(
+                            div()
+                                .w(px(120.0))
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Namespace"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(110.0))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Status"),
+                    )
+                    .children(cols.iter().map(|c| {
+                        div()
+                            .w(px(c.width))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(c.header)
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Actions"),
+                    ),
+            )
+            // Table Rows
+            .children(items.into_iter().enumerate().map(|(idx, item)| {
+                let reference = ResourceReference {
+                    kind,
+                    name: item.name.clone(),
+                    namespace: item.namespace.clone(),
+                    uid: item.uid.clone(),
+                };
+                let row_actions = self.render_row_actions(kind, &item, idx, cx);
+
+                h_flex()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        div()
+                            .w(px(220.0))
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(item.name.clone()),
+                    )
+                    .when(show_ns, |el| {
+                        el.child(
+                            div()
+                                .w(px(120.0))
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate()
+                                .child(item.namespace.clone().unwrap_or_default()),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(110.0))
+                            .child(row_status_tag(&item.status)),
+                    )
+                    .children(cols.iter().map(|c| {
+                        div()
+                            .w(px(c.width))
+                            .text_xs()
+                            .truncate()
+                            .child(item.columns.get(c.key).cloned().unwrap_or_else(|| "-".into()))
+                    }))
                     .child(
                         h_flex()
-                            .w_full()
-                            .px_3()
-                            .py_2()
-                            .bg(cx.theme().table_head)
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .children(view.columns.iter().map(|col| {
-                                div().w(px(col.width)).truncate().child(col.label)
-                            }))
-                            .child(div().w(px(140.0)).child("Actions")),
+                            .flex_1()
+                            .gap_1()
+                            .items_center()
+                            .child(row_actions)
+                            .child(
+                                Button::new(SharedString::from(format!("inspect-row-{idx}")))
+                                    .xsmall()
+                                    .outline()
+                                    .label("Inspect")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_resource_inspector(
+                                            reference.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    )
+            }))
+    }
+
+    fn render_row_actions(
+        &self,
+        kind: ResourceKind,
+        item: &ResourceItem,
+        idx: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_pod = kind == ResourceKind::Pods;
+        let can_restart = matches!(
+            kind,
+            ResourceKind::Deployments | ResourceKind::DaemonSets | ResourceKind::StatefulSets
+        );
+        let is_cronjob = kind == ResourceKind::CronJobs;
+        let is_service = kind == ResourceKind::Services;
+        let is_node = kind == ResourceKind::Nodes;
+        let is_crd = kind == ResourceKind::CustomResourceDefinitions;
+
+        let ns = item.namespace.clone().unwrap_or_default();
+        let name = item.name.clone();
+        let uid = item.uid.clone();
+        let rv = item.resource_version.clone();
+
+        let first_svc_port: Option<u16> = is_service
+            .then(|| {
+                item.columns
+                    .get("ports")
+                    .and_then(|s| s.split(',').next())
+                    .and_then(|p| p.trim().parse::<u16>().ok())
+            })
+            .flatten();
+
+        let node_schedulable = item
+            .node
+            .as_ref()
+            .map(|n| n.schedulable)
+            .unwrap_or(item.columns.get("schedulable").map(String::as_str) != Some("false"));
+
+        let crd_group = item.columns.get("group").cloned().unwrap_or_default();
+        let current_cid = self
+            .cluster_session
+            .as_ref()
+            .map(|s| s.cluster_id.clone())
+            .unwrap_or_default();
+
+        let ns_logs = ns.clone();
+        let name_logs = name.clone();
+        let ns_shell = ns.clone();
+        let name_shell = name.clone();
+        let del_target = uid.clone().zip(rv.clone()).map(|(u, r)| ResourceDeleteTarget {
+            kind,
+            name: name.clone(),
+            namespace: item.namespace.clone(),
+            uid: u,
+            resource_version: r,
+        });
+
+        h_flex()
+            .gap_1()
+            .items_center()
+            // Pod row quick actions: Logs & Shell
+            .when(is_pod, |row| {
+                row.child(
+                    Button::new(SharedString::from(format!("row-pod-logs-{idx}")))
+                        .xsmall()
+                        .primary()
+                        .label("Logs")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_pod_stream_for_pod(
+                                ns_logs.clone(),
+                                name_logs.clone(),
+                                PodStreamMode::Logs,
+                                window,
+                                cx,
+                            );
+                        })),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("row-pod-shell-{idx}")))
+                        .xsmall()
+                        .outline()
+                        .label("Shell")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_pod_stream_for_pod(
+                                ns_shell.clone(),
+                                name_shell.clone(),
+                                PodStreamMode::Shell,
+                                window,
+                                cx,
+                            );
+                        })),
+                )
+            })
+            // Workload row quick action: Restart
+            .when_some(
+                can_restart.then(|| uid.clone().zip(rv.clone())).flatten(),
+                |row, (u, r)| {
+                    let wref = ResourceReference {
+                        kind,
+                        name: name.clone(),
+                        namespace: item.namespace.clone(),
+                        uid: Some(u),
+                    };
+                    row.child(
+                        Button::new(SharedString::from(format!("row-wl-restart-{idx}")))
+                            .xsmall()
+                            .ghost()
+                            .label("Restart")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_workload_action_for(
+                                    wref.clone(),
+                                    r.clone(),
+                                    WorkloadAction::Restart,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                },
+            )
+            // CronJob row quick action: Trigger
+            .when_some(
+                is_cronjob.then(|| uid.clone().zip(rv.clone())).flatten(),
+                |row, (u, r)| {
+                    let cref = ResourceReference {
+                        kind,
+                        name: name.clone(),
+                        namespace: item.namespace.clone(),
+                        uid: Some(u),
+                    };
+                    row.child(
+                        Button::new(SharedString::from(format!("row-cj-trigger-{idx}")))
+                            .xsmall()
+                            .primary()
+                            .label("Trigger")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_workload_action_for(
+                                    cref.clone(),
+                                    r.clone(),
+                                    WorkloadAction::Trigger,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                },
+            )
+            // Service row quick action: Port-Forward first port
+            .when_some(
+                first_svc_port.zip(uid.clone().zip(rv.clone())),
+                |row, (port, (u, r))| {
+                    let sref = ResourceReference {
+                        kind: ResourceKind::Services,
+                        name: name.clone(),
+                        namespace: item.namespace.clone(),
+                        uid: Some(u),
+                    };
+                    row.child(
+                        Button::new(SharedString::from(format!("row-svc-fwd-{idx}")))
+                            .xsmall()
+                            .primary()
+                            .label(format!("Forward :{port}"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.start_service_forward_for(
+                                    sref.clone(),
+                                    r.clone(),
+                                    port,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                },
+            )
+            // Node row quick actions: Cordon/Uncordon + Drain
+            .when_some(
+                is_node.then(|| uid.clone().zip(rv.clone())).flatten(),
+                |row, (u, r)| {
+                    let nref = ResourceReference {
+                        kind: ResourceKind::Nodes,
+                        name: name.clone(),
+                        namespace: None,
+                        uid: Some(u),
+                    };
+                    let nref_drain = nref.clone();
+                    let r_drain = r.clone();
+                    let toggle_action = if node_schedulable {
+                        NodeAction::Cordon
+                    } else {
+                        NodeAction::Uncordon
+                    };
+                    let toggle_label = if node_schedulable {
+                        "Cordon"
+                    } else {
+                        "Uncordon"
+                    };
+                    row.child(
+                        Button::new(SharedString::from(format!("row-node-cordon-{idx}")))
+                            .xsmall()
+                            .ghost()
+                            .label(toggle_label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_node_action_for(
+                                    nref.clone(),
+                                    r.clone(),
+                                    toggle_action,
+                                    window,
+                                    cx,
+                                );
+                            })),
                     )
                     .child(
-                        v_flex()
-                            .flex_1()
-                            .w_full()
-                            .overflow_y_scrollbar()
-                            .children(items.into_iter().enumerate().map(|(idx, item)| {
-                                let reference = ResourceReference {
-                                    kind: view.kind,
-                                    namespace: item.namespace.clone(),
-                                    name: item.name.clone(),
-                                    uid: item.uid.clone(),
-                                };
-                                let del_item = item.clone();
-                                let kind = view.kind;
-                                let is_crd = kind == ResourceKind::CustomResourceDefinitions;
-                                let crd_name = item.name.clone();
-
-                                h_flex()
-                                    .id(SharedString::from(format!("res-row-{idx}")))
-                                    .w_full()
-                                    .px_3()
-                                    .py_2()
-                                    .border_b_1()
-                                    .border_color(cx.theme().border)
-                                    .items_center()
-                                    .text_xs()
-                                    .hover(|s| s.bg(cx.theme().table_hover))
-                                    .children(view.columns.iter().map(|col| {
-                                        div()
-                                            .w(px(col.width))
-                                            .truncate()
-                                            .child(cell_value(&item, col.key))
-                                    }))
-                                    .child(
-                                        h_flex()
-                                            .w(px(140.0))
-                                            .gap_1()
-                                            .items_center()
-                                            .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "inspect-row-{idx}"
-                                                )))
-                                                .xsmall()
-                                                .outline()
-                                                .label("Inspect")
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.open_resource_inspector(
-                                                        reference.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                })),
-                                            )
-                                            .when(is_crd, |el| {
-                                                el.child(
-                                                    Button::new(SharedString::from(format!(
-                                                        "crd-instances-{idx}"
-                                                    )))
-                                                    .xsmall()
-                                                    .primary()
-                                                    .label("Instances")
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.active_cluster_section =
-                                                                format!("crd:{crd_name}");
-                                                            this.refresh_active_cluster_view(
-                                                                window, cx,
-                                                            );
-                                                            cx.notify();
-                                                        },
-                                                    )),
-                                                )
-                                            })
-                                            .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "delete-row-{idx}"
-                                                )))
-                                                .xsmall()
-                                                .ghost()
-                                                .icon(IconName::Delete)
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.delete_resource_row(
-                                                        kind,
-                                                        del_item.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                })),
-                                            ),
-                                    )
+                        Button::new(SharedString::from(format!("row-node-drain-{idx}")))
+                            .xsmall()
+                            .danger()
+                            .label("Drain")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.review_node_drain_for(
+                                    nref_drain.clone(),
+                                    r_drain.clone(),
+                                    window,
+                                    cx,
+                                );
                             })),
-                    ),
+                    )
+                },
+            )
+            // CRD row quick action: View Instances
+            .when(is_crd && !crd_group.is_empty(), |row| {
+                let target_sec = format!("custom-resources/{crd_group}/{}", item.name);
+                let cid = current_cid;
+                row.child(
+                    Button::new(SharedString::from(format!("row-crd-inst-{idx}")))
+                        .xsmall()
+                        .primary()
+                        .label("Instances")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if !cid.is_empty() {
+                                this.navigate(
+                                    Route::Cluster {
+                                        cluster_id: cid.clone(),
+                                        section: target_sec.clone(),
+                                    },
+                                    true,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        })),
+                )
+            })
+            // Delete row button (for resources with UID + resourceVersion)
+            .when_some(
+                del_target.filter(|_| kind != ResourceKind::Nodes),
+                |row, target| {
+                    row.child(
+                        Button::new(SharedString::from(format!("row-del-{idx}")))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Delete)
+                            .tooltip("Delete resource")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.delete_resource_by_target(target.clone(), window, cx);
+                            })),
+                    )
+                },
             )
     }
 
     fn render_helm_body(
-        &mut self,
+        &self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let page = self.helm_page.clone();
-        let install_chart = self.helm_install_chart.clone();
+        let items = self
+            .helm_page
+            .as_ref()
+            .map(|p| p.items.clone())
+            .unwrap_or_default();
+        let view = self
+            .helm_page
+            .as_ref()
+            .map(|p| p.view)
+            .unwrap_or(HelmView::Charts);
 
         v_flex()
-            .flex_1()
+            .w_full()
             .p_4()
             .gap_3()
-            .overflow_hidden()
-            .when_some(install_chart, |el, chart_name| {
+            .when_some(self.helm_install_chart.clone(), |el, chart| {
                 el.child(
                     v_flex()
                         .w_full()
-                        .h(px(260.0))
                         .p_3()
                         .gap_2()
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
+                        .bg(cx.theme().tokens.elevated_surface)
                         .child(
                             h_flex()
-                                .items_center()
                                 .justify_between()
+                                .items_center()
                                 .child(
                                     div()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .child(format!("Install Helm Chart: {chart_name}")),
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(format!("Install Helm Chart · {chart}")),
                                 )
                                 .child(
                                     h_flex()
-                                        .gap_1p5()
-                                        .child(
-                                            div().w(px(140.0)).child(
-                                                Input::new(&self.helm_release_name_input).xsmall(),
-                                            ),
-                                        )
-                                        .child(
-                                            div().w(px(120.0)).child(
-                                                Input::new(&self.helm_namespace_input).xsmall(),
-                                            ),
-                                        )
+                                        .gap_2()
                                         .child(
                                             Button::new("helm-dry-run-btn")
                                                 .xsmall()
@@ -1689,16 +2154,16 @@ impl IceonApp {
                                                 })),
                                         )
                                         .child(
-                                            Button::new("helm-install-btn")
+                                            Button::new("helm-install-submit-btn")
                                                 .xsmall()
                                                 .primary()
-                                                .label("Install")
+                                                .label("Install Release")
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.submit_helm_install(false, window, cx);
                                                 })),
                                         )
                                         .child(
-                                            Button::new("helm-cancel-install-btn")
+                                            Button::new("helm-install-close-btn")
                                                 .xsmall()
                                                 .ghost()
                                                 .icon(IconName::Close)
@@ -1709,181 +2174,290 @@ impl IceonApp {
                                         ),
                                 ),
                         )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .w(px(220.0))
+                                        .child(Input::new(&self.helm_release_name_input).small()),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(180.0))
+                                        .child(Input::new(&self.helm_namespace_input).small()),
+                                ),
+                        )
                         .when_some(self.helm_install_message.clone(), |el, msg| {
                             el.child(div().text_xs().child(msg))
                         })
                         .child(
                             div()
-                                .flex_1()
+                                .h(px(180.0))
                                 .w_full()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded(px(6.0))
-                                .overflow_hidden()
-                                .child(Editor::new(&self.helm_values_editor).h_full()),
+                                .child(Input::new(&self.helm_values_editor).h_full()),
                         ),
                 )
             })
-            .child(if let Some(page) = page {
-                let view = page.view;
-                v_flex()
-                    .flex_1()
-                    .w_full()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(px(8.0))
-                    .overflow_y_scrollbar()
-                    .children(page.items.into_iter().enumerate().map(|(idx, item)| {
-                        let name = item.name.clone();
-                        let ns = item.namespace.clone();
-                        let ver = item.version.clone();
-                        let inst_name = item.name.clone();
-                        let inst_ver = item.version.clone();
+            .children(items.into_iter().enumerate().map(|(idx, item)| {
+                let name = item.name.clone();
+                let ns = item.namespace.clone();
+                let ver = item.version.clone();
+                let name_install = name.clone();
+                let ver_install = ver.clone();
 
-                        h_flex()
-                            .id(SharedString::from(format!("helm-row-{idx}")))
-                            .w_full()
-                            .px_4()
-                            .py_2p5()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .items_center()
-                            .justify_between()
-                            .text_xs()
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .items_center()
-                                    .child(div().w(px(220.0)).font_semibold().child(item.name))
-                                    .child(div().w(px(120.0)).child(item.version))
-                                    .child(
-                                        div()
-                                            .w(px(120.0))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(item.namespace.unwrap_or_else(|| "repo".into())),
-                                    )
-                                    .when_some(item.status, |el, st| {
-                                        el.child(Tag::secondary().child(st))
-                                    }),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1p5()
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "helm-inspect-{idx}"
-                                        )))
-                                        .xsmall()
-                                        .outline()
-                                        .label("Details")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_helm_inspector(
-                                                view,
-                                                name.clone(),
-                                                ns.clone(),
-                                                (view == HelmView::Charts).then(|| ver.clone()),
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                    )
-                                    .when(view == HelmView::Charts, |el| {
-                                        el.child(
-                                            Button::new(SharedString::from(format!(
-                                                "helm-open-install-{idx}"
-                                            )))
-                                            .xsmall()
-                                            .primary()
-                                            .label("Install")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.helm_install_chart = Some(inst_name.clone());
-                                                this.helm_install_version = Some(inst_ver.clone());
-                                                this.helm_values_editor.update(cx, |ed, cx| {
-                                                    ed.set_value("replicaCount: 1\n", window, cx);
-                                                });
-                                                cx.notify();
-                                            })),
-                                        )
-                                    }),
-                            )
-                    }))
-                    .into_any_element()
-            } else {
-                v_flex()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No Helm entries loaded.")
-                    .into_any_element()
-            })
-    }
-
-    fn render_port_forwards_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let forwards = self.port_forwards.clone();
-        v_flex()
-            .flex_1()
-            .p_4()
-            .gap_3()
-            .overflow_y_scrollbar()
-            .child(div().text_sm().font_semibold().child("Active Port Forwards"))
-            .children(forwards.into_iter().map(|fwd| {
-                let id = fwd.id.clone();
                 h_flex()
                     .w_full()
                     .p_3()
-                    .rounded(px(6.0))
+                    .justify_between()
+                    .items_center()
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .items_center()
-                    .justify_between()
-                    .text_xs()
-                    .child(div().font_medium().child(format!(
-                        "{}/{} · 127.0.0.1:{} -> :{}",
-                        fwd.namespace, fwd.name, fwd.local_port, fwd.remote_port
-                    )))
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(item.name.clone()),
+                                    )
+                                    .child(Tag::secondary().small().child(item.version.clone()))
+                                    .when_some(item.status.clone(), |el, st| {
+                                        el.child(row_status_tag(&st))
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        item.description
+                                            .or(item.namespace)
+                                            .unwrap_or_else(|| "-".into()),
+                                    ),
+                            ),
+                    )
                     .child(
                         h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(Tag::success().child(fwd.status))
+                            .gap_1p5()
+                            .when(view == HelmView::Charts, |el| {
+                                el.child(
+                                    Button::new(SharedString::from(format!("helm-inst-{idx}")))
+                                        .xsmall()
+                                        .primary()
+                                        .label("Install")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.helm_install_chart = Some(name_install.clone());
+                                            this.helm_install_version = Some(ver_install.clone());
+                                            this.helm_install_message = None;
+                                            cx.notify();
+                                        })),
+                                )
+                            })
                             .child(
-                                Button::new(SharedString::from(format!("stop-fwd-{id}")))
+                                Button::new(SharedString::from(format!("helm-detail-{idx}")))
                                     .xsmall()
-                                    .danger()
-                                    .label("Stop")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.stop_port_forward(id.clone(), cx);
+                                    .outline()
+                                    .label("Details")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_helm_inspector(
+                                            view,
+                                            name.clone(),
+                                            ns.clone(),
+                                            (view == HelmView::Charts).then(|| ver.clone()),
+                                            window,
+                                            cx,
+                                        );
                                     })),
                             ),
                     )
             }))
     }
 
-    fn render_rbac_users_body(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let users: Option<RbacUsersResponse> = self.rbac_users_response.clone();
-        let mgmt: Option<ManagementSnapshot> = self.rbac_management_snapshot.clone();
-        let plan: Option<UserPlan> = self.rbac_active_plan.clone();
+    fn render_custom_resources_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let defs = self
+            .custom_definitions_page
+            .as_ref()
+            .map(|p| p.items.clone())
+            .unwrap_or_default();
+        let instances = self.custom_instances_page.clone();
 
         v_flex()
-            .flex_1()
+            .w_full()
             .p_4()
             .gap_4()
-            .overflow_y_scrollbar()
             .child(
-                h_flex()
-                    .items_center()
-                    .justify_between()
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
                     .child(
                         div()
                             .text_sm()
-                            .font_semibold()
-                            .child("Managed RBAC ServiceAccounts & Subjects"),
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Custom Resource Definitions ({})", defs.len())),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .flex_wrap()
+                            .children(defs.into_iter().enumerate().map(|(idx, def)| {
+                                let crd_name = def.name.clone();
+                                let inspect_ref = ResourceReference {
+                                    kind: ResourceKind::CustomResourceDefinitions,
+                                    name: def.name.clone(),
+                                    namespace: None,
+                                    uid: def.uid.clone(),
+                                };
+                                h_flex()
+                                    .gap_0p5()
+                                    .items_center()
+                                    .child(
+                                        Button::new(SharedString::from(format!("crd-select-{idx}")))
+                                            .xsmall()
+                                            .outline()
+                                            .label(def.name)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.load_crd_instances_only(
+                                                    crd_name.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "crd-inspect-{idx}"
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Spec")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_resource_inspector(
+                                                inspect_ref.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        })),
+                                    )
+                            })),
+                    ),
+            )
+            .when_some(instances, |el, page: CustomResourcePage| {
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_2()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!(
+                                    "{} ({}/{}) · {} instances",
+                                    page.kind,
+                                    page.group,
+                                    page.version,
+                                    page.items.len()
+                                )),
+                        )
+                        .children(page.items.into_iter().map(|inst| {
+                            h_flex()
+                                .w_full()
+                                .py_1p5()
+                                .justify_between()
+                                .items_center()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(inst.name),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .when_some(inst.namespace, |el, ns| {
+                                            el.child(Tag::secondary().small().child(ns))
+                                        })
+                                        .child(row_status_tag(&inst.status)),
+                                )
+                        })),
+                )
+            })
+    }
+
+    fn render_rbac_users_body(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let subjects = self
+            .rbac_users_response
+            .as_ref()
+            .map(|r| r.items.clone())
+            .unwrap_or_default();
+        let coverage = self
+            .rbac_users_response
+            .as_ref()
+            .map(|r| r.coverage.clone())
+            .unwrap_or_default();
+        let mgmt = self.rbac_management_snapshot.clone();
+        let selected_templates = self.rbac_selected_templates.clone();
+        let cluster_access = self.rbac_selected_cluster_access.clone();
+        let all_ns = self.rbac_all_namespaces;
+
+        v_flex()
+            .w_full()
+            .p_4()
+            .gap_4()
+            // Managed ServiceAccount User Builder & Template Selector
+            .child(
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_2p5()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Managed ServiceAccount Users & Permission Planner"),
+                            )
+                            .child(
+                                h_flex().gap_1().children(coverage.into_iter().map(|cov| {
+                                    let badge = if cov.state == "complete" {
+                                        Tag::success().small()
+                                    } else {
+                                        Tag::warning().small()
+                                    };
+                                    badge.child(format!("{}: {}", cov.resource, cov.state))
+                                })),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -1891,147 +2465,439 @@ impl IceonApp {
                             .items_center()
                             .child(
                                 div()
-                                    .w(px(200.0))
+                                    .w(px(240.0))
                                     .child(Input::new(&self.rbac_new_user_input).small()),
                             )
                             .child(
-                                Button::new("rbac-plan-user-btn")
-                                    .small()
+                                Button::new("rbac-scope-toggle")
+                                    .xsmall()
+                                    .ghost()
+                                    .selected(all_ns)
+                                    .label(if all_ns {
+                                        "Scope: All Namespaces"
+                                    } else {
+                                        "Scope: Current Namespace"
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.rbac_all_namespaces = !this.rbac_all_namespaces;
+                                        cx.notify();
+                                    })),
+                            )
+                            .children(
+                                [
+                                    (ClusterAccess::None, "Cluster: None"),
+                                    (ClusterAccess::Read, "Cluster: Read"),
+                                    (ClusterAccess::Write, "Cluster: Write"),
+                                ]
+                                .into_iter()
+                                .map(|(lvl, label)| {
+                                    let active = cluster_access == lvl;
+                                    Button::new(SharedString::from(format!(
+                                        "rbac-cluster-lvl-{label}"
+                                    )))
+                                    .xsmall()
+                                    .ghost()
+                                    .selected(active)
+                                    .label(label)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.rbac_selected_cluster_access = lvl.clone();
+                                        cx.notify();
+                                    }))
+                                }),
+                            )
+                            .child(
+                                Button::new("rbac-plan-create-btn")
+                                    .xsmall()
                                     .primary()
-                                    .label("Dry-Run Create Plan")
+                                    .label("Preview Create Plan")
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.plan_managed_rbac_user(window, cx);
+                                        this.create_rbac_user_plan(window, cx);
                                     })),
                             ),
-                    ),
-            )
-            .when_some(plan, |el, p| {
-                let plan_id = p.plan_id.clone();
-                el.child(
-                    v_flex()
-                        .p_3()
-                        .gap_2()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().primary)
-                        .bg(cx.theme().secondary)
-                        .text_xs()
-                        .child(div().font_semibold().child(format!(
-                            "Server Dry-Run Plan Ready for '{}': {} step(s)",
-                            p.user.name,
-                            p.steps.len()
-                        )))
-                        .child(
-                            Button::new("rbac-apply-plan-btn")
-                                .xsmall()
-                                .primary()
-                                .label("Apply Plan")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.apply_managed_rbac_plan(plan_id.clone(), window, cx);
-                                })),
-                        ),
-                )
-            })
-            .when_some(mgmt, |el, m| {
-                el.child(
-                    v_flex()
-                        .gap_2()
-                        .child(
-                            div().text_xs().font_semibold().child(format!(
-                                "Managed ServiceAccounts in '{}' ({}) · Templates ({})",
-                                m.namespace,
-                                m.users.len(),
-                                m.templates.len()
-                            )),
-                        )
-                        .children(m.users.into_iter().map(|u| {
-                            h_flex()
-                                .justify_between()
-                                .p_2()
+                    )
+                    .when_some(mgmt.clone(), |el, snap| {
+                        let ns_templates: Vec<_> = snap
+                            .templates
+                            .iter()
+                            .filter(|t| t.scope == "namespaced")
+                            .cloned()
+                            .collect();
+                        el.when(!ns_templates.is_empty(), |card| {
+                            card.child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Templates:"),
+                                    )
+                                    .children(ns_templates.into_iter().map(|tpl| {
+                                        let tname = tpl.name.clone();
+                                        let selected = selected_templates.contains(&tname);
+                                        Button::new(SharedString::from(format!(
+                                            "rbac-tpl-toggle-{tname}"
+                                        )))
+                                        .xsmall()
+                                        .outline()
+                                        .selected(selected)
+                                        .label(format!("{} ({} rules)", tpl.name, tpl.rules.len()))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(pos) = this
+                                                .rbac_selected_templates
+                                                .iter()
+                                                .position(|x| x == &tname)
+                                            {
+                                                this.rbac_selected_templates.remove(pos);
+                                            } else {
+                                                this.rbac_selected_templates.push(tname.clone());
+                                            }
+                                            cx.notify();
+                                        }))
+                                    })),
+                            )
+                        })
+                        .when(!snap.users.is_empty(), |card| {
+                            card.child(
+                                v_flex()
+                                    .w_full()
+                                    .gap_1p5()
+                                    .pt_2()
+                                    .border_t_1()
+                                    .border_color(cx.theme().border)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(format!(
+                                                "Managed ServiceAccount Users ({})",
+                                                snap.users.len()
+                                            )),
+                                    )
+                                    .children(snap.users.into_iter().enumerate().map(
+                                        |(uidx, u)| {
+                                            let u_del = u.clone();
+                                            let sa_ref = ResourceReference {
+                                                kind: ResourceKind::ServiceAccounts,
+                                                name: u.name.clone(),
+                                                namespace: Some(u.namespace.clone()),
+                                                uid: u.uid.clone(),
+                                            };
+                                            h_flex()
+                                                .justify_between()
+                                                .items_center()
+                                                .p_2()
+                                                .rounded(px(6.0))
+                                                .border_1()
+                                                .border_color(cx.theme().border)
+                                                .bg(cx.theme().tokens.surface)
+                                                .child(
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .items_center()
+                                                        .child(
+                                                            div()
+                                                                .text_xs()
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .child(format!(
+                                                                    "{}/{}",
+                                                                    u.namespace, u.name
+                                                                )),
+                                                        )
+                                                        .child(
+                                                            Tag::secondary().small().child(
+                                                                format!(
+                                                                    "{} templates · cluster {:?}",
+                                                                    u.assignments.len(),
+                                                                    u.cluster_access
+                                                                ),
+                                                            ),
+                                                        ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_1()
+                                                        .child(
+                                                            Button::new(SharedString::from(
+                                                                format!("managed-sa-insp-{uidx}"),
+                                                            ))
+                                                            .xsmall()
+                                                            .ghost()
+                                                            .label("Inspect SA")
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.open_resource_inspector(
+                                                                        sa_ref.clone(),
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new(SharedString::from(
+                                                                format!("managed-sa-del-{uidx}"),
+                                                            ))
+                                                            .xsmall()
+                                                            .danger()
+                                                            .label("Plan Delete")
+                                                            .on_click(cx.listener(
+                                                                move |this, _, window, cx| {
+                                                                    this.plan_existing_rbac_user(
+                                                                        u_del.clone(),
+                                                                        PlanOperation::Delete,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                },
+                                                            )),
+                                                        ),
+                                                )
+                                        },
+                                    )),
+                            )
+                        })
+                    })
+                    .when_some(self.rbac_active_plan.clone(), |el, plan| {
+                        let pid = plan.plan_id.clone();
+                        el.child(
+                            v_flex()
+                                .p_2p5()
+                                .gap_1p5()
                                 .rounded(px(6.0))
                                 .border_1()
                                 .border_color(cx.theme().border)
-                                .text_xs()
-                                .child(div().font_medium().child(format!(
-                                    "{}/{}",
-                                    u.namespace, u.name
-                                )))
+                                .bg(cx.theme().tokens.surface)
                                 .child(
-                                    Tag::secondary()
-                                        .child(format!("{} assignment(s)", u.assignments.len())),
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(format!(
+                                                    "Dry-Run Verified Plan {:?} for {}/{} ({} steps)",
+                                                    plan.operation,
+                                                    plan.user.namespace,
+                                                    plan.user.name,
+                                                    plan.steps.len()
+                                                )),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .gap_1p5()
+                                                .child(
+                                                    Button::new("rbac-apply-plan-btn")
+                                                        .xsmall()
+                                                        .primary()
+                                                        .label("Apply Plan")
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.apply_rbac_user_plan(
+                                                                    pid.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                )
+                                                .child(
+                                                    Button::new("rbac-discard-plan-btn")
+                                                        .xsmall()
+                                                        .ghost()
+                                                        .label("Discard")
+                                                        .on_click(cx.listener(
+                                                            |this, _, _, cx| {
+                                                                this.rbac_active_plan = None;
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                ),
+                                        ),
                                 )
-                        })),
-                )
-            })
-            .when_some(users, |el, resp| {
-                el.child(
-                    v_flex()
-                        .gap_1p5()
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_semibold()
-                                .child(format!("Cluster RBAC Subjects ({})", resp.items.len())),
-                        )
-                        .children(resp.items.into_iter().take(50).map(|subj| {
-                            h_flex()
-                                .justify_between()
-                                .p_2()
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .text_xs()
-                                .child(div().font_medium().child(format!(
-                                    "[{}] {}",
-                                    subj.kind, subj.name
-                                )))
-                                .child(
+                                .children(plan.steps.iter().map(|step| {
                                     div()
+                                        .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{} binding(s)", subj.bindings.len())),
+                                        .child(format!(
+                                            "• {:?} {} {}",
+                                            step.operation, step.kind, step.name
+                                        ))
+                                }))
+                                .children(plan.warnings.iter().map(|w| {
+                                    div().text_xs().text_color(cx.theme().warning).child(w.clone())
+                                })),
+                        )
+                    })
+                    .when_some(self.rbac_apply_response.clone(), |el, applied| {
+                        el.child(
+                            v_flex()
+                                .p_2p5()
+                                .gap_1()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(format!(
+                                                    "Plan Execution {:?} · Complete: {}",
+                                                    applied.operation, applied.complete
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new("dismiss-rbac-apply-res")
+                                                .xsmall()
+                                                .ghost()
+                                                .icon(IconName::Close)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.rbac_apply_response = None;
+                                                    cx.notify();
+                                                })),
+                                        ),
                                 )
-                        })),
-                )
-            })
-    }
-
-    fn render_custom_instances_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let page: Option<CustomResourcePage> = self.custom_instances_page.clone();
-        v_flex()
-            .flex_1()
-            .p_4()
-            .gap_3()
-            .overflow_y_scrollbar()
-            .child(if let Some(page) = page {
+                                .children(applied.results.iter().map(|r| {
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            div().text_xs().child(format!(
+                                                "{:?} {} {}",
+                                                r.operation, r.kind, r.name
+                                            )),
+                                        )
+                                        .child(row_status_tag(&r.state))
+                                })),
+                        )
+                    }),
+            )
+            // Discovered RBAC Subjects & Effective RoleBindings
+            .child(
                 v_flex()
+                    .w_full()
                     .gap_2()
-                    .child(div().text_sm().font_semibold().child(format!(
-                        "{} ({}/{})",
-                        page.kind, page.group, page.version
-                    )))
-                    .children(page.items.into_iter().map(|item| {
-                        h_flex()
-                            .justify_between()
-                            .p_2p5()
-                            .rounded(px(6.0))
+                    .children(subjects.into_iter().map(|subj| {
+                        v_flex()
+                            .w_full()
+                            .p_3()
+                            .gap_1p5()
+                            .rounded(px(8.0))
                             .border_1()
                             .border_color(cx.theme().border)
-                            .text_xs()
-                            .child(div().font_medium().child(item.name))
+                            .bg(cx.theme().tokens.elevated_surface)
                             .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(item.namespace.unwrap_or_else(|| "Cluster".into())),
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(Tag::secondary().small().child(subj.kind))
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(subj.name),
+                                            )
+                                            .when_some(subj.namespace, |el, ns| {
+                                                el.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(format!("ns: {ns}")),
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        Tag::secondary()
+                                            .small()
+                                            .child(format!("{} bindings", subj.bindings.len())),
+                                    ),
                             )
-                            .child(div().child(format_age(item.created_at.as_deref())))
-                    }))
-                    .into_any_element()
-            } else {
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Select a CustomResourceDefinition to inspect its instances.")
-                    .into_any_element()
-            })
+                            .children(subj.bindings.into_iter().take(8).map(|b| {
+                                h_flex()
+                                    .justify_between()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("{} · {}", b.kind, b.name))
+                                    .child(format!("→ {}/{}", b.role_ref.kind, b.role_ref.name))
+                            }))
+                    })),
+            )
+    }
+}
+
+fn row_status_tag(status: &str) -> Tag {
+    let lower = status.to_lowercase();
+    if lower.contains("running")
+        || lower.contains("ready")
+        || lower.contains("active")
+        || lower.contains("bound")
+        || lower.contains("complete")
+        || lower.contains("succeeded")
+        || lower.contains("deployed")
+        || lower.contains("applied")
+        || lower == "true"
+    {
+        Tag::success().small().child(status.to_owned())
+    } else if lower.contains("pending")
+        || lower.contains("terminating")
+        || lower.contains("warning")
+    {
+        Tag::warning().small().child(status.to_owned())
+    } else if lower.contains("fail")
+        || lower.contains("error")
+        || lower.contains("crash")
+        || lower == "false"
+    {
+        Tag::danger().small().child(status.to_owned())
+    } else {
+        Tag::secondary().small().child(status.to_owned())
+    }
+}
+
+pub fn default_yaml_template(kind: ResourceKind, namespace: &str) -> String {
+    let (api_version, kind_name) = iceon_core::connection::create::creation_info(kind);
+    if namespaced_kind(kind) {
+        format!(
+            "apiVersion: {api_version}\nkind: {kind_name}\nmetadata:\n  name: example-{}\n  namespace: {namespace}\n",
+            kind_name.to_lowercase()
+        )
+    } else {
+        format!(
+            "apiVersion: {api_version}\nkind: {kind_name}\nmetadata:\n  name: example-{}\n",
+            kind_name.to_lowercase()
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_and_templates_cover_core_resource_kinds() {
+        assert!(!columns_for_kind(ResourceKind::Pods).is_empty());
+        assert!(!columns_for_kind(ResourceKind::Nodes).is_empty());
+        assert!(!columns_for_kind(ResourceKind::Deployments).is_empty());
+        assert!(!columns_for_kind(ResourceKind::Services).is_empty());
+        assert!(!columns_for_kind(ResourceKind::CustomResourceDefinitions).is_empty());
+
+        let pod_yaml = default_yaml_template(ResourceKind::Pods, "team-a");
+        assert!(pod_yaml.contains("kind: Pod"));
+        assert!(pod_yaml.contains("namespace: team-a"));
+
+        let node_yaml = default_yaml_template(ResourceKind::Nodes, "team-a");
+        assert!(node_yaml.contains("kind: Node"));
+        assert!(!node_yaml.contains("namespace:"));
     }
 }

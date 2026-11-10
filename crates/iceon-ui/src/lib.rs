@@ -81,6 +81,8 @@ pub struct IceonApp {
 
     pub(crate) overview_snapshot: OverviewSnapshot,
     pub(crate) resource_page: Option<ResourcePage>,
+    pub(crate) current_continue_token: Option<String>,
+    pub(crate) continue_token_history: Vec<Option<String>>,
     pub(crate) active_pod_sync_id: Option<String>,
     pub(crate) creating_resource_kind: Option<ResourceKind>,
     pub(crate) create_modal_message: Option<String>,
@@ -96,6 +98,12 @@ pub struct IceonApp {
     pub(crate) rbac_users_response: Option<RbacUsersResponse>,
     pub(crate) rbac_management_snapshot: Option<ManagementSnapshot>,
     pub(crate) rbac_active_plan: Option<UserPlan>,
+    pub(crate) rbac_apply_response:
+        Option<iceon_core::connection::rbac_management::ApplyResponse>,
+    pub(crate) rbac_selected_templates: Vec<String>,
+    pub(crate) rbac_selected_cluster_access:
+        iceon_core::connection::rbac_management::ClusterAccess,
+    pub(crate) rbac_all_namespaces: bool,
 
     pub(crate) inspector: InspectorState,
     pub(crate) pod_dock_open: bool,
@@ -112,6 +120,7 @@ pub struct IceonApp {
     pub(crate) scale_replicas_input: Entity<InputState>,
     pub(crate) service_port_input: Entity<InputState>,
     pub(crate) pod_terminal_input: Entity<InputState>,
+    pub(crate) pod_log_filter_input: Entity<InputState>,
     pub(crate) helm_release_name_input: Entity<InputState>,
     pub(crate) helm_namespace_input: Entity<InputState>,
     pub(crate) rbac_new_user_input: Entity<InputState>,
@@ -192,6 +201,8 @@ impl IceonApp {
             cx.new(|cx| InputState::new(window, cx).default_value("80"));
         let pod_terminal_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Enter shell command..."));
+        let pod_log_filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter log lines..."));
         let helm_release_name_input =
             cx.new(|cx| InputState::new(window, cx).default_value("my-release"));
         let helm_namespace_input =
@@ -304,6 +315,8 @@ impl IceonApp {
             operation_counter: 1,
             overview_snapshot: OverviewSnapshot::default(),
             resource_page: None,
+            current_continue_token: None,
+            continue_token_history: vec![],
             active_pod_sync_id: None,
             creating_resource_kind: None,
             create_modal_message: None,
@@ -316,6 +329,11 @@ impl IceonApp {
             rbac_users_response: None,
             rbac_management_snapshot: None,
             rbac_active_plan: None,
+            rbac_apply_response: None,
+            rbac_selected_templates: vec![],
+            rbac_selected_cluster_access:
+                iceon_core::connection::rbac_management::ClusterAccess::None,
+            rbac_all_namespaces: false,
             inspector: InspectorState::default(),
             pod_dock_open: false,
             pod_dock_tabs: vec![],
@@ -328,6 +346,7 @@ impl IceonApp {
             scale_replicas_input,
             service_port_input,
             pod_terminal_input,
+            pod_log_filter_input,
             helm_release_name_input,
             helm_namespace_input,
             rbac_new_user_input,

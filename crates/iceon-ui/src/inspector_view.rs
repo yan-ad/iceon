@@ -1,36 +1,50 @@
-//! Resource Inspector view: right-hand resizable panel displaying `ResourceDetail`, `PodDetails`,
-//! and `HelmDetail`, with actions for workloads, nodes, services, YAML editing, and related collections.
+//! Right-hand Resource & Helm Inspector drawer with Summary, Metadata, Related, Events, and YAML tabs.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, Input},
+    input::Input,
     scroll::ScrollableElement as _,
     tag::Tag,
-    tab::{Tab, TabBar},
-    v_flex, IconName,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::IceonApp;
-use crate::navigation::{connection_error_message, format_age};
 use iceon_core::connection::{
-    ResourceKind,
-    detail_collections::{CollectionKind, CollectionRequest, ResourceCollection},
+    NodeInfo, ResourceKind,
+    delete::{DeleteRequest, ResourceDeleteTarget},
+    detail_collections::{
+        CollectionKind, CollectionRequest, CollectionState, ResourceCollection, supported_collections,
+    },
     details::{DetailRequest, ResourceDetail, ResourceReference},
     helm::{HelmDetail, HelmDetailRequest, HelmView},
     node_actions::{NodeAction, NodeActionRequest},
-    node_drain::{DrainExecuteRequest, DrainReview, DrainReviewRequest, DrainResult},
+    node_drain::{
+        DrainDisposition, DrainExecuteRequest, DrainOutcomeState, DrainResult, DrainReview,
+        DrainReviewRequest, DrainState,
+    },
     pod_runtime::PodStreamMode,
-    pods::{PodAction, PodDetails, PodMutationRequest, PodRequest},
-    resource_edit::{EditMode, EditRequest},
+    pods::{PodAction, PodDetails, PodEventsState, PodIdentity, PodMutationRequest},
+    resource_edit::{EditApplyRequest, EditLoadRequest, ResourceEditLoad},
     service_forward::ServiceForwardRequest,
-    workload_actions::{WorkflowRequest, WorkloadAction},
+    workload_actions::{WorkloadAction, WorkflowRequest},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::IceonApp;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum InspectorTab {
+    #[default]
+    Summary,
+    Metadata,
+    Relations,
+    Events,
+    Yaml,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InspectorTarget {
     Resource(ResourceReference),
     Helm {
@@ -41,29 +55,20 @@ pub enum InspectorTarget {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InspectorTab {
-    Summary,
-    Metadata,
-    Relations,
-    Yaml,
-}
-
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct InspectorState {
     pub target: Option<InspectorTarget>,
-    pub tab: Option<InspectorTab>,
-    pub detail: Option<ResourceDetail>,
-    pub pod_detail: Option<PodDetails>,
-    pub helm_detail: Option<HelmDetail>,
-    pub collections: Vec<ResourceCollection>,
-    pub edit_yaml: Option<String>,
-    pub edit_resource_version: Option<String>,
-    pub drain_review: Option<DrainReview>,
-    pub drain_result: Option<DrainResult>,
+    pub tab: InspectorTab,
     pub loading: bool,
     pub error: Option<String>,
-    pub status_banner: Option<String>,
+    pub action_message: Option<String>,
+    pub detail: Option<ResourceDetail>,
+    pub pod_detail: Option<PodDetails>,
+    pub collections: Vec<ResourceCollection>,
+    pub edit_load: Option<ResourceEditLoad>,
+    pub helm_detail: Option<HelmDetail>,
+    pub drain_review: Option<DrainReview>,
+    pub drain_result: Option<DrainResult>,
 }
 
 impl IceonApp {
@@ -74,16 +79,96 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) {
         self.inspector.target = Some(InspectorTarget::Resource(reference.clone()));
-        self.inspector.tab = Some(InspectorTab::Summary);
+        self.inspector.loading = true;
+        self.inspector.error = None;
+        self.inspector.action_message = None;
         self.inspector.detail = None;
         self.inspector.pod_detail = None;
-        self.inspector.helm_detail = None;
         self.inspector.collections.clear();
+        self.inspector.edit_load = None;
+        self.inspector.helm_detail = None;
         self.inspector.drain_review = None;
         self.inspector.drain_result = None;
-        self.inspector.error = None;
-        self.inspector.status_banner = None;
-        self.refresh_inspector(window, cx);
+        cx.notify();
+
+        let Some(session) = self.cluster_session.clone() else {
+            self.inspector.loading = false;
+            self.inspector.error = Some("No active cluster session.".into());
+            cx.notify();
+            return;
+        };
+
+        let read_id = self.next_operation_id();
+        let connection = self.connection.clone();
+        let req = DetailRequest {
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
+            read_id,
+            reference: reference.clone(),
+        };
+
+        let is_pod = reference.kind == ResourceKind::Pods;
+        let pod_ns = reference.namespace.clone().unwrap_or_default();
+        let pod_name = reference.name.clone();
+        let pod_read_id = self.next_operation_id();
+        let col_kinds = supported_collections(reference.kind).to_vec();
+        let col_requests: Vec<CollectionRequest> = col_kinds
+            .into_iter()
+            .map(|collection| CollectionRequest {
+                cluster_id: session.cluster_id.clone(),
+                session_id: session.session_id.clone(),
+                read_id: self.next_operation_id(),
+                target: reference.clone(),
+                collection,
+            })
+            .collect();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let detail_res = connection.resource_detail(req).await;
+            let pod_res = if is_pod {
+                Some(
+                    connection
+                        .pod_detail(PodIdentity {
+                            cluster_id: session.cluster_id.clone(),
+                            session_id: session.session_id.clone(),
+                            namespace: pod_ns,
+                            name: pod_name,
+                            read_id: pod_read_id,
+                        })
+                        .await,
+                )
+            } else {
+                None
+            };
+
+            let mut collections = Vec::new();
+            for creq in col_requests {
+                if let Ok(col) = connection.resource_detail_collection(creq).await {
+                    collections.push(col);
+                }
+            }
+
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.inspector.loading = false;
+                match detail_res {
+                    Ok(detail) => {
+                        this.inspector.detail = Some(detail);
+                    }
+                    Err(err) => {
+                        this.inspector.error = Some(format!("Inspector load failed: {err:?}"));
+                    }
+                }
+                if let Some(Ok(pod)) = pod_res {
+                    this.inspector.pod_detail = Some(pod);
+                }
+                this.inspector.collections = collections;
+                if this.inspector.tab == InspectorTab::Yaml {
+                    this.load_inspector_yaml(window, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn open_helm_inspector(
@@ -97,181 +182,43 @@ impl IceonApp {
     ) {
         self.inspector.target = Some(InspectorTarget::Helm {
             view,
+            name: name.clone(),
+            namespace: namespace.clone(),
+            version: version.clone(),
+        });
+        self.inspector.tab = InspectorTab::Summary;
+        self.inspector.loading = true;
+        self.inspector.error = None;
+        self.inspector.action_message = None;
+        self.inspector.detail = None;
+        self.inspector.pod_detail = None;
+        self.inspector.collections.clear();
+        self.inspector.helm_detail = None;
+        cx.notify();
+
+        let Some(session) = self.cluster_session.clone() else {
+            self.inspector.loading = false;
+            return;
+        };
+        let read_id = self.next_operation_id();
+        let connection = self.connection.clone();
+        let req = HelmDetailRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            read_id,
+            view,
             name,
             namespace,
             version,
-        });
-        self.inspector.tab = Some(InspectorTab::Summary);
-        self.inspector.detail = None;
-        self.inspector.pod_detail = None;
-        self.inspector.helm_detail = None;
-        self.inspector.collections.clear();
-        self.inspector.error = None;
-        self.inspector.status_banner = None;
-        self.refresh_inspector(window, cx);
-    }
-
-    pub(crate) fn refresh_inspector(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
         };
-        let Some(target) = self.inspector.target.clone() else {
-            return;
-        };
-        self.inspector.loading = true;
-        let read_id = self.next_operation_id();
-        let engine = self.connection.clone();
-
-        match target {
-            InspectorTarget::Resource(reference) => {
-                cx.spawn_in(window, async move |this, cx| {
-                    let detail_res = engine
-                        .resource_detail(DetailRequest {
-                            cluster_id: session.cluster_id.clone(),
-                            session_id: session.session_id.clone(),
-                            read_id,
-                            reference: reference.clone(),
-                        })
-                        .await;
-
-                    let pod_res = if reference.kind == ResourceKind::Pods {
-                        if let Some(ns) = reference.namespace.clone() {
-                            Some(
-                                engine
-                                    .pod_detail(PodRequest {
-                                        cluster_id: session.cluster_id.clone(),
-                                        session_id: session.session_id.clone(),
-                                        namespace: ns,
-                                        name: reference.name.clone(),
-                                        uid: reference.uid.clone(),
-                                    })
-                                    .await,
-                            )
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    let mut collections = Vec::new();
-                    if let Ok(detail) = &detail_res {
-                        let resolved = detail.reference.clone();
-                        let kinds = supported_collections(resolved.kind);
-                        for (idx, col_kind) in kinds.into_iter().enumerate() {
-                            if let Ok(col) = engine
-                                .resource_collection(CollectionRequest {
-                                    cluster_id: session.cluster_id.clone(),
-                                    session_id: session.session_id.clone(),
-                                    read_id: read_id + (idx as u64) + 1,
-                                    reference: resolved.clone(),
-                                    collection: col_kind,
-                                })
-                                .await
-                            {
-                                collections.push(col);
-                            }
-                        }
-                    }
-
-                    let _ = this.update(cx, |this, cx| {
-                        this.inspector.loading = false;
-                        match detail_res {
-                            Ok(detail) => {
-                                this.inspector.detail = Some(detail);
-                                this.inspector.error = None;
-                            }
-                            Err(err) => {
-                                this.inspector.error =
-                                    Some(connection_error_message(err).to_string());
-                            }
-                        }
-                        if let Some(Ok(pod)) = pod_res {
-                            let yaml = pod.yaml.clone();
-                            this.inspector.pod_detail = Some(pod);
-                            this.inspector.edit_yaml = Some(yaml);
-                        }
-                        this.inspector.collections = collections;
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-            InspectorTarget::Helm {
-                view,
-                name,
-                namespace,
-                version,
-            } => {
-                cx.spawn_in(window, async move |this, cx| {
-                    let res = engine
-                        .helm_detail(HelmDetailRequest {
-                            cluster_id: session.cluster_id,
-                            session_id: session.session_id,
-                            read_id,
-                            view,
-                            name,
-                            namespace,
-                            version,
-                        })
-                        .await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.inspector.loading = false;
-                        match res {
-                            Ok(detail) => {
-                                this.inspector.helm_detail = Some(detail);
-                                this.inspector.error = None;
-                            }
-                            Err(err) => {
-                                this.inspector.error =
-                                    Some(connection_error_message(err).to_string());
-                            }
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-        }
-    }
-
-    pub(crate) fn load_editable_yaml(
-        &mut self,
-        reference: ResourceReference,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let op_id = self.next_operation_id();
-        let engine = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .resource_edit(EditRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    operation_id: op_id,
-                    reference,
-                    resource_version: None,
-                    yaml: None,
-                    mode: EditMode::Read,
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(edit_res) => {
-                        this.inspector.edit_resource_version = Some(edit_res.resource_version);
-                        if let Some(yaml) = edit_res.yaml {
-                            this.inspector.edit_yaml = Some(yaml.clone());
-                            this.inspector_yaml_editor.update(cx, |ed, cx| {
-                                ed.set_value(yaml, window, cx);
-                            });
-                        }
-                        this.inspector.error = None;
-                    }
+            let result = connection.helm_detail(req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                this.inspector.loading = false;
+                match result {
+                    Ok(detail) => this.inspector.helm_detail = Some(detail),
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).to_string());
+                        this.inspector.error = Some(format!("Helm detail error: {err:?}"))
                     }
                 }
                 cx.notify();
@@ -280,94 +227,88 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn submit_editable_yaml(
-        &mut self,
-        mode: EditMode,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn load_inspector_yaml(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(InspectorTarget::Resource(reference)) = self.inspector.target.clone() else {
+            return;
+        };
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let Some(detail) = self.inspector.detail.clone() else {
+        let op_id = self.next_operation_id();
+        let connection = self.connection.clone();
+        let req = EditLoadRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            reference,
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = connection.resource_edit_load(req).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(loaded) => {
+                        let yaml = loaded.yaml.clone();
+                        this.inspector.edit_load = Some(loaded);
+                        this.inspector_yaml_editor.update(cx, |editor, cx| {
+                            editor.set_value(yaml, window, cx);
+                        });
+                    }
+                    Err(err) => {
+                        this.inspector.action_message =
+                            Some(format!("YAML load unavailable: {err:?}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn apply_inspector_yaml(
+        &mut self,
+        dry_run: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(loaded) = self.inspector.edit_load.clone() else {
+            return;
+        };
+        let Some(session) = self.cluster_session.clone() else {
             return;
         };
         let yaml = self.inspector_yaml_editor.read(cx).value().to_string();
         let op_id = self.next_operation_id();
-        let engine = self.connection.clone();
-
-        if detail.reference.kind == ResourceKind::Pods {
-            if let Some(pod) = self.inspector.pod_detail.clone() {
-                cx.spawn_in(window, async move |this, cx| {
-                    let res = engine
-                        .pod_mutate(PodMutationRequest {
-                            pod: PodRequest {
-                                cluster_id: session.cluster_id,
-                                session_id: session.session_id,
-                                namespace: pod.namespace,
-                                name: pod.name,
-                                uid: Some(pod.uid),
-                            },
-                            action: PodAction::Replace,
-                            resource_version: pod.resource_version,
-                            yaml: Some(yaml),
-                        })
-                        .await;
-                    let _ = this.update_in(cx, |this, window, cx| {
-                        match res {
-                            Ok(()) => {
-                                this.inspector.status_banner =
-                                    Some("Pod spec updated on cluster.".into());
-                                this.inspector.error = None;
-                                this.refresh_inspector(window, cx);
-                            }
-                            Err(err) => {
-                                this.inspector.error =
-                                    Some(connection_error_message(err).to_string());
-                            }
-                        }
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-            return;
-        }
-
-        let rv = self
-            .inspector
-            .edit_resource_version
-            .clone()
-            .or_else(|| detail.item.resource_version.clone());
-        let reference = detail.reference.clone();
+        let connection = self.connection.clone();
+        let req = EditApplyRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            reference: loaded.reference.clone(),
+            resource_version: loaded.resource_version,
+            yaml,
+            dry_run,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .resource_edit(EditRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    operation_id: op_id,
-                    reference,
-                    resource_version: rv,
-                    yaml: Some(yaml),
-                    mode,
-                })
-                .await;
+            let result = connection.resource_edit_apply(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(edit_res) => {
-                        this.inspector.edit_resource_version = Some(edit_res.resource_version);
-                        this.inspector.status_banner = Some(if mode == EditMode::DryRun {
-                            "Server dry-run validation succeeded.".into()
+                match result {
+                    Ok(applied) => {
+                        this.inspector.action_message = Some(if applied.dry_run {
+                            format!(
+                                "Dry-run validated (rv {})",
+                                applied.resource_version
+                            )
                         } else {
-                            "Resource patch applied to cluster.".into()
+                            format!("Applied (rv {})", applied.resource_version)
                         });
-                        this.inspector.error = None;
-                        if mode == EditMode::Apply {
-                            this.refresh_inspector(window, cx);
+                        if !applied.dry_run {
+                            this.load_inspector_yaml(window, cx);
+                            this.reload_active_section(window, cx);
                         }
                     }
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).to_string());
+                        this.inspector.action_message =
+                            Some(format!("YAML apply failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -376,8 +317,63 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn run_workload_action(
+    pub(crate) fn run_pod_mutation(
         &mut self,
+        namespace: String,
+        name: String,
+        uid: String,
+        resource_version: Option<String>,
+        action: PodAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let op_id = self.next_operation_id();
+        let connection = self.connection.clone();
+        let req = PodMutationRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            namespace: namespace.clone(),
+            name: name.clone(),
+            uid,
+            resource_version,
+            action,
+            yaml: None,
+            operation_id: op_id,
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = connection.pod_mutate(req).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => {
+                        this.inspector.action_message =
+                            Some(format!("Pod {:?} completed for {namespace}/{name}", action));
+                        if matches!(action, PodAction::Delete | PodAction::ForceDelete) {
+                            this.inspector.target = None;
+                        } else if let Some(InspectorTarget::Resource(r)) =
+                            this.inspector.target.clone()
+                        {
+                            this.open_resource_inspector(r, window, cx);
+                        }
+                        this.reload_active_section(window, cx);
+                    }
+                    Err(err) => {
+                        this.inspector.action_message =
+                            Some(format!("Pod {:?} failed: {err:?}", action));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn run_workload_action_for(
+        &mut self,
+        reference: ResourceReference,
+        resource_version: String,
         action: WorkloadAction,
         replicas: Option<u32>,
         window: &mut Window,
@@ -386,38 +382,39 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let Some(detail) = self.inspector.detail.clone() else {
-            return;
-        };
-        let Some(rv) = detail.item.resource_version.clone() else {
-            return;
-        };
         let op_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        let reference = detail.reference;
+        let connection = self.connection.clone();
+        let req = WorkflowRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            reference: reference.clone(),
+            resource_version,
+            action,
+            replicas,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .resource_workload_action(WorkflowRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    operation_id: op_id,
-                    reference,
-                    resource_version: rv,
-                    action,
-                    replicas,
-                })
-                .await;
+            let result = connection.resource_workload_action(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(out) => {
-                        this.inspector.status_banner =
-                            Some(format!("Workload action {:?} accepted.", out.action));
-                        this.inspector.error = None;
-                        this.refresh_inspector(window, cx);
-                        this.refresh_active_cluster_view(window, cx);
+                match result {
+                    Ok(res) => {
+                        let msg = if let Some(created) = res.created {
+                            format!("Triggered Job {}", created.name)
+                        } else {
+                            format!("Workload {:?} accepted", res.action)
+                        };
+                        this.inspector.action_message = Some(msg);
+                        if this.inspector.target == Some(InspectorTarget::Resource(reference.clone()))
+                        {
+                            this.open_resource_inspector(reference, window, cx);
+                        }
+                        this.reload_active_section(window, cx);
                     }
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).to_string());
+                        this.inspector.action_message =
+                            Some(format!("Action {action:?} failed: {err:?}"));
+                        this.cluster_error =
+                            Some(format!("Workload {action:?} failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -426,8 +423,48 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn run_node_action(
+    fn run_workload_action(
         &mut self,
+        action: WorkloadAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(detail) = self.inspector.detail.clone() else {
+            return;
+        };
+        let Some(rv) = detail.resource_version.clone() else {
+            self.inspector.action_message = Some("Missing resourceVersion".into());
+            cx.notify();
+            return;
+        };
+        let Some(uid) = detail.uid.clone() else {
+            self.inspector.action_message = Some("Missing resource UID".into());
+            cx.notify();
+            return;
+        };
+        let replicas = if action == WorkloadAction::Scale {
+            self.scale_replicas_input
+                .read(cx)
+                .value()
+                .trim()
+                .parse::<u32>()
+                .ok()
+        } else {
+            None
+        };
+        let reference = ResourceReference {
+            kind: detail.kind,
+            name: detail.name,
+            namespace: detail.namespace,
+            uid: Some(uid),
+        };
+        self.run_workload_action_for(reference, rv, action, replicas, window, cx);
+    }
+
+    pub(crate) fn run_node_action_for(
+        &mut self,
+        reference: ResourceReference,
+        resource_version: String,
         action: NodeAction,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -435,37 +472,34 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let Some(detail) = self.inspector.detail.clone() else {
-            return;
-        };
-        let Some(rv) = detail.item.resource_version.clone() else {
-            return;
-        };
         let op_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        let reference = detail.reference;
+        let connection = self.connection.clone();
+        let req = NodeActionRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            reference: reference.clone(),
+            resource_version,
+            action,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .resource_node_action(NodeActionRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    operation_id: op_id,
-                    reference,
-                    resource_version: rv,
-                    action,
-                })
-                .await;
+            let result = connection.resource_node_action(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
-                match res {
+                match result {
                     Ok(_) => {
-                        this.inspector.status_banner =
-                            Some(format!("Node {:?} completed.", action));
-                        this.inspector.error = None;
-                        this.refresh_inspector(window, cx);
-                        this.refresh_active_cluster_view(window, cx);
+                        this.inspector.action_message =
+                            Some(format!("Node {action:?} completed"));
+                        if this.inspector.target == Some(InspectorTarget::Resource(reference.clone()))
+                        {
+                            this.open_resource_inspector(reference, window, cx);
+                        }
+                        this.reload_active_section(window, cx);
                     }
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).to_string());
+                        this.inspector.action_message =
+                            Some(format!("Node {action:?} failed: {err:?}"));
+                        this.cluster_error =
+                            Some(format!("Node {action:?} failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -474,37 +508,60 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn review_node_drain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_node_action(
+        &mut self,
+        action: NodeAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(detail) = self.inspector.detail.clone() else {
+            return;
+        };
+        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+            return;
+        };
+        let reference = ResourceReference {
+            kind: ResourceKind::Nodes,
+            name: detail.name,
+            namespace: None,
+            uid: Some(uid),
+        };
+        self.run_node_action_for(reference, rv, action, window, cx);
+    }
+
+    pub(crate) fn review_node_drain_for(
+        &mut self,
+        reference: ResourceReference,
+        resource_version: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let Some(detail) = self.inspector.detail.clone() else {
-            return;
-        };
-        let Some(rv) = detail.item.resource_version.clone() else {
-            return;
-        };
+        if self.inspector.target != Some(InspectorTarget::Resource(reference.clone())) {
+            self.open_resource_inspector(reference.clone(), window, cx);
+        }
         let op_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        let reference = detail.reference;
+        let connection = self.connection.clone();
+        let req = DrainReviewRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            reference,
+            resource_version,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .node_drain_review(DrainReviewRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    operation_id: op_id,
-                    reference,
-                    resource_version: rv,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                match res {
+            let result = connection.node_drain_review(req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                match result {
                     Ok(review) => {
+                        this.inspector.drain_result = None;
                         this.inspector.drain_review = Some(review);
-                        this.inspector.error = None;
                     }
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).to_string());
+                        this.inspector.action_message =
+                            Some(format!("Drain review failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -513,7 +570,23 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn execute_node_drain(
+    fn review_node_drain(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = self.inspector.detail.clone() else {
+            return;
+        };
+        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+            return;
+        };
+        let reference = ResourceReference {
+            kind: ResourceKind::Nodes,
+            name: detail.name,
+            namespace: None,
+            uid: Some(uid),
+        };
+        self.review_node_drain_for(reference, rv, window, cx);
+    }
+
+    fn execute_node_drain(
         &mut self,
         plan_id: String,
         window: &mut Window,
@@ -523,26 +596,29 @@ impl IceonApp {
             return;
         };
         let op_id = self.next_operation_id();
-        let engine = self.connection.clone();
+        let connection = self.connection.clone();
+        let req = DrainExecuteRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            plan_id,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .node_drain_execute(DrainExecuteRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    operation_id: op_id,
-                    plan_id,
-                })
-                .await;
+            let result = connection.node_drain_execute(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(outcome) => {
-                        this.inspector.drain_result = Some(outcome);
+                match result {
+                    Ok(res) => {
+                        this.inspector.action_message = Some(format!(
+                            "Node drain {:?} (cordoned={})",
+                            res.state, res.cordoned
+                        ));
                         this.inspector.drain_review = None;
-                        this.inspector.error = None;
-                        this.refresh_inspector(window, cx);
+                        this.inspector.drain_result = Some(res);
+                        this.reload_active_section(window, cx);
                     }
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).to_string());
+                        this.inspector.action_message =
+                            Some(format!("Drain execute failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -551,8 +627,10 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn start_service_port_forward(
+    pub(crate) fn start_service_forward_for(
         &mut self,
+        reference: ResourceReference,
+        resource_version: String,
         service_port: u16,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -560,39 +638,34 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let Some(detail) = self.inspector.detail.clone() else {
-            return;
-        };
-        let Some(rv) = detail.item.resource_version.clone() else {
-            return;
-        };
         let op_id = self.next_operation_id();
-        let engine = self.connection.clone();
-        let reference = detail.reference;
+        let connection = self.connection.clone();
+        let req = ServiceForwardRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            reference,
+            resource_version,
+            service_port,
+            local_port: 0,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .service_forward_start(ServiceForwardRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    operation_id: op_id,
-                    reference,
-                    resource_version: rv,
-                    service_port,
-                    local_port: 0,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                match res {
-                    Ok(fwd) => {
-                        this.inspector.status_banner = Some(format!(
-                            "Forwarding service port {} -> 127.0.0.1:{} (Pod {})",
-                            fwd.service_port, fwd.forward.local_port, fwd.pod.name
+            let result = connection.service_forward_start(req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                match result {
+                    Ok(res) => {
+                        this.inspector.action_message = Some(format!(
+                            "Service port {} forwarded on local port {}",
+                            res.service_port, res.forward.local_port
                         ));
-                        this.inspector.error = None;
-                        this.refresh_port_forwards(cx);
+                        this.port_forwards.push(res.forward);
+                        this.pod_dock_open = true;
                     }
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).to_string());
+                        this.inspector.action_message =
+                            Some(format!("Service forward failed: {err:?}"));
+                        this.cluster_error =
+                            Some(format!("Service forward failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -601,67 +674,185 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn render_inspector_panel(
+    fn start_service_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = self.inspector.detail.clone() else {
+            return;
+        };
+        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+            return;
+        };
+        let service_port = self
+            .service_port_input
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(80);
+        let reference = ResourceReference {
+            kind: ResourceKind::Services,
+            name: detail.name,
+            namespace: detail.namespace,
+            uid: Some(uid),
+        };
+        self.start_service_forward_for(reference, rv, service_port, window, cx);
+    }
+
+    pub(crate) fn delete_resource_by_target(
+        &mut self,
+        target: ResourceDeleteTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let op_id = self.next_operation_id();
+        let connection = self.connection.clone();
+        let req = DeleteRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            target: target.clone(),
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = connection.resource_delete(req).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(res) => {
+                        if let Some(InspectorTarget::Resource(r)) = &this.inspector.target
+                            && r.kind == res.target.kind
+                            && r.name == res.target.name
+                            && r.namespace == res.target.namespace
+                        {
+                            this.inspector.target = None;
+                        }
+                        this.reload_active_section(window, cx);
+                    }
+                    Err(err) => {
+                        this.inspector.action_message = Some(format!("Delete failed: {err:?}"));
+                        this.cluster_error = Some(format!(
+                            "Failed to delete {}: {err:?}",
+                            target.name
+                        ));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn delete_inspected_resource(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = self.inspector.detail.clone() else {
+            return;
+        };
+        let (Some(uid), Some(rv)) = (detail.uid.clone(), detail.resource_version.clone()) else {
+            self.inspector.action_message =
+                Some("Cannot delete without UID and resourceVersion".into());
+            cx.notify();
+            return;
+        };
+        self.delete_resource_by_target(
+            ResourceDeleteTarget {
+                kind: detail.kind,
+                name: detail.name,
+                namespace: detail.namespace,
+                uid,
+                resource_version: rv,
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn render_inspector_drawer(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let tab = self.inspector.tab.unwrap_or(InspectorTab::Summary);
-        let tab_index = match tab {
-            InspectorTab::Summary => 0,
-            InspectorTab::Metadata => 1,
-            InspectorTab::Relations => 2,
-            InspectorTab::Yaml => 3,
+        let title = match &self.inspector.target {
+            Some(InspectorTarget::Resource(r)) => format!("{:?} · {}", r.kind, r.name),
+            Some(InspectorTarget::Helm { name, .. }) => format!("Helm · {name}"),
+            None => "Inspector".into(),
         };
+        let is_resource = matches!(self.inspector.target, Some(InspectorTarget::Resource(_)));
+        let active_tab = self.inspector.tab;
 
-        let title = if let Some(detail) = &self.inspector.detail {
-            format!(
-                "{} · {}",
-                iceon_core::connection::create::creation_info(detail.reference.kind).1,
-                detail.reference.name
-            )
-        } else if let Some(helm) = &self.inspector.helm_detail {
-            format!("Helm · {}", helm.name)
-        } else {
-            "Inspector".into()
-        };
+        let event_count = self
+            .inspector
+            .pod_detail
+            .as_ref()
+            .map(|p| p.events.len())
+            .unwrap_or(0)
+            + self
+                .inspector
+                .collections
+                .iter()
+                .filter(|c| c.collection == CollectionKind::Events)
+                .map(|c| c.items.len())
+                .sum::<usize>();
+
+        let related_count = self
+            .inspector
+            .detail
+            .as_ref()
+            .map(|d| d.related.len())
+            .unwrap_or(0)
+            + self
+                .inspector
+                .collections
+                .iter()
+                .filter(|c| c.collection != CollectionKind::Events)
+                .map(|c| c.items.len())
+                .sum::<usize>();
 
         v_flex()
-            .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .w(px(500.0))
+            .flex_shrink_0()
+            .h_full()
             .border_l_1()
             .border_color(cx.theme().border)
+            .bg(cx.theme().tokens.surface)
+            .overflow_hidden()
             .child(
                 h_flex()
                     .w_full()
                     .px_3()
                     .py_2p5()
+                    .justify_between()
+                    .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .items_center()
-                    .justify_between()
+                    .bg(cx.theme().tokens.chrome)
                     .child(
                         div()
                             .text_sm()
-                            .font_semibold()
+                            .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
                             .child(title),
                     )
                     .child(
                         h_flex()
                             .gap_1()
+                            .items_center()
+                            .when(is_resource, |el| {
+                                el.child(
+                                    Button::new("inspector-refresh-btn")
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(IconName::Undo2)
+                                        .tooltip("Refresh Inspector")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            if let Some(InspectorTarget::Resource(r)) =
+                                                this.inspector.target.clone()
+                                            {
+                                                this.open_resource_inspector(r, window, cx);
+                                            }
+                                        })),
+                                )
+                            })
                             .child(
-                                Button::new("refresh-inspector-btn")
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Undo2)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.refresh_inspector(window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("close-inspector-btn")
+                                Button::new("inspector-close-btn")
                                     .xsmall()
                                     .ghost()
                                     .icon(IconName::Close)
@@ -672,155 +863,133 @@ impl IceonApp {
                             ),
                     ),
             )
-            .when_some(self.inspector.error.clone(), |el, msg| {
+            .when(is_resource, |el| {
                 el.child(
-                    div()
-                        .mx_3()
-                        .mt_2()
-                        .p_2()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().danger)
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(msg),
-                )
-            })
-            .when_some(self.inspector.status_banner.clone(), |el, msg| {
-                el.child(
-                    div()
-                        .mx_3()
-                        .mt_2()
-                        .p_2()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().success)
-                        .text_xs()
-                        .text_color(cx.theme().success)
-                        .child(msg),
-                )
-            })
-            .child(if let Some(helm) = self.inspector.helm_detail.clone() {
-                v_flex()
-                    .flex_1()
-                    .p_3()
-                    .gap_3()
-                    .overflow_y_scrollbar()
-                    .children(helm.facts.into_iter().map(|fact| {
-                        h_flex()
-                            .justify_between()
-                            .gap_2()
-                            .py_1()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .text_xs()
-                            .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(fact.label),
-                            )
-                            .child(div().font_medium().child(fact.value))
-                    }))
-                    .children(helm.history.into_iter().map(|rev| {
-                        h_flex()
-                            .justify_between()
-                            .p_2()
-                            .rounded(px(6.0))
-                            .bg(cx.theme().secondary)
-                            .text_xs()
-                            .child(div().font_semibold().child(format!("Rev #{}", rev.revision)))
-                            .child(div().child(rev.chart))
-                            .child(Tag::secondary().child(rev.status))
-                    }))
-                    .into_any_element()
-            } else if let Some(detail) = self.inspector.detail.clone() {
-                let reference = detail.reference.clone();
-                v_flex()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(self.render_inspector_action_bar(&detail, window, cx))
-                    .child(
-                        div()
-                            .px_3()
-                            .pt_2()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                TabBar::new("inspector-tabs")
-                                    .selected_index(tab_index)
-                                    .on_click(cx.listener(move |this, idx: &usize, window, cx| {
-                                        let next_tab = match *idx {
-                                            0 => InspectorTab::Summary,
-                                            1 => InspectorTab::Metadata,
-                                            2 => InspectorTab::Relations,
-                                            _ => InspectorTab::Yaml,
-                                        };
-                                        this.inspector.tab = Some(next_tab);
-                                        if next_tab == InspectorTab::Yaml {
-                                            if this.inspector.detail.as_ref().is_some_and(|d| {
-                                                d.reference.kind == ResourceKind::Pods
-                                            }) {
-                                                if let Some(yaml) =
-                                                    this.inspector.edit_yaml.clone()
-                                                {
-                                                    this.inspector_yaml_editor.update(
-                                                        cx,
-                                                        |ed, cx| {
-                                                            ed.set_value(yaml, window, cx);
-                                                        },
-                                                    );
-                                                }
-                                            } else {
-                                                this.load_editable_yaml(
-                                                    reference.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            }
+                    h_flex()
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.chrome)
+                        .children(
+                            [
+                                (InspectorTab::Summary, "Summary".to_string()),
+                                (InspectorTab::Metadata, "Metadata".to_string()),
+                                (
+                                    InspectorTab::Relations,
+                                    if related_count > 0 {
+                                        format!("Related ({related_count})")
+                                    } else {
+                                        "Related".to_string()
+                                    },
+                                ),
+                                (
+                                    InspectorTab::Events,
+                                    if event_count > 0 {
+                                        format!("Events ({event_count})")
+                                    } else {
+                                        "Events".to_string()
+                                    },
+                                ),
+                                (InspectorTab::Yaml, "YAML".to_string()),
+                            ]
+                            .into_iter()
+                            .map(|(tab, label)| {
+                                Button::new(SharedString::from(format!("insp-tab-{label}")))
+                                    .xsmall()
+                                    .ghost()
+                                    .selected(active_tab == tab)
+                                    .label(label)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.inspector.tab = tab;
+                                        if tab == InspectorTab::Yaml
+                                            && this.inspector.edit_load.is_none()
+                                        {
+                                            this.load_inspector_yaml(window, cx);
                                         }
                                         cx.notify();
                                     }))
-                                    .child(Tab::new().label("Summary"))
-                                    .child(Tab::new().label("Metadata"))
-                                    .child(Tab::new().label("Related"))
-                                    .child(Tab::new().label("YAML")),
-                            ),
-                    )
-                    .child(match tab {
-                        InspectorTab::Summary => {
-                            self.render_inspector_summary(&detail, cx).into_any_element()
-                        }
-                        InspectorTab::Metadata => {
-                            self.render_inspector_metadata(&detail, cx).into_any_element()
-                        }
-                        InspectorTab::Relations => {
-                            self.render_inspector_relations(&detail, cx).into_any_element()
-                        }
-                        InspectorTab::Yaml => {
-                            self.render_inspector_yaml(&detail, cx).into_any_element()
-                        }
-                    })
-                    .into_any_element()
-            } else {
+                            }),
+                        ),
+                )
+            })
+            .when_some(self.inspector.detail.clone(), |el, detail| {
+                el.child(self.render_inspector_action_bar(&detail, window, cx))
+            })
+            .when_some(self.inspector.action_message.clone(), |el, msg| {
+                el.child(
+                    div()
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .bg(cx.theme().secondary)
+                        .text_xs()
+                        .child(msg),
+                )
+            })
+            .when_some(self.inspector.error.clone(), |el, err| {
+                el.child(
+                    div()
+                        .w_full()
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(err),
+                )
+            })
+            .child(
                 v_flex()
                     .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .p_6()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Loading resource details...")
-                    .into_any_element()
-            })
+                    .min_h_0()
+                    .p_3()
+                    .gap_3()
+                    .overflow_y_scrollbar()
+                    .child(if self.inspector.loading {
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Loading resource details...")
+                            .into_any_element()
+                    } else if let Some(helm) = self.inspector.helm_detail.clone() {
+                        self.render_helm_inspector(&helm, cx).into_any_element()
+                    } else if let Some(detail) = self.inspector.detail.clone() {
+                        match active_tab {
+                            InspectorTab::Summary => self
+                                .render_inspector_summary(&detail, window, cx)
+                                .into_any_element(),
+                            InspectorTab::Metadata => self
+                                .render_inspector_metadata(&detail, cx)
+                                .into_any_element(),
+                            InspectorTab::Relations => self
+                                .render_inspector_relations(&detail, cx)
+                                .into_any_element(),
+                            InspectorTab::Events => self
+                                .render_inspector_events(&detail, cx)
+                                .into_any_element(),
+                            InspectorTab::Yaml => self
+                                .render_inspector_yaml(&detail, window, cx)
+                                .into_any_element(),
+                        }
+                    } else {
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Select a resource to inspect.")
+                            .into_any_element()
+                    }),
+            )
     }
 
     fn render_inspector_action_bar(
-        &mut self,
+        &self,
         detail: &ResourceDetail,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let kind = detail.reference.kind;
+        let kind = detail.kind;
         let can_scale = matches!(
             kind,
             ResourceKind::Deployments
@@ -836,6 +1005,7 @@ impl IceonApp {
         let can_trigger = kind == ResourceKind::CronJobs;
         let is_node = kind == ResourceKind::Nodes;
         let is_service = kind == ResourceKind::Services;
+        let is_pod = kind == ResourceKind::Pods;
 
         h_flex()
             .w_full()
@@ -843,416 +1013,1222 @@ impl IceonApp {
             .py_2()
             .gap_1p5()
             .flex_wrap()
+            .items_center()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
+            .bg(cx.theme().tokens.elevated_surface)
             .when(can_scale, |el| {
-                el.child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            div()
-                                .w(px(64.0))
-                                .child(Input::new(&self.scale_replicas_input).xsmall()),
-                        )
-                        .child(
-                            Button::new("workload-scale-btn")
-                                .xsmall()
-                                .outline()
-                                .label("Scale")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Ok(replicas) = this
-                                        .scale_replicas_input
-                                        .read(cx)
-                                        .value()
-                                        .trim()
-                                        .parse::<u32>()
-                                    {
-                                        this.run_workload_action(
-                                            WorkloadAction::Scale,
-                                            Some(replicas),
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                })),
-                        ),
-                )
+                el.child(self.scale_controls(cx))
             })
             .when(can_restart, |el| {
                 el.child(
-                    Button::new("workload-restart-btn")
+                    Button::new("insp-restart-btn")
                         .xsmall()
                         .outline()
-                        .label("Restart Rollout")
+                        .label("Restart")
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_workload_action(WorkloadAction::Restart, None, window, cx);
+                            this.run_workload_action(WorkloadAction::Restart, window, cx);
                         })),
                 )
             })
             .when(can_suspend, |el| {
                 el.child(
-                    Button::new("workload-suspend-btn")
+                    Button::new("insp-suspend-btn")
                         .xsmall()
                         .outline()
                         .label("Suspend")
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_workload_action(WorkloadAction::Suspend, None, window, cx);
+                            this.run_workload_action(WorkloadAction::Suspend, window, cx);
                         })),
                 )
                 .child(
-                    Button::new("workload-resume-btn")
+                    Button::new("insp-resume-btn")
                         .xsmall()
                         .outline()
                         .label("Resume")
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_workload_action(WorkloadAction::Resume, None, window, cx);
+                            this.run_workload_action(WorkloadAction::Resume, window, cx);
                         })),
                 )
             })
             .when(can_trigger, |el| {
                 el.child(
-                    Button::new("workload-trigger-btn")
+                    Button::new("insp-trigger-btn")
                         .xsmall()
                         .primary()
-                        .label("Trigger Job")
+                        .label("Trigger Run")
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_workload_action(WorkloadAction::Trigger, None, window, cx);
+                            this.run_workload_action(WorkloadAction::Trigger, window, cx);
                         })),
                 )
             })
             .when(is_node, |el| {
-                el.child(
-                    Button::new("node-cordon-btn")
-                        .xsmall()
-                        .outline()
-                        .label("Cordon")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_node_action(NodeAction::Cordon, window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("node-uncordon-btn")
-                        .xsmall()
-                        .outline()
-                        .label("Uncordon")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_node_action(NodeAction::Uncordon, window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("node-drain-review-btn")
-                        .xsmall()
-                        .danger()
-                        .label("Review Drain")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.review_node_drain(window, cx);
-                        })),
-                )
+                el.child(self.node_controls(cx))
             })
             .when(is_service, |el| {
-                el.child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            div()
-                                .w(px(72.0))
-                                .child(Input::new(&self.service_port_input).xsmall()),
-                        )
-                        .child(
-                            Button::new("service-forward-btn")
-                                .xsmall()
-                                .primary()
-                                .label("Forward Port")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    if let Ok(port) = this
-                                        .service_port_input
-                                        .read(cx)
-                                        .value()
-                                        .trim()
-                                        .parse::<u16>()
-                                    {
-                                        this.start_service_port_forward(port, window, cx);
-                                    }
-                                })),
-                        ),
+                el.child(self.service_controls(cx))
+            })
+            .when_some(
+                is_pod.then(|| self.pod_actions(detail, cx)).flatten(),
+                |el, pod_bar| el.child(pod_bar),
+            )
+            .child(
+                Button::new("insp-open-yaml-btn")
+                    .xsmall()
+                    .ghost()
+                    .label("Edit YAML")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.inspector.tab = InspectorTab::Yaml;
+                        if this.inspector.edit_load.is_none() {
+                            this.load_inspector_yaml(window, cx);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("insp-delete-btn")
+                    .xsmall()
+                    .danger()
+                    .label("Delete")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.delete_inspected_resource(window, cx);
+                    })),
+            )
+    }
+
+    fn scale_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(div().w(px(64.0)).child(Input::new(&self.scale_replicas_input).small()))
+            .child(
+                Button::new("insp-scale-btn")
+                    .xsmall()
+                    .primary()
+                    .label("Scale")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.run_workload_action(WorkloadAction::Scale, window, cx);
+                    })),
+            )
+    }
+
+    fn node_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(
+                Button::new("insp-cordon-btn")
+                    .xsmall()
+                    .outline()
+                    .label("Cordon")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.run_node_action(NodeAction::Cordon, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("insp-uncordon-btn")
+                    .xsmall()
+                    .outline()
+                    .label("Uncordon")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.run_node_action(NodeAction::Uncordon, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("insp-drain-review-btn")
+                    .xsmall()
+                    .danger()
+                    .label("Drain")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.review_node_drain(window, cx);
+                    })),
+            )
+    }
+
+    fn service_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(div().w(px(72.0)).child(Input::new(&self.service_port_input).small()))
+            .child(
+                Button::new("insp-svc-fwd-btn")
+                    .xsmall()
+                    .primary()
+                    .label("Port-Forward")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.start_service_forward(window, cx);
+                    })),
+            )
+    }
+
+    fn pod_actions(
+        &self,
+        detail: &ResourceDetail,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let pod = self.inspector.pod_detail.as_ref()?;
+        let ns = pod.namespace.clone();
+        let name = pod.name.clone();
+        let uid = pod.uid.clone();
+        let rv = pod
+            .resource_version
+            .clone()
+            .or_else(|| detail.resource_version.clone());
+        let primary_container = pod
+            .containers
+            .iter()
+            .find(|c| c.kind == "container")
+            .or_else(|| pod.containers.first())
+            .map(|c| c.name.clone());
+        let has_finalizers = detail
+            .metadata
+            .as_ref()
+            .is_some_and(|m| !m.finalizers.is_empty());
+        let is_terminating = pod.deletion_timestamp.is_some()
+            || detail
+                .metadata
+                .as_ref()
+                .is_some_and(|m| m.deletion_timestamp.is_some());
+
+        let ns_logs = ns.clone();
+        let name_logs = name.clone();
+        let uid_logs = uid.clone();
+        let ns_shell = ns.clone();
+        let name_shell = name.clone();
+        let uid_shell = uid.clone();
+        let ns_attach = ns.clone();
+        let name_attach = name.clone();
+        let uid_attach = uid.clone();
+        let ns_force = ns.clone();
+        let name_force = name.clone();
+        let uid_force = uid.clone();
+        let rv_force = rv.clone();
+        let ns_fin = ns;
+        let name_fin = name;
+        let uid_fin = uid;
+        let rv_fin = rv;
+
+        Some(
+            h_flex()
+                .gap_1()
+                .items_center()
+                .when_some(primary_container, |row, cname| {
+                    let c_logs = cname.clone();
+                    let c_shell = cname.clone();
+                    let c_attach = cname;
+                    row.child(
+                        Button::new("insp-pod-quick-logs")
+                            .xsmall()
+                            .primary()
+                            .label("Logs")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_pod_stream(
+                                    ns_logs.clone(),
+                                    name_logs.clone(),
+                                    uid_logs.clone(),
+                                    c_logs.clone(),
+                                    PodStreamMode::Logs,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("insp-pod-quick-shell")
+                            .xsmall()
+                            .outline()
+                            .label("Shell")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_pod_stream(
+                                    ns_shell.clone(),
+                                    name_shell.clone(),
+                                    uid_shell.clone(),
+                                    c_shell.clone(),
+                                    PodStreamMode::Shell,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("insp-pod-quick-attach")
+                            .xsmall()
+                            .ghost()
+                            .label("Attach")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_pod_stream(
+                                    ns_attach.clone(),
+                                    name_attach.clone(),
+                                    uid_attach.clone(),
+                                    c_attach.clone(),
+                                    PodStreamMode::Attach,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                })
+                .child(
+                    Button::new("insp-pod-force-delete")
+                        .xsmall()
+                        .outline()
+                        .label("Force Delete (0s)")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.run_pod_mutation(
+                                ns_force.clone(),
+                                name_force.clone(),
+                                uid_force.clone(),
+                                rv_force.clone(),
+                                PodAction::ForceDelete,
+                                window,
+                                cx,
+                            );
+                        })),
                 )
-            })
-            .when_some(self.inspector.pod_actions(&detail.reference, cx), |el, pod_ui| {
-                el.child(pod_ui)
-            })
+                .when(is_terminating && has_finalizers, |row| {
+                    row.child(
+                        Button::new("insp-pod-strip-finalizers")
+                            .xsmall()
+                            .danger()
+                            .label("Strip Finalizers")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_pod_mutation(
+                                    ns_fin.clone(),
+                                    name_fin.clone(),
+                                    uid_fin.clone(),
+                                    rv_fin.clone(),
+                                    PodAction::Finalize,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                })
+                .into_any_element(),
+        )
     }
 
     fn render_inspector_summary(
         &self,
         detail: &ResourceDetail,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let uid_copy = detail.uid.clone().unwrap_or_default();
+        let ns_ref = detail.namespace.as_ref().map(|ns| ResourceReference {
+            kind: ResourceKind::Namespaces,
+            name: ns.clone(),
+            namespace: None,
+            uid: None,
+        });
+        let node_info: Option<NodeInfo> = (detail.kind == ResourceKind::Nodes)
+            .then(|| {
+                self.resource_page
+                    .as_ref()
+                    .filter(|p| p.kind == ResourceKind::Nodes)
+                    .and_then(|p| p.items.iter().find(|i| i.name == detail.name))
+                    .and_then(|i| i.node.clone())
+                    .or_else(|| {
+                        self.overview_snapshot
+                            .nodes
+                            .as_ref()
+                            .and_then(|p| p.items.iter().find(|i| i.name == detail.name))
+                            .and_then(|i| i.node.clone())
+                    })
+            })
+            .flatten();
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            // Identity & Status card
+            .child(
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_1p5()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(detail.name.clone()),
+                            )
+                            .child(status_tag(&detail.status)),
+                    )
+                    .when_some(detail.namespace.clone(), |el, ns| {
+                        el.child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("Namespace: {ns}")),
+                                )
+                                .when_some(ns_ref, |row, target_ns| {
+                                    row.child(
+                                        Button::new("insp-jump-namespace")
+                                            .xsmall()
+                                            .ghost()
+                                            .label("Inspect NS")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_resource_inspector(
+                                                    target_ns.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                }),
+                        )
+                    })
+                    .when_some(detail.created_at.clone(), |el, created| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("Created: {created}")),
+                        )
+                    })
+                    .when_some(detail.uid.clone(), |el, uid| {
+                        el.child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("UID: {uid}")),
+                                )
+                                .child(
+                                    Button::new("insp-copy-uid-btn")
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Copy UID")
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                uid_copy.clone(),
+                                            ));
+                                        })),
+                                ),
+                        )
+                    })
+                    .when_some(detail.resource_version.clone(), |el, rv| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("ResourceVersion: {rv}")),
+                        )
+                    }),
+            )
+            // Node Live Metrics & Conditions card when inspecting a Node
+            .when_some(node_info, |el, ninfo| {
+                el.child(self.render_node_info_card(&ninfo, cx))
+            })
+            // Node Drain Review card
+            .when_some(self.inspector.drain_review.clone(), |el, review| {
+                el.child(self.render_drain_review_card(&review, cx))
+            })
+            // Node Drain Execution Result card
+            .when_some(self.inspector.drain_result.clone(), |el, result| {
+                el.child(self.render_drain_result_card(&result, cx))
+            })
+            // Full Pod Runtime & Containers & Conditions card
+            .when_some(self.inspector.pod_detail.clone(), |el, pod| {
+                el.child(self.render_pod_summary_cards(&pod, cx))
+            })
+            // Event Diagnostic card when inspecting an Event
+            .when_some(detail.event_diagnostic.clone(), |el, diag| {
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_1p5()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("Event Diagnostic"),
+                                )
+                                .when(diag.truncated, |r| {
+                                    r.child(Tag::warning().small().child("Truncated"))
+                                }),
+                        )
+                        .when_some(diag.source, |r, src| {
+                            r.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("Reporting Source: {src}")),
+                            )
+                        })
+                        .when_some(diag.field_path, |r, fp| {
+                            r.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("Field Path: {fp}")),
+                            )
+                        })
+                        .child(div().text_xs().child(diag.message)),
+                )
+            })
+            // Projected DetailSections for all 41 ResourceKinds
+            .children(detail.sections.iter().map(|section| {
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().muted_foreground)
+                            .child(section.title.to_uppercase()),
+                    )
+                    .children(section.facts.iter().map(|fact| {
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .gap_3()
+                            .items_start()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(fact.label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(fact.value.clone()),
+                            )
+                    }))
+            }))
+    }
+
+    fn render_node_info_card(
+        &self,
+        node: &NodeInfo,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let cpu_str = match (node.cpu.used, node.cpu.allocatable.or(node.cpu.capacity)) {
+            (Some(u), Some(total)) if total > 0.0 => {
+                format!("{u:.2} / {total:.2} cores ({:.0}%)", (u / total) * 100.0)
+            }
+            (None, Some(total)) => format!("{total:.2} cores allocatable"),
+            _ => "Metrics unavailable".into(),
+        };
+        let mem_str = match (
+            node.memory.used,
+            node.memory.allocatable.or(node.memory.capacity),
+        ) {
+            (Some(u), Some(total)) if total > 0.0 => {
+                let u_gi = u / (1024.0 * 1024.0 * 1024.0);
+                let t_gi = total / (1024.0 * 1024.0 * 1024.0);
+                format!("{u_gi:.2} / {t_gi:.2} GiB ({:.0}%)", (u / total) * 100.0)
+            }
+            (None, Some(total)) => {
+                let t_gi = total / (1024.0 * 1024.0 * 1024.0);
+                format!("{t_gi:.2} GiB allocatable")
+            }
+            _ => "Metrics unavailable".into(),
+        };
+
+        v_flex()
+            .w_full()
+            .p_3()
+            .gap_1p5()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().tokens.elevated_surface)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("NODE TELEMETRY & CAPACITY"),
+                    )
+                    .child(if node.schedulable {
+                        Tag::success().small().child("Schedulable")
+                    } else {
+                        Tag::warning().small().child("Cordoned / Unschedulable")
+                    }),
+            )
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("CPU Usage"),
+                    )
+                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(cpu_str)),
+            )
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Memory Usage"),
+                    )
+                    .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(mem_str)),
+            )
+            .when(!node.internal_ips.is_empty(), |el| {
+                el.child(
+                    h_flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Internal IPs"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(node.internal_ips.join(", ")),
+                        ),
+                )
+            })
+            .when_some(node.disk_allocatable.clone(), |el, disk| {
+                el.child(
+                    h_flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Allocatable Ephemeral Storage"),
+                        )
+                        .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(disk)),
+                )
+            })
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Taints Count"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(node.taints.to_string()),
+                    ),
+            )
+            .when(!node.conditions.is_empty(), |el| {
+                el.child(
+                    h_flex().gap_1().flex_wrap().children(
+                        node.conditions.iter().map(|c| {
+                            let healthy = (c.kind == "Ready" && c.status == "True")
+                                || (c.kind != "Ready" && c.status == "False");
+                            if healthy {
+                                Tag::success()
+                                    .small()
+                                    .child(format!("{}: {}", c.kind, c.status))
+                            } else {
+                                Tag::warning()
+                                    .small()
+                                    .child(format!("{}: {}", c.kind, c.status))
+                            }
+                        }),
+                    ),
+                )
+            })
+    }
+
+    fn render_drain_review_card(
+        &self,
+        review: &DrainReview,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
-            .flex_1()
+            .w_full()
             .p_3()
-            .gap_3()
-            .overflow_y_scrollbar()
+            .gap_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(cx.theme().danger)
+            .bg(cx.theme().tokens.elevated_surface)
             .child(
-                v_flex()
-                    .p_2p5()
-                    .gap_1p5()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .text_xs()
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Node Drain Review ({} pods)", review.pods.len())),
+                    )
+                    .child(
+                        if review.can_drain {
+                            Tag::success().small().child("Ready to Evict")
+                        } else {
+                            Tag::danger().small().child("Blocked")
+                        },
+                    ),
+            )
+            .children(review.pods.iter().take(15).map(|p| {
+                let disp_tag = match p.disposition {
+                    DrainDisposition::Evict => Tag::warning().small().child("Evict"),
+                    DrainDisposition::Skip => Tag::secondary().small().child("Skip"),
+                    DrainDisposition::Wait => Tag::secondary().small().child("Wait"),
+                    DrainDisposition::Block => Tag::danger().small().child("Block"),
+                };
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .child(format!("{}/{}", p.namespace, p.name)),
+                    )
                     .child(
                         h_flex()
-                            .justify_between()
+                            .gap_1()
+                            .items_center()
+                            .child(disp_tag)
                             .child(
                                 div()
+                                    .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("Status"),
-                            )
-                            .child(Tag::secondary().child(detail.item.status.clone())),
+                                    .child(format!("{:?}", p.reason)),
+                            ),
                     )
+            }))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .when_some(review.plan_id.clone(), |row, pid| {
+                        row.child(
+                            Button::new("confirm-node-drain-btn")
+                                .xsmall()
+                                .danger()
+                                .label("Confirm & Execute Eviction Plan")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.execute_node_drain(pid.clone(), window, cx);
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new("dismiss-node-drain-review")
+                            .xsmall()
+                            .ghost()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.inspector.drain_review = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+    }
+
+    fn render_drain_result_card(
+        &self,
+        result: &DrainResult,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let state_tag = match result.state {
+            DrainState::Complete => Tag::success().small().child("Complete"),
+            DrainState::Partial => Tag::warning().small().child("Partial"),
+            DrainState::Blocked => Tag::danger().small().child("Blocked"),
+            DrainState::Cancelled => Tag::secondary().small().child("Cancelled"),
+            DrainState::Timeout => Tag::warning().small().child("Timeout"),
+            DrainState::Uncertain => Tag::warning().small().child("Uncertain"),
+        };
+
+        v_flex()
+            .w_full()
+            .p_3()
+            .gap_2()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().tokens.elevated_surface)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!(
+                                "Node Drain Result · Cordoned: {}",
+                                result.cordoned
+                            )),
+                    )
+                    .child(state_tag),
+            )
+            .children(result.pods.iter().take(15).map(|p| {
+                let tag = match p.state {
+                    DrainOutcomeState::Evicted | DrainOutcomeState::Gone => {
+                        Tag::success().small().child(format!("{:?}", p.state))
+                    }
+                    DrainOutcomeState::Skipped => Tag::secondary().small().child("Skipped"),
+                    DrainOutcomeState::Blocked => Tag::danger().small().child("Blocked"),
+                    _ => Tag::warning().small().child(format!("{:?}", p.state)),
+                };
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .child(format!("{}/{}", p.namespace, p.name)),
+                    )
+                    .child(tag)
+            }))
+    }
+
+    fn render_pod_summary_cards(
+        &self,
+        pod: &PodDetails,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let node_ref = pod.node.as_ref().map(|node_name| ResourceReference {
+            kind: ResourceKind::Nodes,
+            name: node_name.clone(),
+            namespace: None,
+            uid: None,
+        });
+        let sa_ref = pod
+            .service_account
+            .as_ref()
+            .map(|sa_name| ResourceReference {
+                kind: ResourceKind::ServiceAccounts,
+                name: sa_name.clone(),
+                namespace: Some(pod.namespace.clone()),
+                uid: None,
+            });
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            // Pod Runtime Summary Card
+            .child(
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_1p5()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
                     .child(
                         h_flex()
                             .justify_between()
-                            .child(div().text_color(cx.theme().muted_foreground).child("Age"))
+                            .items_center()
                             .child(
-                                div().child(format_age(detail.item.created_at.as_deref())),
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("POD RUNTIME OVERVIEW"),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(status_tag(&pod.phase))
+                                    .when_some(pod.qos.clone(), |r, qos| {
+                                        r.child(Tag::secondary().small().child(qos))
+                                    })
+                                    .when_some(pod.deletion_timestamp.clone(), |r, dt| {
+                                        r.child(
+                                            Tag::danger()
+                                                .small()
+                                                .child(format!("Terminating ({dt})")),
+                                        )
+                                    }),
                             ),
                     )
-                    .when_some(detail.reference.namespace.clone(), |el, ns| {
+                    .when(!pod.pod_ips.is_empty(), |el| {
                         el.child(
                             h_flex()
                                 .justify_between()
                                 .child(
                                     div()
+                                        .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child("Namespace"),
+                                        .child("Pod IPs"),
                                 )
-                                .child(div().child(ns)),
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(pod.pod_ips.join(", ")),
+                                ),
+                        )
+                    })
+                    .when(!pod.host_ips.is_empty(), |el| {
+                        el.child(
+                            h_flex()
+                                .justify_between()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Host IPs"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(pod.host_ips.join(", ")),
+                                ),
+                        )
+                    })
+                    .when_some(pod.node.clone(), |el, node_name| {
+                        el.child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("Node: {node_name}")),
+                                )
+                                .when_some(node_ref, |r, target| {
+                                    r.child(
+                                        Button::new("insp-pod-node-link")
+                                            .xsmall()
+                                            .ghost()
+                                            .label("Inspect Node")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_resource_inspector(
+                                                    target.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                }),
+                        )
+                    })
+                    .when_some(pod.service_account.clone(), |el, sa_name| {
+                        el.child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("ServiceAccount: {sa_name}")),
+                                )
+                                .when_some(sa_ref, |r, target| {
+                                    r.child(
+                                        Button::new("insp-pod-sa-link")
+                                            .xsmall()
+                                            .ghost()
+                                            .label("Inspect SA")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_resource_inspector(
+                                                    target.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                }),
                         )
                     }),
             )
-            .when_some(self.inspector.drain_review.clone(), |el, review| {
-                let plan_id = review.plan_id.clone();
+            // Pod Conditions Card
+            .when(!pod.conditions.is_empty(), |el| {
                 el.child(
                     v_flex()
+                        .w_full()
                         .p_3()
                         .gap_2()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().warning)
-                        .bg(cx.theme().secondary)
-                        .text_xs()
-                        .child(
-                            div().font_semibold().child(format!(
-                                "Node Drain Review ({} pod(s), can_drain: {})",
-                                review.pods.len(),
-                                review.can_drain
-                            )),
-                        )
-                        .children(review.pods.iter().take(12).map(|pod| {
-                            h_flex()
-                                .justify_between()
-                                .child(div().child(format!("{}/{}", pod.namespace, pod.name)))
-                                .child(
-                                    div()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!("{:?} ({:?})", pod.disposition, pod.reason)),
-                                )
-                        }))
-                        .when_some(plan_id, |el, pid| {
-                            el.child(
-                                Button::new("execute-drain-plan-btn")
-                                    .xsmall()
-                                    .danger()
-                                    .label("Confirm & Execute Eviction Plan")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.execute_node_drain(pid.clone(), window, cx);
-                                    })),
-                            )
-                        }),
-                )
-            })
-            .when_some(self.inspector.pod_detail.clone(), |el, pod| {
-                let ns = pod.namespace.clone();
-                let name = pod.name.clone();
-                let uid = pod.uid.clone();
-                el.child(
-                    v_flex()
-                        .p_2p5()
-                        .gap_2()
-                        .rounded(px(6.0))
+                        .rounded(px(8.0))
                         .border_1()
                         .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
                         .child(
                             div()
                                 .text_xs()
-                                .font_semibold()
-                                .child("Containers & Interactive Streams"),
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(cx.theme().muted_foreground)
+                                .child("POD CONDITIONS"),
                         )
-                        .children(pod.containers.into_iter().map(|c| {
-                            let c_name = c.name.clone();
-                            let c_ns = ns.clone();
-                            let c_pod = name.clone();
-                            let c_uid = uid.clone();
-                            let s_name = c.name.clone();
-                            let s_ns = ns.clone();
-                            let s_pod = name.clone();
-                            let s_uid = uid.clone();
-                            let a_name = c.name.clone();
-                            let a_ns = ns.clone();
-                            let a_pod = name.clone();
-                            let a_uid = uid.clone();
-
-                            v_flex()
-                                .p_2()
-                                .gap_1p5()
-                                .rounded(px(4.0))
-                                .bg(cx.theme().secondary)
-                                .text_xs()
-                                .child(
-                                    h_flex()
-                                        .justify_between()
-                                        .child(div().font_semibold().child(format!(
-                                            "{} ({})",
-                                            c.name, c.kind
-                                        )))
-                                        .child(Tag::secondary().child(c.state)),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .truncate()
-                                        .child(c.image),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_1p5()
-                                        .flex_wrap()
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "pod-logs-{}",
-                                                c.name
-                                            )))
-                                            .xsmall()
-                                            .primary()
-                                            .label("Logs")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_pod_stream_tab(
-                                                    c_ns.clone(),
-                                                    c_pod.clone(),
-                                                    c_uid.clone(),
-                                                    c_name.clone(),
-                                                    PodStreamMode::Logs,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "pod-shell-{}",
-                                                c.name
-                                            )))
-                                            .xsmall()
-                                            .outline()
-                                            .label("Shell")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_pod_stream_tab(
-                                                    s_ns.clone(),
-                                                    s_pod.clone(),
-                                                    s_uid.clone(),
-                                                    s_name.clone(),
-                                                    PodStreamMode::Shell,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "pod-attach-{}",
-                                                c.name
-                                            )))
-                                            .xsmall()
-                                            .outline()
-                                            .label("Attach")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_pod_stream_tab(
-                                                    a_ns.clone(),
-                                                    a_pod.clone(),
-                                                    a_uid.clone(),
-                                                    a_name.clone(),
-                                                    PodStreamMode::Attach,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                        )
-                                        .children(c.ports.into_iter().map(|p| {
-                                            let f_ns = ns.clone();
-                                            let f_pod = name.clone();
-                                            let f_uid = uid.clone();
-                                            let port = p.port;
-                                            Button::new(SharedString::from(format!(
-                                                "pod-fwd-{}-{port}",
-                                                c.name
-                                            )))
-                                            .xsmall()
-                                            .outline()
-                                            .label(format!("Forward :{port}"))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.start_pod_port_forward(
-                                                    f_ns.clone(),
-                                                    f_pod.clone(),
-                                                    f_uid.clone(),
-                                                    port,
-                                                    window,
-                                                    cx,
-                                                );
-                                            }))
-                                        })),
-                                )
-                        })),
+                        .child(
+                            h_flex().gap_1p5().flex_wrap().children(
+                                pod.conditions.iter().map(|cond| {
+                                    if cond.status == "True" {
+                                        Tag::success()
+                                            .small()
+                                            .child(format!("{}: True", cond.kind))
+                                    } else {
+                                        Tag::warning()
+                                            .small()
+                                            .child(format!("{}: {}", cond.kind, cond.status))
+                                    }
+                                }),
+                            ),
+                        ),
                 )
             })
-            .when_some(detail.event_diagnostic.clone(), |el, diag| {
-                el.child(
-                    v_flex()
-                        .p_2p5()
-                        .gap_1()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .text_xs()
-                        .child(div().font_semibold().child("Event Message"))
-                        .child(div().child(diag.message)),
-                )
-            })
-            .children(detail.sections.iter().map(|sec| {
+            // Pod Containers Card (App, Init, Ephemeral)
+            .child(
                 v_flex()
-                    .p_2p5()
-                    .gap_1p5()
-                    .rounded(px(6.0))
+                    .w_full()
+                    .p_3()
+                    .gap_2()
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .text_xs()
-                    .child(div().font_semibold().child(sec.title.clone()))
-                    .children(sec.facts.iter().map(|f| {
-                        h_flex()
-                            .justify_between()
-                            .gap_2()
-                            .py_0p5()
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("CONTAINERS ({})", pod.containers.len())),
+                    )
+                    .children(pod.containers.iter().map(|c| {
+                        let ns = pod.namespace.clone();
+                        let pname = pod.name.clone();
+                        let puid = pod.uid.clone();
+                        let cname = c.name.clone();
+                        let ns_shell = ns.clone();
+                        let pname_shell = pname.clone();
+                        let puid_shell = puid.clone();
+                        let cname_shell = cname.clone();
+                        let ns_attach = ns.clone();
+                        let pname_attach = pname.clone();
+                        let puid_attach = puid.clone();
+                        let cname_attach = cname.clone();
+                        let image_copy = c.image.clone().unwrap_or_default();
+
+                        let state_badge = match c.state {
+                            "running" => Tag::success().small().child("running"),
+                            "waiting" => Tag::warning().small().child("waiting"),
+                            "terminated" => Tag::secondary().small().child("terminated"),
+                            other => Tag::secondary().small().child(other),
+                        };
+
+                        v_flex()
+                            .w_full()
+                            .p_2p5()
+                            .gap_1p5()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().tokens.surface)
                             .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(f.label.clone()),
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(c.name.clone()),
+                                            )
+                                            .child(Tag::secondary().small().child(c.kind))
+                                            .child(state_badge)
+                                            .child(if c.ready {
+                                                Tag::success().small().child("Ready")
+                                            } else {
+                                                Tag::warning().small().child("Not Ready")
+                                            })
+                                            .when(c.restarts > 0, |r| {
+                                                r.child(
+                                                    Tag::warning()
+                                                        .small()
+                                                        .child(format!("Restarts: {}", c.restarts)),
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "pod-logs-{}",
+                                                    c.name
+                                                )))
+                                                .xsmall()
+                                                .primary()
+                                                .label("Logs")
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.open_pod_stream(
+                                                            ns.clone(),
+                                                            pname.clone(),
+                                                            puid.clone(),
+                                                            cname.clone(),
+                                                            PodStreamMode::Logs,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            )
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "pod-shell-{}",
+                                                    c.name
+                                                )))
+                                                .xsmall()
+                                                .outline()
+                                                .label("Shell")
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.open_pod_stream(
+                                                            ns_shell.clone(),
+                                                            pname_shell.clone(),
+                                                            puid_shell.clone(),
+                                                            cname_shell.clone(),
+                                                            PodStreamMode::Shell,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            )
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "pod-attach-{}",
+                                                    c.name
+                                                )))
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Attach")
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.open_pod_stream(
+                                                            ns_attach.clone(),
+                                                            pname_attach.clone(),
+                                                            puid_attach.clone(),
+                                                            cname_attach.clone(),
+                                                            PodStreamMode::Attach,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            ),
+                                    ),
                             )
-                            .child(div().font_medium().child(f.value.clone()))
-                    }))
-            }))
+                            .when_some(c.image.clone(), |el, img| {
+                                el.child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .truncate()
+                                                .child(format!("Image: {img}")),
+                                        )
+                                        .child(
+                                            Button::new(SharedString::from(format!(
+                                                "copy-img-{}",
+                                                c.name
+                                            )))
+                                            .xsmall()
+                                            .ghost()
+                                            .label("Copy")
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    image_copy.clone(),
+                                                ));
+                                            })),
+                                        ),
+                                )
+                            })
+                            .when(!c.ports.is_empty(), |el| {
+                                let ns_fwd = pod.namespace.clone();
+                                let pname_fwd = pod.name.clone();
+                                let puid_fwd = pod.uid.clone();
+                                el.child(
+                                    h_flex().gap_1p5().flex_wrap().items_center().children(
+                                        c.ports.iter().map(move |pt| {
+                                            let port_num = pt.container_port;
+                                            let ns_p = ns_fwd.clone();
+                                            let pn_p = pname_fwd.clone();
+                                            let pu_p = puid_fwd.clone();
+                                            let port_label = match &pt.name {
+                                                Some(n) => format!(
+                                                    "Forward {n} ({port_num}/{})",
+                                                    pt.protocol
+                                                ),
+                                                None => {
+                                                    format!("Forward :{port_num}/{}", pt.protocol)
+                                                }
+                                            };
+                                            Button::new(SharedString::from(format!(
+                                                "pod-fwd-{}-{port_num}",
+                                                c.name
+                                            )))
+                                            .xsmall()
+                                            .outline()
+                                            .label(port_label)
+                                            .on_click(cx.listener(
+                                                move |this, _, window, cx| {
+                                                    this.start_pod_forward(
+                                                        ns_p.clone(),
+                                                        pn_p.clone(),
+                                                        pu_p.clone(),
+                                                        port_num,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                },
+                                            ))
+                                        }),
+                                    ),
+                                )
+                            })
+                    })),
+            )
     }
 
     fn render_inspector_metadata(
@@ -1260,64 +2236,218 @@ impl IceonApp {
         detail: &ResourceDetail,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let Some(meta) = &detail.metadata else {
+            return div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Metadata details are withheld or unavailable for this resource kind.")
+                .into_any_element();
+        };
+
         v_flex()
-            .flex_1()
-            .p_3()
+            .w_full()
             .gap_3()
-            .overflow_y_scrollbar()
-            .child(if let Some(meta) = &detail.metadata {
+            // Identity & Finalizers card
+            .child(
                 v_flex()
-                    .gap_3()
+                    .w_full()
+                    .p_3()
+                    .gap_1p5()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
                     .child(
-                        v_flex()
-                            .p_2p5()
-                            .gap_1()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(cx.theme().border)
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("OBJECT METADATA"),
+                            )
+                            .when(meta.partial, |r| {
+                                r.child(Tag::warning().small().child("Partial / Redacted"))
+                            }),
+                    )
+                    .when_some(meta.deletion_timestamp.clone(), |el, dt| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(format!("Deletion Timestamp: {dt}")),
+                        )
+                    })
+                    .when(!meta.finalizers.is_empty(), |el| {
+                        el.child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Finalizers:"),
+                                )
+                                .child(
+                                    h_flex().gap_1().flex_wrap().children(
+                                        meta.finalizers
+                                            .iter()
+                                            .map(|fin| Tag::secondary().small().child(fin.clone())),
+                                    ),
+                                ),
+                        )
+                    }),
+            )
+            // Labels card
+            .child(
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_1p5()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        div()
                             .text_xs()
-                            .child(div().font_semibold().child("Labels"))
-                            .children(meta.labels.iter().map(|entry| {
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("LABELS ({})", meta.labels.len())),
+                    )
+                    .children(meta.labels.iter().map(|entry| {
+                        let kv = format!("{}={}", entry.key, entry.value);
+                        let kv_copy = kv.clone();
+                        h_flex()
+                            .justify_between()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(entry.key.clone()),
+                            )
+                            .child(
                                 h_flex()
-                                    .justify_between()
-                                    .gap_2()
+                                    .gap_1()
+                                    .items_center()
                                     .child(
                                         div()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(entry.key.clone()),
+                                            .text_xs()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(entry.value.clone()),
                                     )
-                                    .child(div().child(entry.value.clone()))
-                            })),
-                    )
-                    .child(
-                        v_flex()
-                            .p_2p5()
-                            .gap_1()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .text_xs()
-                            .child(div().font_semibold().child("Reviewed Annotations"))
-                            .children(meta.annotations.iter().map(|entry| {
-                                h_flex()
-                                    .justify_between()
-                                    .gap_2()
                                     .child(
-                                        div()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(entry.key.clone()),
-                                    )
-                                    .child(div().child(entry.value.clone()))
-                            })),
+                                        Button::new(SharedString::from(format!(
+                                            "copy-lbl-{}",
+                                            entry.key
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Copy")
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                kv_copy.clone(),
+                                            ));
+                                        })),
+                                    ),
+                            )
+                    })),
+            )
+            // Reviewed Annotations card
+            .child(
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_1p5()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!(
+                                "REVIEWED ANNOTATIONS ({})",
+                                meta.annotations.len()
+                            )),
                     )
-                    .into_any_element()
-            } else {
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Metadata details are withheld for sensitive resource kinds.")
-                    .into_any_element()
+                    .children(meta.annotations.iter().map(|entry| {
+                        v_flex()
+                            .w_full()
+                            .py_0p5()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(entry.key.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(entry.value.clone()),
+                            )
+                    })),
+            )
+            // Managed Fields card
+            .when(!meta.managed_fields.is_empty(), |el| {
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_1p5()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!(
+                                    "MANAGED FIELDS ({})",
+                                    meta.managed_fields.len()
+                                )),
+                        )
+                        .children(meta.managed_fields.iter().map(|mf| {
+                            v_flex()
+                                .w_full()
+                                .p_2()
+                                .gap_0p5()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(mf.manager.clone()),
+                                        )
+                                        .child(
+                                            Tag::secondary()
+                                                .small()
+                                                .child(mf.operation.clone()),
+                                        ),
+                                )
+                                .when_some(mf.time.clone(), |r, t| {
+                                    r.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!("Updated: {t}")),
+                                    )
+                                })
+                        })),
+                )
             })
+            .into_any_element()
     }
 
     fn render_inspector_relations(
@@ -1326,78 +2456,376 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
-            .flex_1()
-            .p_3()
+            .w_full()
             .gap_3()
-            .overflow_y_scrollbar()
-            .children(detail.related.iter().map(|(relation, target)| {
-                let target_ref = target.clone();
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .p_2()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .text_xs()
-                    .child(div().font_medium().child(format!(
-                        "{relation}: {}",
-                        target.name
-                    )))
-                    .child(
-                        Button::new(SharedString::from(format!(
-                            "inspect-rel-{relation}-{}",
-                            target.name
-                        )))
-                        .xsmall()
-                        .outline()
-                        .label("Inspect")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_resource_inspector(target_ref.clone(), window, cx);
+            // Direct related links (Controller, Node, ServiceAccount, StorageClass, etc.)
+            .when(!detail.related.is_empty(), |el| {
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_1p5()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!("DIRECT REFERENCES ({})", detail.related.len())),
+                        )
+                        .children(detail.related.iter().enumerate().map(|(idx, rel)| {
+                            let target = rel.target.clone();
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(Tag::secondary().small().child(rel.relation))
+                                        .child(
+                                            div().text_xs().child(format!(
+                                                "{:?}/{}",
+                                                rel.target.kind, rel.target.name
+                                            )),
+                                        ),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("rel-nav-{idx}")))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Inspect")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_resource_inspector(
+                                                target.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        })),
+                                )
                         })),
-                    )
-            }))
+                )
+            })
+            // Scoped ResourceCollections (Pods, ReplicaSets, Jobs, EndpointSlices, ResourceQuotas, LimitRanges)
             .children(self.inspector.collections.iter().map(|col| {
+                let is_pods = col.collection == CollectionKind::Pods;
+                let state_badge = match col.state {
+                    CollectionState::Complete => Tag::success().small().child("Complete"),
+                    CollectionState::Partial => Tag::warning().small().child("Partial"),
+                    CollectionState::Denied => Tag::danger().small().child("Denied"),
+                    CollectionState::Unavailable => Tag::secondary().small().child("Unavailable"),
+                };
                 v_flex()
-                    .p_2p5()
-                    .gap_1p5()
-                    .rounded(px(6.0))
+                    .w_full()
+                    .p_3()
+                    .gap_2()
+                    .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .text_xs()
+                    .bg(cx.theme().tokens.elevated_surface)
                     .child(
-                        div().font_semibold().child(format!(
-                            "{:?} ({} items · {:?})",
-                            col.collection,
-                            col.items.len(),
-                            col.state
-                        )),
-                    )
-                    .children(col.items.iter().take(20).map(|item| {
-                        let item_ref = item.reference.clone();
                         h_flex()
                             .justify_between()
                             .items_center()
-                            .py_1()
-                            .border_b_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!(
+                                        "{:?} ({})",
+                                        col.collection,
+                                        col.items.len()
+                                    )),
+                            )
+                            .child(state_badge),
+                    )
+                    .children(col.items.iter().enumerate().map(|(idx, item)| {
+                        let target = item.reference.clone();
+                        let pod_ns = item.reference.namespace.clone().unwrap_or_default();
+                        let pod_name = item.reference.name.clone();
+                        let pod_ns_shell = pod_ns.clone();
+                        let pod_name_shell = pod_name.clone();
+                        let summary_cols: String = item
+                            .columns
+                            .iter()
+                            .take(3)
+                            .map(|(k, v)| format!("{k}:{v}"))
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+
+                        v_flex()
+                            .w_full()
+                            .p_2()
+                            .gap_1()
+                            .rounded(px(6.0))
+                            .border_1()
                             .border_color(cx.theme().border)
-                            .child(div().truncate().child(item.reference.name.clone()))
+                            .bg(cx.theme().tokens.surface)
                             .child(
                                 h_flex()
-                                    .gap_1p5()
+                                    .justify_between()
                                     .items_center()
-                                    .child(Tag::secondary().child(item.status.clone()))
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(item.reference.name.clone()),
+                                            )
+                                            .child(status_tag(&item.status)),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .when(is_pods, |r| {
+                                                r.child(
+                                                    Button::new(SharedString::from(format!(
+                                                        "col-pod-logs-{idx}"
+                                                    )))
+                                                    .xsmall()
+                                                    .primary()
+                                                    .label("Logs")
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.open_pod_stream_for_pod(
+                                                                pod_ns.clone(),
+                                                                pod_name.clone(),
+                                                                PodStreamMode::Logs,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                )
+                                                .child(
+                                                    Button::new(SharedString::from(format!(
+                                                        "col-pod-shell-{idx}"
+                                                    )))
+                                                    .xsmall()
+                                                    .outline()
+                                                    .label("Shell")
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.open_pod_stream_for_pod(
+                                                                pod_ns_shell.clone(),
+                                                                pod_name_shell.clone(),
+                                                                PodStreamMode::Shell,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                                )
+                                            })
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "col-item-{:?}-{idx}",
+                                                    col.collection
+                                                )))
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Inspect")
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.open_resource_inspector(
+                                                            target.clone(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            ),
+                                    ),
+                            )
+                            .when(!summary_cols.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(summary_cols),
+                                )
+                            })
+                    }))
+            }))
+    }
+
+    fn render_inspector_events(
+        &self,
+        detail: &ResourceDetail,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let pod_events = self.inspector.pod_detail.clone();
+        let event_collections: Vec<ResourceCollection> = self
+            .inspector
+            .collections
+            .iter()
+            .filter(|c| c.collection == CollectionKind::Events)
+            .cloned()
+            .collect();
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .when_some(detail.event_diagnostic.clone(), |el, diag| {
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_1p5()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("EVENT MESSAGE"),
+                        )
+                        .child(div().text_xs().child(diag.message)),
+                )
+            })
+            .when_some(pod_events, |el, pod| {
+                let state_tag = match pod.events_state {
+                    PodEventsState::Complete => Tag::success().small().child("Complete"),
+                    PodEventsState::Partial => Tag::warning().small().child("Partial"),
+                    PodEventsState::Denied => Tag::danger().small().child("Denied"),
+                    PodEventsState::Unavailable => Tag::secondary().small().child("Unavailable"),
+                };
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_2()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(format!("POD EVENTS ({})", pod.events.len())),
+                                )
+                                .child(state_tag),
+                        )
+                        .when(pod.events.is_empty(), |r| {
+                            r.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("No pod events recorded."),
+                            )
+                        })
+                        .children(pod.events.iter().map(|ev| {
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(if ev.kind == "Warning" {
+                                            Tag::warning().small().child(ev.kind.clone())
+                                        } else {
+                                            Tag::secondary().small().child(ev.kind.clone())
+                                        })
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(ev.reason.clone()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "×{} · {}",
+                                            ev.count,
+                                            ev.last_seen.as_deref().unwrap_or("-")
+                                        )),
+                                )
+                        })),
+                )
+            })
+            .children(event_collections.into_iter().map(|col| {
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().tokens.elevated_surface)
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("INVOLVED EVENTS ({})", col.items.len())),
+                    )
+                    .when(col.items.is_empty(), |r| {
+                        r.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No recent events for this object."),
+                        )
+                    })
+                    .children(col.items.into_iter().enumerate().map(|(idx, item)| {
+                        let target = item.reference.clone();
+                        let reason = item.columns.get("reason").cloned().unwrap_or_default();
+                        let count = item.columns.get("count").cloned().unwrap_or_else(|| "1".into());
+                        v_flex()
+                            .w_full()
+                            .p_2()
+                            .gap_1()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(status_tag(&item.status))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(reason),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(format!("×{count}")),
+                                            ),
+                                    )
                                     .child(
                                         Button::new(SharedString::from(format!(
-                                            "col-item-{:?}-{}",
-                                            col.collection, item.reference.name
+                                            "insp-ev-open-{idx}"
                                         )))
                                         .xsmall()
                                         .ghost()
-                                        .label("Open")
+                                        .label("Inspect Event")
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.open_resource_inspector(
-                                                item_ref.clone(),
+                                                target.clone(),
                                                 window,
                                                 cx,
                                             );
@@ -1410,49 +2838,67 @@ impl IceonApp {
 
     fn render_inspector_yaml(
         &self,
-        detail: &ResourceDetail,
+        _detail: &ResourceDetail,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let is_pod = detail.reference.kind == ResourceKind::Pods;
+        let yaml_copy = self.inspector_yaml_editor.read(cx).value().to_string();
+
         v_flex()
-            .flex_1()
-            .p_3()
+            .w_full()
+            .h(px(520.0))
             .gap_2()
             .child(
                 h_flex()
-                    .items_center()
                     .justify_between()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Sanitized editable YAML projection"),
-                    )
+                    .items_center()
                     .child(
                         h_flex()
                             .gap_1p5()
-                            .when(!is_pod, |el| {
-                                el.child(
-                                    Button::new("yaml-dry-run-btn")
-                                        .xsmall()
-                                        .outline()
-                                        .label("Server Dry-Run")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.submit_editable_yaml(
-                                                EditMode::DryRun,
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                )
-                            })
+                            .items_center()
+                            .child(
+                                Button::new("yaml-dry-run-btn")
+                                    .xsmall()
+                                    .outline()
+                                    .label("Server Dry-Run")
+                                    .disabled(self.inspector.edit_load.is_none())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.apply_inspector_yaml(true, window, cx);
+                                    })),
+                            )
                             .child(
                                 Button::new("yaml-apply-btn")
                                     .xsmall()
                                     .primary()
                                     .label("Apply Changes")
+                                    .disabled(self.inspector.edit_load.is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.submit_editable_yaml(EditMode::Apply, window, cx);
+                                        this.apply_inspector_yaml(false, window, cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Button::new("yaml-copy-btn")
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Copy YAML")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            yaml_copy.clone(),
+                                        ));
+                                    })),
+                            )
+                            .child(
+                                Button::new("yaml-reload-btn")
+                                    .xsmall()
+                                    .ghost()
+                                    .label("Reload")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.load_inspector_yaml(window, cx);
                                     })),
                             ),
                     ),
@@ -1461,45 +2907,180 @@ impl IceonApp {
                 div()
                     .flex_1()
                     .w_full()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(px(6.0))
-                    .overflow_hidden()
-                    .child(Editor::new(&self.inspector_yaml_editor).h_full()),
+                    .child(Input::new(&self.inspector_yaml_editor).h_full()),
             )
     }
-}
 
-impl InspectorState {
-    fn pod_actions(
+    fn render_helm_inspector(
         &self,
-        _reference: &ResourceReference,
-        _cx: &mut Context<IceonApp>,
-    ) -> Option<AnyElement> {
-        None
+        helm: &HelmDetail,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let is_chart = helm.view == HelmView::Charts;
+        let chart_name = helm.name.clone();
+        let chart_ver = helm.version.clone().unwrap_or_else(|| "latest".into());
+
+        v_flex()
+            .w_full()
+            .gap_3()
+            .when(is_chart, |el| {
+                el.child(
+                    h_flex()
+                        .w_full()
+                        .p_3()
+                        .justify_between()
+                        .items_center()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            v_flex()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(chart_name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("Version: {chart_ver}")),
+                                ),
+                        )
+                        .child(
+                            Button::new("insp-helm-install-chart-btn")
+                                .xsmall()
+                                .primary()
+                                .label("Configure Install")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.helm_install_chart = Some(chart_name.clone());
+                                    this.helm_install_version = Some(chart_ver.clone());
+                                    this.helm_install_message = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .when(!helm.facts.is_empty(), |el| {
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_1p5()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("CHART METADATA"),
+                        )
+                        .children(helm.facts.iter().map(|f| {
+                            h_flex()
+                                .justify_between()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(f.label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(f.value.clone()),
+                                )
+                        })),
+                )
+            })
+            .when(!helm.history.is_empty(), |el| {
+                el.child(
+                    v_flex()
+                        .w_full()
+                        .p_3()
+                        .gap_2()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format!(
+                                    "RELEASE REVISION HISTORY ({})",
+                                    helm.history.len()
+                                )),
+                        )
+                        .children(helm.history.iter().map(|rev| {
+                            v_flex()
+                                .w_full()
+                                .p_2()
+                                .gap_0p5()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    h_flex()
+                                        .justify_between()
+                                        .items_center()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(format!(
+                                                    "Revision #{} · {}",
+                                                    rev.revision, rev.chart
+                                                )),
+                                        )
+                                        .child(status_tag(&rev.status)),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "App {} · Updated {}",
+                                            rev.app_version, rev.updated
+                                        )),
+                                )
+                        })),
+                )
+            })
     }
 }
 
-fn supported_collections(kind: ResourceKind) -> Vec<CollectionKind> {
-    let mut out = vec![CollectionKind::Events];
-    match kind {
-        ResourceKind::Nodes
-        | ResourceKind::ReplicaSets
-        | ResourceKind::DaemonSets
-        | ResourceKind::StatefulSets
-        | ResourceKind::ReplicationControllers
-        | ResourceKind::Jobs => out.insert(0, CollectionKind::Pods),
-        ResourceKind::Deployments => {
-            out.insert(0, CollectionKind::ReplicaSets);
-            out.insert(0, CollectionKind::Pods);
-        }
-        ResourceKind::CronJobs => out.insert(0, CollectionKind::Jobs),
-        ResourceKind::Services => out.insert(0, CollectionKind::EndpointSlices),
-        ResourceKind::Namespaces => {
-            out.push(CollectionKind::ResourceQuotas);
-            out.push(CollectionKind::LimitRanges);
-        }
-        _ => {}
+fn status_tag(status: &str) -> Tag {
+    let lower = status.to_lowercase();
+    if lower.contains("running")
+        || lower.contains("ready")
+        || lower.contains("active")
+        || lower.contains("bound")
+        || lower.contains("complete")
+        || lower.contains("succeeded")
+        || lower.contains("deployed")
+        || lower == "true"
+    {
+        Tag::success().small().child(status.to_owned())
+    } else if lower.contains("pending")
+        || lower.contains("terminating")
+        || lower.contains("warning")
+        || lower.contains("waiting")
+    {
+        Tag::warning().small().child(status.to_owned())
+    } else if lower.contains("fail")
+        || lower.contains("error")
+        || lower.contains("crash")
+        || lower == "false"
+    {
+        Tag::danger().small().child(status.to_owned())
+    } else {
+        Tag::secondary().small().child(status.to_owned())
     }
-    out
 }

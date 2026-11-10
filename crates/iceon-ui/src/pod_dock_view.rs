@@ -1,44 +1,162 @@
-//! Pod Operational Dock: resizable bottom panel hosting up to 12 concurrent Pod streams
-//! (`Logs`, `Shell` exec, `Attach`) and active port-forwards.
-
-use std::time::Duration;
+//! Bottom operational dock for Pod Logs, Interactive Exec Shell, Attach, and Port-Forwards.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _,
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
     scroll::ScrollableElement as _,
     tag::Tag,
-    v_flex, IconName,
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::IceonApp;
-use crate::navigation::connection_error_message;
-use iceon_core::connection::pod_runtime::{
-    PodForward, PodForwardRequest, PodForwardStopRequest, PodInputRequest, PodStartRequest,
-    PodStreamMode, PodStreamRequest,
+use iceon_core::connection::{
+    pod_runtime::{
+        PodEvent, PodForwardRequest, PodForwardStopRequest, PodInputRequest, PodResizeRequest,
+        PodStartRequest, PodStopRequest, PodStreamMode,
+    },
+    pods::PodIdentity,
 };
 
-#[derive(Clone)]
+use crate::IceonApp;
+
+#[derive(Clone, Debug)]
 pub struct PodDockTab {
-    pub stream_id: String,
-    pub cluster_id: String,
-    pub session_id: String,
-    pub namespace: String,
+    pub id: String,
     pub pod_name: String,
+    pub namespace: String,
+    pub uid: String,
     pub container: String,
+    pub available_containers: Vec<String>,
     pub mode: PodStreamMode,
-    pub buffer: String,
-    pub status: &'static str,
-    pub error: Option<String>,
-    pub truncated: bool,
+    pub status: String,
+    pub output_lines: Vec<String>,
+    pub previous: bool,
+    pub timestamps: bool,
+    pub tail_lines: u32,
+    pub paused: bool,
+    pub shell: String,
+    pub cols: u16,
+    pub rows: u16,
+    pub command_history: Vec<String>,
+}
+
+impl PodDockTab {
+    pub fn mode_label(&self) -> &'static str {
+        match self.mode {
+            PodStreamMode::Logs => "LOGS",
+            PodStreamMode::Shell => "SHELL",
+            PodStreamMode::Attach => "ATTACH",
+        }
+    }
+}
+
+pub const TAIL_LINE_OPTIONS: &[u32] = &[100, 500, 2000, 10000];
+pub const TERMINAL_SIZE_PRESETS: &[(u16, u16, &str)] = &[
+    (80, 24, "80×24"),
+    (120, 36, "120×36"),
+    (160, 48, "160×48"),
+];
+
+pub fn shell_option_path(label: &str) -> &'static str {
+    match label {
+        "bash" => "/bin/bash",
+        "ash" => "/bin/ash",
+        _ => "/bin/sh",
+    }
 }
 
 impl IceonApp {
-    pub(crate) fn open_pod_stream_tab(
+    /// Opens a Pod Logs or Shell stream directly from a Pod table row or collection item
+    /// by resolving the Pod's UID and container list first via `pod_detail`.
+    pub(crate) fn open_pod_stream_for_pod(
+        &mut self,
+        namespace: String,
+        pod_name: String,
+        mode: PodStreamMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        if let Some(pod) = self
+            .inspector
+            .pod_detail
+            .as_ref()
+            .filter(|p| p.name == pod_name && p.namespace == namespace)
+        {
+            let containers: Vec<String> = pod.containers.iter().map(|c| c.name.clone()).collect();
+            let default_container = pod
+                .containers
+                .iter()
+                .find(|c| c.kind == "container")
+                .or_else(|| pod.containers.first())
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "main".into());
+            self.open_pod_stream_with_containers(
+                namespace,
+                pod_name,
+                pod.uid.clone(),
+                default_container,
+                containers,
+                mode,
+                window,
+                cx,
+            );
+            return;
+        }
+
+        let read_id = self.next_operation_id();
+        let connection = self.connection.clone();
+        let identity = PodIdentity {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            namespace: namespace.clone(),
+            name: pod_name.clone(),
+            read_id,
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = connection.pod_detail(identity).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(pod) => {
+                        let containers: Vec<String> =
+                            pod.containers.iter().map(|c| c.name.clone()).collect();
+                        let default_container = pod
+                            .containers
+                            .iter()
+                            .find(|c| c.kind == "container")
+                            .or_else(|| pod.containers.first())
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| "main".into());
+                        this.open_pod_stream_with_containers(
+                            namespace,
+                            pod_name,
+                            pod.uid,
+                            default_container,
+                            containers,
+                            mode,
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(err) => {
+                        this.cluster_error = Some(format!(
+                            "Failed to resolve pod {namespace}/{pod_name} for {:?}: {err:?}",
+                            mode
+                        ));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn open_pod_stream(
         &mut self,
         namespace: String,
         pod_name: String,
@@ -48,107 +166,234 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let engine = self.connection.clone();
-        self.pod_dock_open = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .pod_stream_open(PodStartRequest {
-                    cluster_id: session.cluster_id.clone(),
-                    session_id: session.session_id.clone(),
-                    namespace: namespace.clone(),
-                    name: pod_name.clone(),
-                    uid,
-                    container: container.clone(),
-                    mode,
-                    previous: false,
-                    timestamps: true,
-                    tail_lines: 500,
-                    shell: (mode == PodStreamMode::Shell).then(|| "/bin/sh".into()),
-                })
-                .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match res {
-                    Ok(snap) => {
-                        let stream_id = snap.stream_id.clone();
-                        this.pod_dock_tabs.push(PodDockTab {
-                            stream_id: stream_id.clone(),
-                            cluster_id: session.cluster_id,
-                            session_id: session.session_id,
-                            namespace,
-                            pod_name,
-                            container,
-                            mode,
-                            buffer: snap.output,
-                            status: snap.status,
-                            error: snap.error.map(|e| connection_error_message(e).into()),
-                            truncated: snap.truncated,
-                        });
-                        this.active_pod_tab = Some(this.pod_dock_tabs.len() - 1);
-                        this.spawn_pod_stream_poller(stream_id, window, cx);
-                    }
-                    Err(err) => {
-                        this.cluster_error = Some(connection_error_message(err).into());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        let mut available_containers = self
+            .inspector
+            .pod_detail
+            .as_ref()
+            .filter(|p| p.name == pod_name && p.namespace == namespace)
+            .map(|p| p.containers.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if !available_containers.contains(&container) {
+            available_containers.push(container.clone());
+        }
+        self.open_pod_stream_with_containers(
+            namespace,
+            pod_name,
+            uid,
+            container,
+            available_containers,
+            mode,
+            window,
+            cx,
+        );
     }
 
-    fn spawn_pod_stream_poller(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_pod_stream_with_containers(
         &mut self,
-        stream_id: String,
+        namespace: String,
+        pod_name: String,
+        uid: String,
+        container: String,
+        available_containers: Vec<String>,
+        mode: PodStreamMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let engine = self.connection.clone();
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let stream_id = format!("pod-stream-{}", self.next_operation_id());
+        let default_shell = shell_option_path("sh").to_string();
+
+        let tab = PodDockTab {
+            id: stream_id.clone(),
+            pod_name: pod_name.clone(),
+            namespace: namespace.clone(),
+            uid: uid.clone(),
+            container: container.clone(),
+            available_containers,
+            mode,
+            status: "opening".into(),
+            output_lines: vec![format!(
+                "Connecting {:?} stream to {namespace}/{pod_name} ({container})...",
+                mode
+            )],
+            previous: false,
+            timestamps: true,
+            tail_lines: 500,
+            paused: false,
+            shell: default_shell.clone(),
+            cols: 120,
+            rows: 36,
+            command_history: vec![],
+        };
+        self.pod_dock_tabs.push(tab);
+        self.active_pod_tab = Some(self.pod_dock_tabs.len() - 1);
+        self.pod_dock_open = true;
+        cx.notify();
+
+        self.spawn_pod_stream_worker(
+            session.cluster_id,
+            session.session_id,
+            stream_id,
+            namespace,
+            pod_name,
+            uid,
+            container,
+            mode,
+            false,
+            true,
+            500,
+            default_shell,
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn reopen_pod_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let Some(existing) = self.pod_dock_tabs.get(index).cloned() else {
+            return;
+        };
+        let _ = self.connection.pod_stream_stop(PodStopRequest {
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
+            stream: existing.id,
+        });
+
+        let new_stream_id = format!("pod-stream-{}", self.next_operation_id());
+        if let Some(tab) = self.pod_dock_tabs.get_mut(index) {
+            tab.id = new_stream_id.clone();
+            tab.status = "opening".into();
+            tab.paused = false;
+            tab.output_lines = vec![format!(
+                "Reconnecting {:?} stream to {}/{} ({})...",
+                tab.mode, tab.namespace, tab.pod_name, tab.container
+            )];
+        }
+        cx.notify();
+
+        self.spawn_pod_stream_worker(
+            session.cluster_id,
+            session.session_id,
+            new_stream_id,
+            existing.namespace,
+            existing.pod_name,
+            existing.uid,
+            existing.container,
+            existing.mode,
+            existing.previous,
+            existing.timestamps,
+            existing.tail_lines,
+            existing.shell,
+            window,
+            cx,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_pod_stream_worker(
+        &mut self,
+        cluster_id: String,
+        session_id: String,
+        stream_id: String,
+        namespace: String,
+        pod_name: String,
+        uid: String,
+        container: String,
+        mode: PodStreamMode,
+        previous: bool,
+        timestamps: bool,
+        tail_lines: u32,
+        shell: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<PodEvent>();
+        let connection = self.connection.clone();
+        let req = PodStartRequest {
+            cluster_id,
+            session_id,
+            stream: stream_id.clone(),
+            namespace,
+            name: pod_name,
+            uid,
+            container,
+            mode,
+            previous,
+            timestamps,
+            tail_lines,
+            shell: if mode == PodStreamMode::Shell {
+                Some(shell)
+            } else {
+                None
+            },
+        };
+
         cx.spawn_in(window, async move |this, cx| {
-            loop {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                let keep_going = this
-                    .update(cx, |this, cx| {
-                        let Some(tab) = this
-                            .pod_dock_tabs
-                            .iter_mut()
-                            .find(|t| t.stream_id == stream_id)
-                        else {
-                            return false;
-                        };
-                        match engine.pod_stream_read(PodStreamRequest {
-                            cluster_id: tab.cluster_id.clone(),
-                            session_id: tab.session_id.clone(),
-                            stream_id: tab.stream_id.clone(),
-                        }) {
-                            Ok(snap) => {
-                                if !snap.output.is_empty() {
-                                    tab.buffer.push_str(&snap.output);
-                                    if tab.buffer.len() > 256 * 1024 {
-                                        let drain = tab.buffer.len() - 256 * 1024;
-                                        let mut idx = drain;
-                                        while !tab.buffer.is_char_boundary(idx) {
-                                            idx += 1;
-                                        }
-                                        tab.buffer.drain(..idx);
-                                    }
-                                    cx.notify();
-                                }
-                                tab.status = snap.status;
-                                tab.truncated |= snap.truncated;
-                                if let Some(err) = snap.error {
-                                    tab.error = Some(connection_error_message(err).into());
-                                    cx.notify();
-                                }
-                                snap.status == "opening" || snap.status == "running"
+            let start_res = connection
+                .pod_stream_start(req, move |ev| {
+                    let _ = tx.send(ev);
+                })
+                .await;
+
+            if let Err(err) = start_res {
+                let _ = this.update_in(cx, |this, _, cx| {
+                    if let Some(tab) = this.pod_dock_tabs.iter_mut().find(|t| t.id == stream_id) {
+                        tab.status = "error".into();
+                        tab.output_lines.push(format!("Stream error: {err:?}"));
+                    }
+                    cx.notify();
+                });
+                return;
+            }
+
+            while let Some(ev) = rx.recv().await {
+                let should_break = matches!(ev.kind, "exit" | "error");
+                let _ = this.update_in(cx, |this, _, cx| {
+                    if let Some(tab) = this.pod_dock_tabs.iter_mut().find(|t| t.id == stream_id) {
+                        match ev.kind {
+                            "ready" => {
+                                tab.status = "running".into();
                             }
-                            Err(_) => false,
+                            "data" => {
+                                if !tab.paused
+                                    && let Some(data) = ev.data
+                                {
+                                    for line in data.lines() {
+                                        tab.output_lines.push(line.to_owned());
+                                    }
+                                    if tab.output_lines.len() > 2500 {
+                                        let drain_count = tab.output_lines.len() - 2500;
+                                        tab.output_lines.drain(0..drain_count);
+                                    }
+                                }
+                            }
+                            "exit" => {
+                                tab.status = "exited".into();
+                                tab.output_lines.push("[stream closed]".into());
+                            }
+                            "error" => {
+                                tab.status = "error".into();
+                                tab.output_lines.push(format!(
+                                    "[stream error: {:?}]",
+                                    ev.error
+                                ));
+                            }
+                            _ => {}
                         }
-                    })
-                    .unwrap_or(false);
-                if !keep_going {
+                    }
+                    cx.notify();
+                });
+                if should_break {
                     break;
                 }
             }
@@ -156,55 +401,119 @@ impl IceonApp {
         .detach();
     }
 
+    pub(crate) fn close_pod_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.pod_dock_tabs.len() {
+            return;
+        }
+        let removed = self.pod_dock_tabs.remove(index);
+        if let Some(session) = &self.cluster_session {
+            let _ = self.connection.pod_stream_stop(PodStopRequest {
+                cluster_id: session.cluster_id.clone(),
+                session_id: session.session_id.clone(),
+                stream: removed.id,
+            });
+        }
+        if self.pod_dock_tabs.is_empty() {
+            self.active_pod_tab = None;
+            self.pod_dock_open = false;
+        } else {
+            self.active_pod_tab = Some(index.min(self.pod_dock_tabs.len() - 1));
+        }
+        cx.notify();
+    }
+
     pub(crate) fn send_pod_terminal_input(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(idx) = self.active_pod_tab else {
+        let Some(active_idx) = self.active_pod_tab else {
             return;
         };
-        let Some(tab) = self.pod_dock_tabs.get(idx).cloned() else {
+        let Some(tab) = self.pod_dock_tabs.get_mut(active_idx) else {
             return;
         };
-        let line = self.pod_terminal_input.read(cx).value().to_string();
-        if line.is_empty() {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let input_text = self.pod_terminal_input.read(cx).value().to_string();
+        if input_text.is_empty() {
             return;
         }
-        let payload = format!("{line}\n");
+        let stream_id = tab.id.clone();
+        tab.output_lines.push(format!("$ {input_text}"));
+        if tab.command_history.last() != Some(&input_text) {
+            tab.command_history.push(input_text.clone());
+            if tab.command_history.len() > 20 {
+                tab.command_history.remove(0);
+            }
+        }
+        self.pod_terminal_input
+            .update(cx, |state, cx| state.set_value("", window, cx));
+
+        let payload = format!("{input_text}\n");
         let _ = self.connection.pod_stream_write(PodInputRequest {
-            stream: PodStreamRequest {
-                cluster_id: tab.cluster_id,
-                session_id: tab.session_id,
-                stream_id: tab.stream_id,
-            },
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            stream: stream_id,
             data: payload,
         });
-        self.pod_terminal_input
-            .update(cx, |s, cx| s.set_value(String::new(), window, cx));
         cx.notify();
     }
 
-    pub(crate) fn close_pod_stream_tab(&mut self, index: usize, cx: &mut Context<Self>) {
-        if index >= self.pod_dock_tabs.len() {
+    pub(crate) fn send_pod_terminal_raw(&mut self, raw: &str, label: &str, cx: &mut Context<Self>) {
+        let Some(active_idx) = self.active_pod_tab else {
             return;
-        }
-        let removed = self.pod_dock_tabs.remove(index);
-        let _ = self.connection.pod_stream_close(PodStreamRequest {
-            cluster_id: removed.cluster_id,
-            session_id: removed.session_id,
-            stream_id: removed.stream_id,
-        });
-        if self.pod_dock_tabs.is_empty() {
-            self.active_pod_tab = None;
-            self.pod_dock_open = false;
+        };
+        let Some(tab) = self.pod_dock_tabs.get_mut(active_idx) else {
+            return;
+        };
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let stream_id = tab.id.clone();
+        if label == "clear" {
+            tab.output_lines.clear();
         } else {
-            self.active_pod_tab = Some(index.saturating_sub(1));
+            tab.output_lines.push(format!("[sent {label}]"));
         }
+        let _ = self.connection.pod_stream_write(PodInputRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            stream: stream_id,
+            data: raw.to_owned(),
+        });
         cx.notify();
     }
 
-    pub(crate) fn start_pod_port_forward(
+    pub(crate) fn resize_active_pod_terminal(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(active_idx) = self.active_pod_tab else {
+            return;
+        };
+        let Some(tab) = self.pod_dock_tabs.get_mut(active_idx) else {
+            return;
+        };
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        tab.cols = cols;
+        tab.rows = rows;
+        let _ = self.connection.pod_stream_resize(PodResizeRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            stream: tab.id.clone(),
+            cols,
+            rows,
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn start_pod_forward(
         &mut self,
         namespace: String,
         pod_name: String,
@@ -216,30 +525,26 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        let engine = self.connection.clone();
+        let connection = self.connection.clone();
+        let req = PodForwardRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            namespace,
+            name: pod_name,
+            uid,
+            remote_port,
+            local_port: 0,
+        };
         cx.spawn_in(window, async move |this, cx| {
-            let res = engine
-                .pod_forward_start(PodForwardRequest {
-                    cluster_id: session.cluster_id,
-                    session_id: session.session_id,
-                    namespace,
-                    name: pod_name,
-                    uid,
-                    remote_port,
-                    local_port: 0,
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                match res {
+            let result = connection.pod_forward_start(req).await;
+            let _ = this.update_in(cx, |this, _, cx| {
+                match result {
                     Ok(fwd) => {
-                        this.inspector.status_banner = Some(format!(
-                            "Port forward active: 127.0.0.1:{} -> {}:{}",
-                            fwd.local_port, fwd.name, fwd.remote_port
-                        ));
-                        this.refresh_port_forwards(cx);
+                        this.port_forwards.push(fwd);
+                        this.pod_dock_open = true;
                     }
                     Err(err) => {
-                        this.inspector.error = Some(connection_error_message(err).into());
+                        this.cluster_error = Some(format!("Port-forward failed: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -248,33 +553,16 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn refresh_port_forwards(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = &self.cluster_session else {
-            self.port_forwards.clear();
-            return;
-        };
-        if let Ok(list) = self
-            .connection
-            .pod_forward_list(iceon_core::connection::SessionRequest {
+    pub(crate) fn stop_pod_forward(&mut self, id: String, cx: &mut Context<Self>) {
+        if let Some(session) = &self.cluster_session {
+            let _ = self.connection.pod_forward_stop(PodForwardStopRequest {
                 cluster_id: session.cluster_id.clone(),
                 session_id: session.session_id.clone(),
-            })
-        {
-            self.port_forwards = list;
+                id: id.clone(),
+            });
         }
+        self.port_forwards.retain(|f| f.id != id);
         cx.notify();
-    }
-
-    pub(crate) fn stop_port_forward(&mut self, id: String, cx: &mut Context<Self>) {
-        let Some(session) = &self.cluster_session else {
-            return;
-        };
-        let _ = self.connection.pod_forward_stop(PodForwardStopRequest {
-            cluster_id: session.cluster_id.clone(),
-            session_id: session.session_id.clone(),
-            id,
-        });
-        self.refresh_port_forwards(cx);
     }
 
     pub(crate) fn render_pod_dock_panel(
@@ -284,49 +572,60 @@ impl IceonApp {
     ) -> impl IntoElement {
         let active_idx = self.active_pod_tab.unwrap_or(0);
         let active_tab = self.pod_dock_tabs.get(active_idx).cloned();
-        let forwards: Vec<PodForward> = self.port_forwards.clone();
+        let forwards = self.port_forwards.clone();
+        let log_filter = self
+            .pod_log_filter_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
 
         v_flex()
-            .size_full()
+            .w_full()
+            .h(px(300.0))
+            .flex_shrink_0()
             .border_t_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(cx.theme().tokens.surface)
+            .overflow_hidden()
             .child(
                 h_flex()
                     .w_full()
+                    .h(px(36.0))
                     .px_3()
-                    .py_1p5()
+                    .justify_between()
+                    .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
-                    .items_center()
-                    .justify_between()
+                    .bg(cx.theme().tokens.chrome)
                     .child(
                         h_flex()
                             .gap_1p5()
                             .items_center()
                             .overflow_x_scrollbar()
                             .children(self.pod_dock_tabs.iter().enumerate().map(|(idx, tab)| {
-                                let selected = idx == active_idx;
-                                let mode_str = match tab.mode {
-                                    PodStreamMode::Logs => "Logs",
-                                    PodStreamMode::Shell => "Shell",
-                                    PodStreamMode::Attach => "Attach",
+                                let selected = Some(idx) == self.active_pod_tab;
+                                let status_dot = match tab.status.as_str() {
+                                    "running" => "●",
+                                    "opening" => "◐",
+                                    "error" => "✕",
+                                    _ => "○",
                                 };
                                 h_flex()
                                     .gap_1()
                                     .items_center()
                                     .child(
                                         Button::new(SharedString::from(format!(
-                                            "dock-tab-{idx}"
+                                            "pod-dock-tab-{idx}"
                                         )))
                                         .xsmall()
-                                        .when(selected, |b| b.primary())
-                                        .when(!selected, |b| b.outline())
+                                        .ghost()
+                                        .selected(selected)
                                         .label(format!(
-                                            "{mode_str}: {}/{}",
-                                            tab.pod_name, tab.container
+                                            "{status_dot} [{}] {}:{}",
+                                            tab.mode_label(),
+                                            tab.pod_name,
+                                            tab.container
                                         ))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.active_pod_tab = Some(idx);
@@ -335,90 +634,421 @@ impl IceonApp {
                                     )
                                     .child(
                                         Button::new(SharedString::from(format!(
-                                            "dock-close-{idx}"
+                                            "pod-dock-close-{idx}"
                                         )))
                                         .xsmall()
                                         .ghost()
                                         .icon(IconName::Close)
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.close_pod_stream_tab(idx, cx);
+                                            this.close_pod_tab(idx, cx);
                                         })),
                                     )
-                            }))
-                            .when(!forwards.is_empty(), |el| {
-                                el.child(
-                                    Tag::success()
-                                        .child(format!("{} Port Forward(s)", forwards.len())),
-                                )
-                            }),
+                            })),
                     )
                     .child(
-                        Button::new("hide-pod-dock-btn")
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::ChevronDown)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.pod_dock_open = false;
-                                cx.notify();
-                            })),
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .children(forwards.into_iter().map(|fwd| {
+                                let fid = fwd.id.clone();
+                                let copy_fid = fwd.id.clone();
+                                let local_addr = format!("localhost:{}", fwd.local_port);
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(Tag::success().small().child(format!(
+                                        "localhost:{} → {}:{}",
+                                        fwd.local_port, fwd.name, fwd.remote_port
+                                    )))
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "copy-fwd-{copy_fid}"
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Copy")
+                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                local_addr.clone(),
+                                            ));
+                                        })),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!("stop-fwd-{fid}")))
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::Close)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.stop_pod_forward(fid.clone(), cx);
+                                            })),
+                                    )
+                            }))
+                            .child(
+                                Button::new("collapse-pod-dock-btn")
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::ChevronDown)
+                                    .label("Hide Dock")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.pod_dock_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
-            .child(if let Some(tab) = active_tab {
-                let interactive = tab.mode != PodStreamMode::Logs;
-                v_flex()
-                    .flex_1()
-                    .w_full()
-                    .overflow_hidden()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .w_full()
-                            .p_3()
-                            .font_family("RobotoMono, monospace")
-                            .text_xs()
-                            .overflow_y_scrollbar()
-                            .child(if tab.buffer.is_empty() {
-                                format!("({} stream {}...)", tab.pod_name, tab.status)
-                            } else {
-                                tab.buffer
-                            }),
-                    )
-                    .when(interactive, |el| {
-                        el.child(
+            .when_some(active_tab.clone(), |el, tab| {
+                let tab_idx = active_idx;
+                let containers = tab.available_containers.clone();
+                let current_container = tab.container.clone();
+                let is_logs = tab.mode == PodStreamMode::Logs;
+                let is_shell = tab.mode == PodStreamMode::Shell;
+                let is_interactive =
+                    matches!(tab.mode, PodStreamMode::Shell | PodStreamMode::Attach);
+                let prev_enabled = tab.previous;
+                let ts_enabled = tab.timestamps;
+                let paused = tab.paused;
+                let tail_lines = tab.tail_lines;
+                let active_shell = tab.shell.clone();
+                let active_cols = tab.cols;
+                let active_rows = tab.rows;
+                let copy_lines = tab.output_lines.join("\n");
+
+                el.child(
+                    h_flex()
+                        .w_full()
+                        .px_3()
+                        .py_1p5()
+                        .gap_2()
+                        .justify_between()
+                        .items_center()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().tokens.elevated_surface)
+                        .child(
                             h_flex()
-                                .w_full()
-                                .px_3()
-                                .py_2()
-                                .gap_2()
-                                .border_t_1()
-                                .border_color(cx.theme().border)
+                                .gap_1()
                                 .items_center()
                                 .child(
-                                    div()
-                                        .flex_1()
-                                        .child(Input::new(&self.pod_terminal_input).small()),
+                                    match tab.status.as_str() {
+                                        "running" => Tag::success().small(),
+                                        "opening" => Tag::warning().small(),
+                                        "error" => Tag::danger().small(),
+                                        _ => Tag::secondary().small(),
+                                    }
+                                    .child(tab.status.clone()),
                                 )
-                                .child(
-                                    Button::new("send-pod-stdin-btn")
-                                        .small()
-                                        .primary()
-                                        .label("Send")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.send_pod_terminal_input(window, cx);
-                                        })),
-                                ),
+                                .when(containers.len() > 1, |row| {
+                                    row.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Container:"),
+                                    )
+                                    .children(containers.into_iter().map(|cname| {
+                                        let selected = cname == current_container;
+                                        let target_cname = cname.clone();
+                                        Button::new(SharedString::from(format!(
+                                            "dock-container-switch-{tab_idx}-{cname}"
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .selected(selected)
+                                        .label(cname)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx) {
+                                                t.container = target_cname.clone();
+                                            }
+                                            this.reopen_pod_tab(tab_idx, window, cx);
+                                        }))
+                                    }))
+                                }),
                         )
-                    })
-                    .into_any_element()
-            } else {
+                        .when(is_logs, |bar| {
+                            bar.child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .w(px(190.0))
+                                            .child(
+                                                Input::new(&self.pod_log_filter_input)
+                                                    .small()
+                                                    .cleanable(true),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new("pod-log-pause-toggle")
+                                            .xsmall()
+                                            .ghost()
+                                            .selected(!paused)
+                                            .label(if paused { "Paused" } else { "Following" })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(t) =
+                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                {
+                                                    t.paused = !t.paused;
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("pod-log-timestamps-toggle")
+                                            .xsmall()
+                                            .ghost()
+                                            .selected(ts_enabled)
+                                            .label("Timestamps")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if let Some(t) =
+                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                {
+                                                    t.timestamps = !t.timestamps;
+                                                }
+                                                this.reopen_pod_tab(tab_idx, window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("pod-log-previous-toggle")
+                                            .xsmall()
+                                            .ghost()
+                                            .selected(prev_enabled)
+                                            .label("Previous")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                if let Some(t) =
+                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                {
+                                                    t.previous = !t.previous;
+                                                }
+                                                this.reopen_pod_tab(tab_idx, window, cx);
+                                            })),
+                                    )
+                                    .children(TAIL_LINE_OPTIONS.iter().copied().map(|lines| {
+                                        Button::new(SharedString::from(format!(
+                                            "pod-log-tail-{lines}"
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .selected(tail_lines == lines)
+                                        .label(format!("{lines}L"))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx) {
+                                                t.tail_lines = lines;
+                                            }
+                                            this.reopen_pod_tab(tab_idx, window, cx);
+                                        }))
+                                    }))
+                                    .child(
+                                        Button::new("pod-log-copy-btn")
+                                            .xsmall()
+                                            .outline()
+                                            .label("Copy")
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    copy_lines.clone(),
+                                                ));
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("pod-log-clear-btn")
+                                            .xsmall()
+                                            .ghost()
+                                            .label("Clear")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(t) =
+                                                    this.pod_dock_tabs.get_mut(tab_idx)
+                                                {
+                                                    t.output_lines.clear();
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("pod-log-reconnect-btn")
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::Undo2)
+                                            .label("Reconnect")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.reopen_pod_tab(tab_idx, window, cx);
+                                            })),
+                                    ),
+                            )
+                        })
+                        .when(is_interactive, |bar| {
+                            bar.child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .when(is_shell, |sbar| {
+                                        sbar.children(["sh", "bash", "ash"].into_iter().map(
+                                            |sh_label| {
+                                                let sh_path = shell_option_path(sh_label);
+                                                let selected = active_shell == sh_path;
+                                                let target_sh = sh_path.to_owned();
+                                                Button::new(SharedString::from(format!(
+                                                    "pod-shell-opt-{sh_label}"
+                                                )))
+                                                .xsmall()
+                                                .ghost()
+                                                .selected(selected)
+                                                .label(sh_label)
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        if let Some(t) =
+                                                            this.pod_dock_tabs.get_mut(tab_idx)
+                                                        {
+                                                            t.shell = target_sh.clone();
+                                                        }
+                                                        this.reopen_pod_tab(tab_idx, window, cx);
+                                                    },
+                                                ))
+                                            },
+                                        ))
+                                    })
+                                    .children(TERMINAL_SIZE_PRESETS.iter().copied().map(
+                                        |(cols, rows, label)| {
+                                            Button::new(SharedString::from(format!(
+                                                "pod-pty-size-{cols}x{rows}"
+                                            )))
+                                            .xsmall()
+                                            .ghost()
+                                            .selected(active_cols == cols && active_rows == rows)
+                                            .label(label)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.resize_active_pod_terminal(cols, rows, cx);
+                                            }))
+                                        },
+                                    ))
+                                    .child(
+                                        Button::new("pod-term-sigint")
+                                            .xsmall()
+                                            .outline()
+                                            .label("Ctrl+C")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.send_pod_terminal_raw("\x03", "Ctrl+C", cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("pod-term-eof")
+                                            .xsmall()
+                                            .outline()
+                                            .label("Ctrl+D")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.send_pod_terminal_raw("\x04", "Ctrl+D", cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("pod-term-clear")
+                                            .xsmall()
+                                            .ghost()
+                                            .label("Clear")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.send_pod_terminal_raw("\x0c", "clear", cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("pod-term-reconnect")
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::Undo2)
+                                            .label("Reconnect")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.reopen_pod_tab(tab_idx, window, cx);
+                                            })),
+                                    ),
+                            )
+                        }),
+                )
+            })
+            .child(
                 v_flex()
                     .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Select a Pod container action (Logs, Shell, Attach) to open a stream.")
-                    .into_any_element()
-            })
+                    .min_h_0()
+                    .p_3()
+                    .gap_0p5()
+                    .overflow_y_scrollbar()
+                    .children(
+                        active_tab
+                            .as_ref()
+                            .map(|t| {
+                                t.output_lines
+                                    .iter()
+                                    .filter(|line| {
+                                        t.mode != PodStreamMode::Logs
+                                            || log_filter.is_empty()
+                                            || line.to_lowercase().contains(&log_filter)
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|line| {
+                                let is_err = line.contains("ERROR")
+                                    || line.contains("error")
+                                    || line.starts_with("[stream error");
+                                div()
+                                    .text_xs()
+                                    .text_color(if is_err {
+                                        cx.theme().danger
+                                    } else {
+                                        cx.theme().foreground
+                                    })
+                                    .child(line)
+                            }),
+                    ),
+            )
+            .when_some(
+                active_tab.filter(|t| {
+                    matches!(t.mode, PodStreamMode::Shell | PodStreamMode::Attach)
+                }),
+                |el, tab| {
+                    let recent_cmds: Vec<String> =
+                        tab.command_history.iter().rev().take(4).cloned().collect();
+                    el.child(
+                        h_flex()
+                            .w_full()
+                            .px_3()
+                            .py_2()
+                            .gap_2()
+                            .items_center()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().tokens.elevated_surface)
+                            .child(
+                                Tag::secondary()
+                                    .small()
+                                    .child(format!("{}$", tab.container)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(Input::new(&self.pod_terminal_input).small()),
+                            )
+                            .children(recent_cmds.into_iter().enumerate().map(|(i, cmd)| {
+                                let run_cmd = cmd.clone();
+                                Button::new(SharedString::from(format!("pod-hist-cmd-{i}")))
+                                    .xsmall()
+                                    .ghost()
+                                    .label(cmd)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.pod_terminal_input.update(cx, |state, cx| {
+                                            state.set_value(run_cmd.clone(), window, cx);
+                                        });
+                                        this.send_pod_terminal_input(window, cx);
+                                    }))
+                            }))
+                            .child(
+                                Button::new("pod-terminal-send-btn")
+                                    .xsmall()
+                                    .primary()
+                                    .label("Send")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.send_pod_terminal_input(window, cx);
+                                    })),
+                            ),
+                    )
+                },
+            )
     }
 }
