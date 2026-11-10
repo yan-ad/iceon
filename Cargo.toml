@@ -14,6 +14,14 @@ edition = "2024"
 license = "Apache-2.0"
 authors = ["you"]
 
+# Optimize layout (taffy), text shaping (cosmic-text), SVG rasterization (resvg),
+# and GPUI rendering in debug builds so virtual lists scroll smoothly at 60-120 FPS.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
 [workspace.dependencies]
 iceon-core = { path = "crates/iceon-core" }
 iceon-ui = { path = "crates/iceon-ui" }

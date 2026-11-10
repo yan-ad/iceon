@@ -370,7 +370,6 @@ impl IceonApp {
                                     .when(selected_id.is_none(), |bar| {
                                         let section_name = match self.history.current() {
                                             Route::Catalog => "Clusters",
-                                            Route::Secrets => "Vault Secrets",
                                             _ => "Select a cluster",
                                         };
                                         bar.child(

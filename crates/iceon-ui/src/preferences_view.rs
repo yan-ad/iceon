@@ -1,14 +1,13 @@
-//! Preferences view: 5-section modal/panel (App, Proxy, Kubernetes, Editor, Terminal)
-//! backed by `PreferencesEngine` with live GPUI theme updates via `Theme::change`.
+//! Native OS window for Settings / Preferences using `gpui_kit::component::setting::Settings`,
+//! backed by `PreferencesEngine` with live GPUI theme updates across all open windows.
+
+use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, IconName, StyledExt as _, TitleBar,
+    group_box::GroupBoxVariant,
     h_flex,
-    input::Input,
-    scroll::ScrollableElement as _,
-    switch::Switch,
-    tab::{Tab, TabBar},
+    setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     theme::ThemeMode,
     v_flex,
 };
@@ -18,7 +17,8 @@ use gpui_kit::*;
 use crate::IceonApp;
 use crate::navigation::preferences_error_message;
 use iceon_core::preferences::{
-    AppTheme, LineNumbers, MinimapSide, Preferences, SavePreferencesRequest, TerminalTheme,
+    AppTheme, LineNumbers, MinimapSide, Preferences, PreferencesEngine, SavePreferencesRequest,
+    TerminalTheme,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,122 +30,629 @@ pub enum PreferencesSection {
     Terminal,
 }
 
+pub(crate) struct GlobalPreferencesState {
+    pub engine: Arc<PreferencesEngine>,
+    pub revision: u64,
+    pub preferences: Preferences,
+    pub error: Option<String>,
+    pub main_app: WeakEntity<IceonApp>,
+}
+
+impl Global for GlobalPreferencesState {}
+
+fn current_prefs(cx: &App) -> Preferences {
+    cx.try_global::<GlobalPreferencesState>()
+        .map(|s| s.preferences.clone())
+        .unwrap_or_default()
+}
+
+fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
+    if !cx.has_global::<GlobalPreferencesState>() {
+        return;
+    }
+
+    let (maybe_theme_change, main_app, snapshot_result) = cx
+        .update_global::<GlobalPreferencesState, _>(|state, _cx| {
+            let prev_theme = state.preferences.app.theme;
+            let mut next = state.preferences.clone();
+            mutate(&mut next);
+            if next.app.timezone.trim().is_empty() {
+                next.app.timezone = "system".into();
+            }
+
+            let res = state.engine.save(SavePreferencesRequest {
+                revision: state.revision,
+                preferences: next,
+            });
+            match &res {
+                Ok(snapshot) => {
+                    state.revision = snapshot.revision;
+                    state.preferences = snapshot.preferences.clone();
+                    state.error = None;
+                }
+                Err(err) => {
+                    state.error = Some(preferences_error_message(err.clone()).to_string());
+                }
+            }
+
+            let new_theme = state.preferences.app.theme;
+            let theme_changed = (prev_theme != new_theme).then_some(new_theme);
+            (theme_changed, state.main_app.clone(), res.ok())
+        });
+
+    if let Some(theme) = maybe_theme_change {
+        let mode = match theme {
+            AppTheme::Light => ThemeMode::Light,
+            AppTheme::Dark | AppTheme::System => ThemeMode::Dark,
+        };
+        crate::shell_theme::apply(mode, None, cx);
+    }
+
+    if let Some(snapshot) = snapshot_result {
+        let _ = main_app.update(cx, |app, cx| {
+            app.preferences_revision = snapshot.revision;
+            app.preferences_draft = snapshot.preferences;
+            app.preferences_error = None;
+            cx.notify();
+        });
+    }
+
+    cx.refresh_windows();
+}
+
+pub struct PreferencesWindow {
+    focus_handle: FocusHandle,
+}
+
+impl PreferencesWindow {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        window.focus(&focus_handle, cx);
+        Self { focus_handle }
+    }
+
+    fn build_pages() -> Vec<SettingPage> {
+        let defaults = Preferences::default();
+
+        let app_page = SettingPage::new("App")
+            .icon(IconName::Settings2)
+            .description("Appearance, timezone, and startup navigation preferences.")
+            .default_open(true)
+            .groups([
+                SettingGroup::new()
+                    .title("Appearance & Regional")
+                    .description("Customize Iceon color theme and timestamp formatting.")
+                    .items([
+                        SettingItem::new(
+                            "Theme",
+                            SettingField::dropdown(
+                                vec![
+                                    (SharedString::from("dark"), SharedString::from("Dark")),
+                                    (SharedString::from("light"), SharedString::from("Light")),
+                                    (SharedString::from("system"), SharedString::from("System")),
+                                ],
+                                |cx: &App| match current_prefs(cx).app.theme {
+                                    AppTheme::Dark => SharedString::from("dark"),
+                                    AppTheme::Light => SharedString::from("light"),
+                                    AppTheme::System => SharedString::from("system"),
+                                },
+                                |val: SharedString, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        prefs.app.theme = match val.as_ref() {
+                                            "light" => AppTheme::Light,
+                                            "system" => AppTheme::System,
+                                            _ => AppTheme::Dark,
+                                        };
+                                    });
+                                },
+                            )
+                            .default_value(SharedString::from("dark")),
+                        )
+                        .description("Select the application color scheme across all windows."),
+                        SettingItem::new(
+                            "Timezone",
+                            SettingField::input(
+                                |cx: &App| SharedString::from(current_prefs(cx).app.timezone),
+                                |val: SharedString, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        let trimmed = val.trim();
+                                        prefs.app.timezone = if trimmed.is_empty() {
+                                            "system".to_string()
+                                        } else {
+                                            trimmed.to_string()
+                                        };
+                                    });
+                                },
+                            )
+                            .default_value(SharedString::from(defaults.app.timezone)),
+                        )
+                        .description(
+                            "IANA timezone identifier (such as UTC or Asia/Jakarta) or system.",
+                        ),
+                    ]),
+                SettingGroup::new()
+                    .title("Navigation & Session")
+                    .description("Control how search filters and active routes behave.")
+                    .items([
+                        SettingItem::new(
+                            "Persistent Search",
+                            SettingField::switch(
+                                |cx: &App| current_prefs(cx).app.persistent_search,
+                                |checked: bool, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        prefs.app.persistent_search = checked;
+                                    });
+                                },
+                            )
+                            .default_value(defaults.app.persistent_search),
+                        )
+                        .description(
+                            "Keep search queries active when switching between resource kinds.",
+                        ),
+                        SettingItem::new(
+                            "Restore Last Page on Startup",
+                            SettingField::switch(
+                                |cx: &App| current_prefs(cx).app.restore_last_page,
+                                |checked: bool, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        prefs.app.restore_last_page = checked;
+                                    });
+                                },
+                            )
+                            .default_value(defaults.app.restore_last_page),
+                        )
+                        .description(
+                            "Reopen the last visited cluster or workspace when launching Iceon.",
+                        ),
+                    ]),
+            ]);
+
+        let proxy_page = SettingPage::new("Proxy")
+            .icon(IconName::Globe)
+            .description("Configure outbound proxy routing and certificate settings.")
+            .groups([SettingGroup::new()
+                .title("Upstream Proxy")
+                .description("Used when connecting to remote Kubernetes API servers.")
+                .items([
+                    SettingItem::new(
+                        "HTTPS Proxy URL",
+                        SettingField::input(
+                            |cx: &App| SharedString::from(current_prefs(cx).proxy.https_proxy),
+                            |val: SharedString, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.proxy.https_proxy = val.trim().to_string();
+                                });
+                            },
+                        )
+                        .default_value(SharedString::from(defaults.proxy.https_proxy)),
+                    )
+                    .description("Optional upstream proxy address for cluster connections."),
+                    SettingItem::new(
+                        "Allow Untrusted Certificate Authorities",
+                        SettingField::switch(
+                            |cx: &App| current_prefs(cx).proxy.allow_untrusted_cas,
+                            |checked: bool, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.proxy.allow_untrusted_cas = checked;
+                                });
+                            },
+                        )
+                        .default_value(defaults.proxy.allow_untrusted_cas),
+                    )
+                    .description("Allow custom certificate authorities recorded in preferences."),
+                ])]);
+
+        let kubernetes_page = SettingPage::new("Kubernetes")
+            .icon(IconName::LayoutDashboard)
+            .description("Configure local kubeconfig discovery and Helm integration.")
+            .groups([SettingGroup::new()
+                .title("Kubeconfig & Helm")
+                .description("Manage how Iceon discovers clusters and runs Helm operations.")
+                .items([
+                    SettingItem::new(
+                        "Auto-discover Default Kubeconfig",
+                        SettingField::switch(
+                            |cx: &App| {
+                                current_prefs(cx).kubernetes.discover_default_kubeconfig
+                            },
+                            |checked: bool, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.kubernetes.discover_default_kubeconfig = checked;
+                                });
+                            },
+                        )
+                        .default_value(defaults.kubernetes.discover_default_kubeconfig),
+                    )
+                    .description("Automatically scan and import contexts from default kubeconfig in Catalog."),
+                    SettingItem::new(
+                        "Custom Helm Binary Path",
+                        SettingField::input(
+                            |cx: &App| {
+                                SharedString::from(current_prefs(cx).kubernetes.helm_binary_path)
+                            },
+                            |val: SharedString, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.kubernetes.helm_binary_path = val.trim().to_string();
+                                });
+                            },
+                        )
+                        .default_value(SharedString::from(defaults.kubernetes.helm_binary_path)),
+                    )
+                    .description("Optional custom path to the helm binary."),
+                    SettingItem::new(
+                        "Helm Server-Side Dry Run",
+                        SettingField::switch(
+                            |cx: &App| current_prefs(cx).kubernetes.helm_server_side,
+                            |checked: bool, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.kubernetes.helm_server_side = checked;
+                                });
+                            },
+                        )
+                        .default_value(defaults.kubernetes.helm_server_side),
+                    )
+                    .description("Use server-side validation for Helm chart operations."),
+                ])]);
+
+        let editor_page = SettingPage::new("Editor")
+            .icon(IconName::File)
+            .description("Customize YAML manifest editor font, indentation, and minimap.")
+            .groups([
+                SettingGroup::new()
+                    .title("Typography & Indentation")
+                    .items([
+                        SettingItem::new(
+                            "Font Family",
+                            SettingField::input(
+                                |cx: &App| SharedString::from(current_prefs(cx).editor.font_family),
+                                |val: SharedString, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        let trimmed = val.trim();
+                                        if !trimmed.is_empty() {
+                                            prefs.editor.font_family = trimmed.to_string();
+                                        }
+                                    });
+                                },
+                            )
+                            .default_value(SharedString::from(defaults.editor.font_family)),
+                        )
+                        .description(
+                            "Monospace font family used in YAML editors and resource diffs.",
+                        ),
+                        SettingItem::new(
+                            "Font Size",
+                            SettingField::number_input(
+                                NumberFieldOptions {
+                                    min: 10.0,
+                                    max: 50.0,
+                                    step: 1.0,
+                                },
+                                |cx: &App| current_prefs(cx).editor.font_size as f64,
+                                |val: f64, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        prefs.editor.font_size =
+                                            val.round().clamp(10.0, 50.0) as u8;
+                                    });
+                                },
+                            )
+                            .default_value(defaults.editor.font_size as f64),
+                        )
+                        .description("Editor font size in pixels (10 - 50)."),
+                        SettingItem::new(
+                            "Tab Size",
+                            SettingField::number_input(
+                                NumberFieldOptions {
+                                    min: 1.0,
+                                    max: 16.0,
+                                    step: 1.0,
+                                },
+                                |cx: &App| current_prefs(cx).editor.tab_size as f64,
+                                |val: f64, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        prefs.editor.tab_size = val.round().clamp(1.0, 16.0) as u8;
+                                    });
+                                },
+                            )
+                            .default_value(defaults.editor.tab_size as f64),
+                        )
+                        .description("Spaces per indentation level in YAML manifests (1 - 16)."),
+                    ]),
+                SettingGroup::new().title("Gutter & Minimap").items([
+                    SettingItem::new(
+                        "Line Numbers",
+                        SettingField::dropdown(
+                            vec![
+                                (SharedString::from("on"), SharedString::from("On")),
+                                (SharedString::from("off"), SharedString::from("Off")),
+                                (
+                                    SharedString::from("relative"),
+                                    SharedString::from("Relative"),
+                                ),
+                            ],
+                            |cx: &App| match current_prefs(cx).editor.line_numbers {
+                                LineNumbers::On => SharedString::from("on"),
+                                LineNumbers::Off => SharedString::from("off"),
+                                LineNumbers::Relative => SharedString::from("relative"),
+                            },
+                            |val: SharedString, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.editor.line_numbers = match val.as_ref() {
+                                        "off" => LineNumbers::Off,
+                                        "relative" => LineNumbers::Relative,
+                                        _ => LineNumbers::On,
+                                    };
+                                });
+                            },
+                        )
+                        .default_value(SharedString::from("on")),
+                    )
+                    .description("Display line numbers in the YAML editor gutter."),
+                    SettingItem::new(
+                        "Show Minimap",
+                        SettingField::switch(
+                            |cx: &App| current_prefs(cx).editor.minimap,
+                            |checked: bool, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.editor.minimap = checked;
+                                });
+                            },
+                        )
+                        .default_value(defaults.editor.minimap),
+                    )
+                    .description("Render a document overview minimap beside the YAML editor."),
+                    SettingItem::new(
+                        "Minimap Side",
+                        SettingField::dropdown(
+                            vec![
+                                (SharedString::from("right"), SharedString::from("Right")),
+                                (SharedString::from("left"), SharedString::from("Left")),
+                            ],
+                            |cx: &App| match current_prefs(cx).editor.minimap_side {
+                                MinimapSide::Left => SharedString::from("left"),
+                                MinimapSide::Right => SharedString::from("right"),
+                            },
+                            |val: SharedString, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.editor.minimap_side = match val.as_ref() {
+                                        "left" => MinimapSide::Left,
+                                        _ => MinimapSide::Right,
+                                    };
+                                });
+                            },
+                        )
+                        .default_value(SharedString::from("right")),
+                    )
+                    .description("Choose which side of the editor displays the minimap."),
+                ]),
+            ]);
+
+        let terminal_page = SettingPage::new("Terminal")
+            .icon(IconName::SquareTerminal)
+            .description("Configure Pod terminal typography and clipboard behavior.")
+            .groups([
+                SettingGroup::new()
+                    .title("Typography & Default Shell")
+                    .items([
+                        SettingItem::new(
+                            "Terminal Font Family",
+                            SettingField::input(
+                                |cx: &App| {
+                                    SharedString::from(current_prefs(cx).terminal.font_family)
+                                },
+                                |val: SharedString, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        let trimmed = val.trim();
+                                        if !trimmed.is_empty() {
+                                            prefs.terminal.font_family = trimmed.to_string();
+                                        }
+                                    });
+                                },
+                            )
+                            .default_value(SharedString::from(defaults.terminal.font_family)),
+                        )
+                        .description(
+                            "Monospace font family used in Pod logs and interactive sessions.",
+                        ),
+                        SettingItem::new(
+                            "Font Size",
+                            SettingField::number_input(
+                                NumberFieldOptions {
+                                    min: 10.0,
+                                    max: 50.0,
+                                    step: 1.0,
+                                },
+                                |cx: &App| current_prefs(cx).terminal.font_size as f64,
+                                |val: f64, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        prefs.terminal.font_size =
+                                            val.round().clamp(10.0, 50.0) as u8;
+                                    });
+                                },
+                            )
+                            .default_value(defaults.terminal.font_size as f64),
+                        )
+                        .description("Terminal and log viewer font size in pixels (10 - 50)."),
+                        SettingItem::new(
+                            "Default Shell",
+                            SettingField::input(
+                                |cx: &App| {
+                                    SharedString::from(current_prefs(cx).terminal.shell_path)
+                                },
+                                |val: SharedString, cx: &mut App| {
+                                    mutate_preferences(cx, |prefs| {
+                                        let trimmed = val.trim();
+                                        if !trimmed.is_empty() {
+                                            prefs.terminal.shell_path = trimmed.to_string();
+                                        }
+                                    });
+                                },
+                            )
+                            .default_value(SharedString::from(defaults.terminal.shell_path)),
+                        )
+                        .description("Default shell binary used for Pod sessions."),
+                    ]),
+                SettingGroup::new().title("Appearance & Clipboard").items([
+                    SettingItem::new(
+                        "Terminal Theme",
+                        SettingField::dropdown(
+                            vec![
+                                (
+                                    SharedString::from("match"),
+                                    SharedString::from("Match App Theme"),
+                                ),
+                                (SharedString::from("dark"), SharedString::from("Dark")),
+                                (SharedString::from("light"), SharedString::from("Light")),
+                            ],
+                            |cx: &App| match current_prefs(cx).terminal.theme {
+                                TerminalTheme::Match => SharedString::from("match"),
+                                TerminalTheme::Dark => SharedString::from("dark"),
+                                TerminalTheme::Light => SharedString::from("light"),
+                            },
+                            |val: SharedString, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.terminal.theme = match val.as_ref() {
+                                        "dark" => TerminalTheme::Dark,
+                                        "light" => TerminalTheme::Light,
+                                        _ => TerminalTheme::Match,
+                                    };
+                                });
+                            },
+                        )
+                        .default_value(SharedString::from("match")),
+                    )
+                    .description("Color scheme for the bottom Pod dock terminal and log stream."),
+                    SettingItem::new(
+                        "Copy on Select",
+                        SettingField::switch(
+                            |cx: &App| current_prefs(cx).terminal.copy_on_select,
+                            |checked: bool, cx: &mut App| {
+                                mutate_preferences(cx, |prefs| {
+                                    prefs.terminal.copy_on_select = checked;
+                                });
+                            },
+                        )
+                        .default_value(defaults.terminal.copy_on_select),
+                    )
+                    .description("Automatically copy selected terminal text to the clipboard."),
+                ]),
+            ]);
+
+        vec![
+            app_page,
+            proxy_page,
+            kubernetes_page,
+            editor_page,
+            terminal_page,
+        ]
+    }
+}
+
+impl Render for PreferencesWindow {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let error = cx
+            .try_global::<GlobalPreferencesState>()
+            .and_then(|s| s.error.clone());
+
+        v_flex()
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .text_color(cx.theme().foreground)
+            .child(
+                TitleBar::new().child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .pr_3()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(div().text_sm().font_semibold().child("Settings"))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Preferences"),
+                                ),
+                        ),
+                ),
+            )
+            .when_some(error, |el, msg| {
+                el.child(
+                    div()
+                        .mx_4()
+                        .mt_2()
+                        .p_2p5()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(cx.theme().danger)
+                        .bg(cx.theme().background)
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(msg),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .bg(cx.theme().background)
+                    .overflow_hidden()
+                    .child(
+                        Settings::new("iceon-settings")
+                            .sidebar_width(px(210.0))
+                            .with_group_variant(GroupBoxVariant::Outline)
+                            .pages(Self::build_pages()),
+                    ),
+            )
+    }
+}
+
 impl IceonApp {
-    pub(crate) fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_preferences(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Ok(snapshot) = self.preferences_engine.snapshot() {
             self.preferences_revision = snapshot.revision;
             self.preferences_draft = snapshot.preferences.clone();
-            self.sync_preferences_inputs(window, cx);
         }
         self.preferences_error = None;
-        self.preferences_open = true;
-        cx.notify();
-    }
 
-    pub(crate) fn sync_preferences_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let draft = self.preferences_draft.clone();
-        self.pref_timezone_input.update(cx, |s, cx| {
-            s.set_value(draft.app.timezone.clone(), window, cx)
-        });
-        self.pref_proxy_input.update(cx, |s, cx| {
-            s.set_value(draft.proxy.https_proxy.clone(), window, cx)
-        });
-        self.pref_helm_path_input.update(cx, |s, cx| {
-            s.set_value(draft.kubernetes.helm_binary_path.clone(), window, cx)
-        });
-        self.pref_editor_font_family_input.update(cx, |s, cx| {
-            s.set_value(draft.editor.font_family.clone(), window, cx)
-        });
-        self.pref_editor_font_size_input.update(cx, |s, cx| {
-            s.set_value(draft.editor.font_size.to_string(), window, cx)
-        });
-        self.pref_editor_tab_size_input.update(cx, |s, cx| {
-            s.set_value(draft.editor.tab_size.to_string(), window, cx)
-        });
-        self.pref_terminal_font_family_input.update(cx, |s, cx| {
-            s.set_value(draft.terminal.font_family.clone(), window, cx)
-        });
-        self.pref_terminal_font_size_input.update(cx, |s, cx| {
-            s.set_value(draft.terminal.font_size.to_string(), window, cx)
-        });
-        self.pref_terminal_shell_input.update(cx, |s, cx| {
-            s.set_value(draft.terminal.shell_path.clone(), window, cx)
-        });
-    }
-
-    pub(crate) fn save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut next: Preferences = self.preferences_draft.clone();
-        next.app.timezone = self.pref_timezone_input.read(cx).value().trim().to_string();
-        if next.app.timezone.is_empty() {
-            next.app.timezone = "system".into();
-        }
-        next.proxy.https_proxy = self.pref_proxy_input.read(cx).value().trim().to_string();
-        next.kubernetes.helm_binary_path = self
-            .pref_helm_path_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-        next.editor.font_family = self
-            .pref_editor_font_family_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-        if let Ok(size) = self
-            .pref_editor_font_size_input
-            .read(cx)
-            .value()
-            .trim()
-            .parse::<u8>()
-        {
-            next.editor.font_size = size;
-        }
-        if let Ok(tab) = self
-            .pref_editor_tab_size_input
-            .read(cx)
-            .value()
-            .trim()
-            .parse::<u8>()
-        {
-            next.editor.tab_size = tab;
-        }
-        next.terminal.font_family = self
-            .pref_terminal_font_family_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-        if let Ok(size) = self
-            .pref_terminal_font_size_input
-            .read(cx)
-            .value()
-            .trim()
-            .parse::<u8>()
-        {
-            next.terminal.font_size = size;
-        }
-        next.terminal.shell_path = self
-            .pref_terminal_shell_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-
-        match self.preferences_engine.save(SavePreferencesRequest {
+        cx.set_global(GlobalPreferencesState {
+            engine: self.preferences_engine.clone(),
             revision: self.preferences_revision,
-            preferences: next,
+            preferences: self.preferences_draft.clone(),
+            error: None,
+            main_app: cx.entity().downgrade(),
+        });
+
+        if let Some(existing) = self.preferences_window {
+            let activated = existing
+                .update(cx, |_, win, _| {
+                    win.activate_window();
+                })
+                .is_ok();
+            if activated {
+                return;
+            }
+            self.preferences_window = None;
+        }
+
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(880.0), px(620.0)),
+                cx,
+            ))),
+            window_min_size: Some(size(px(680.0), px(480.0))),
+            window_background: crate::shell_theme::background_appearance(),
+            ..TitleBar::window_options()
+        };
+
+        if let Ok(handle) = gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| PreferencesWindow::new(window, cx))
         }) {
-            Ok(snapshot) => {
-                self.preferences_revision = snapshot.revision;
-                self.preferences_draft = snapshot.preferences.clone();
-                self.apply_theme(snapshot.preferences.app.theme, Some(window), cx);
-                self.preferences_error = None;
-                self.preferences_open = false;
-            }
-            Err(err) => {
-                self.preferences_error = Some(preferences_error_message(err).to_string());
-            }
+            self.preferences_window = Some(handle.into());
         }
         cx.notify();
     }
@@ -161,417 +668,5 @@ impl IceonApp {
             AppTheme::Dark | AppTheme::System => ThemeMode::Dark,
         };
         crate::shell_theme::apply(mode, window, cx);
-    }
-
-    pub(crate) fn render_preferences_modal(
-        &mut self,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let section = self.preferences_section;
-        let draft = self.preferences_draft.clone();
-        let error = self.preferences_error.clone();
-
-        let tab_idx = match section {
-            PreferencesSection::App => 0,
-            PreferencesSection::Proxy => 1,
-            PreferencesSection::Kubernetes => 2,
-            PreferencesSection::Editor => 3,
-            PreferencesSection::Terminal => 4,
-        };
-
-        v_flex()
-            .w(px(680.0))
-            .max_h(px(560.0))
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
-            .text_color(cx.theme().popover_foreground)
-            .overflow_hidden()
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .items_center()
-                    .justify_between()
-                    .child(div().text_base().font_semibold().child("Preferences"))
-                    .child(
-                        Button::new("close-preferences-modal")
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.preferences_open = false;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .px_4()
-                    .pt_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        TabBar::new("preferences-tabs")
-                            .selected_index(tab_idx)
-                            .on_click(cx.listener(|this, idx: &usize, _, cx| {
-                                this.preferences_section = match *idx {
-                                    0 => PreferencesSection::App,
-                                    1 => PreferencesSection::Proxy,
-                                    2 => PreferencesSection::Kubernetes,
-                                    3 => PreferencesSection::Editor,
-                                    _ => PreferencesSection::Terminal,
-                                };
-                                cx.notify();
-                            }))
-                            .child(Tab::new().label("App"))
-                            .child(Tab::new().label("Proxy"))
-                            .child(Tab::new().label("Kubernetes"))
-                            .child(Tab::new().label("Editor"))
-                            .child(Tab::new().label("Terminal")),
-                    ),
-            )
-            .when_some(error, |el, msg| {
-                el.child(
-                    div()
-                        .mx_4()
-                        .mt_3()
-                        .p_2p5()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().danger)
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(msg),
-                )
-            })
-            .child(
-                v_flex()
-                    .flex_1()
-                    .p_4()
-                    .gap_3()
-                    .overflow_y_scrollbar()
-                    .child(match section {
-                    PreferencesSection::App => v_flex()
-                        .gap_3()
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .justify_between()
-                                .child(div().text_sm().child("Theme"))
-                                .child(
-                                    h_flex().gap_1p5().children(
-                                        [
-                                            (AppTheme::System, "System"),
-                                            (AppTheme::Dark, "Dark"),
-                                            (AppTheme::Light, "Light"),
-                                        ]
-                                        .into_iter()
-                                        .map(
-                                            |(mode, label)| {
-                                                let active = draft.app.theme == mode;
-                                                Button::new(SharedString::from(format!(
-                                                    "pref-theme-{label}"
-                                                )))
-                                                .xsmall()
-                                                .when(active, |b| b.primary())
-                                                .when(!active, |b| b.outline())
-                                                .label(label)
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.preferences_draft.app.theme = mode;
-                                                        this.apply_theme(mode, Some(window), cx);
-                                                        cx.notify();
-                                                    },
-                                                ))
-                                            },
-                                        ),
-                                    ),
-                                ),
-                        )
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(div().text_xs().child("Timezone"))
-                                .child(Input::new(&self.pref_timezone_input).small()),
-                        )
-                        .child(
-                            Switch::new("pref-persistent-search")
-                                .label("Keep search queries across resource navigation")
-                                .checked(draft.app.persistent_search)
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    this.preferences_draft.app.persistent_search = *checked;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Switch::new("pref-restore-last-page")
-                                .label("Restore last visited page on startup")
-                                .checked(draft.app.restore_last_page)
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    this.preferences_draft.app.restore_last_page = *checked;
-                                    cx.notify();
-                                })),
-                        )
-                        .into_any_element(),
-                    PreferencesSection::Proxy => v_flex()
-                        .gap_3()
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(div().text_xs().child("HTTPS Proxy URL"))
-                                .child(Input::new(&self.pref_proxy_input).small()),
-                        )
-                        .child(
-                            Switch::new("pref-allow-untrusted-cas")
-                                .label(
-                                    "Allow untrusted Certificate Authorities (recorded preference)",
-                                )
-                                .checked(draft.proxy.allow_untrusted_cas)
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    this.preferences_draft.proxy.allow_untrusted_cas = *checked;
-                                    cx.notify();
-                                })),
-                        )
-                        .into_any_element(),
-                    PreferencesSection::Kubernetes => v_flex()
-                        .gap_3()
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(div().text_xs().child("Custom Helm Binary Path"))
-                                .child(Input::new(&self.pref_helm_path_input).small()),
-                        )
-                        .child(
-                            Switch::new("pref-helm-server-side")
-                                .label("Use server-side dry-run for Helm operations")
-                                .checked(draft.kubernetes.helm_server_side)
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    this.preferences_draft.kubernetes.helm_server_side = *checked;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Switch::new("pref-discover-default-kubeconfig")
-                                .label("Auto-discover ~/.kube/config in Catalog")
-                                .checked(draft.kubernetes.discover_default_kubeconfig)
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    this.preferences_draft
-                                        .kubernetes
-                                        .discover_default_kubeconfig = *checked;
-                                    cx.notify();
-                                })),
-                        )
-                        .into_any_element(),
-                    PreferencesSection::Editor => v_flex()
-                        .gap_3()
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(div().text_xs().child("Font Family"))
-                                .child(Input::new(&self.pref_editor_font_family_input).small()),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_3()
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .gap_1()
-                                        .child(div().text_xs().child("Font Size (10-50)"))
-                                        .child(
-                                            Input::new(&self.pref_editor_font_size_input).small(),
-                                        ),
-                                )
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .gap_1()
-                                        .child(div().text_xs().child("Tab Size (1-16)"))
-                                        .child(
-                                            Input::new(&self.pref_editor_tab_size_input).small(),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .justify_between()
-                                .child(div().text_sm().child("Line Numbers"))
-                                .child(
-                                    h_flex().gap_1p5().children(
-                                        [
-                                            (LineNumbers::On, "On"),
-                                            (LineNumbers::Off, "Off"),
-                                            (LineNumbers::Relative, "Relative"),
-                                        ]
-                                        .into_iter()
-                                        .map(
-                                            |(ln, label)| {
-                                                let active = draft.editor.line_numbers == ln;
-                                                Button::new(SharedString::from(format!(
-                                                    "pref-ln-{label}"
-                                                )))
-                                                .xsmall()
-                                                .when(active, |b| b.primary())
-                                                .when(!active, |b| b.outline())
-                                                .label(label)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.preferences_draft.editor.line_numbers = ln;
-                                                    cx.notify();
-                                                }))
-                                            },
-                                        ),
-                                    ),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    Switch::new("pref-editor-minimap")
-                                        .label("Show Minimap")
-                                        .checked(draft.editor.minimap)
-                                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                            this.preferences_draft.editor.minimap = *checked;
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    h_flex().gap_1p5().children(
-                                        [
-                                            (MinimapSide::Left, "Left"),
-                                            (MinimapSide::Right, "Right"),
-                                        ]
-                                        .into_iter()
-                                        .map(
-                                            |(side, label)| {
-                                                let active = draft.editor.minimap_side == side;
-                                                Button::new(SharedString::from(format!(
-                                                    "pref-minimap-{label}"
-                                                )))
-                                                .xsmall()
-                                                .when(active, |b| b.primary())
-                                                .when(!active, |b| b.outline())
-                                                .label(label)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.preferences_draft.editor.minimap_side =
-                                                        side;
-                                                    cx.notify();
-                                                }))
-                                            },
-                                        ),
-                                    ),
-                                ),
-                        )
-                        .into_any_element(),
-                    PreferencesSection::Terminal => v_flex()
-                        .gap_3()
-                        .child(
-                            v_flex()
-                                .gap_1()
-                                .child(div().text_xs().child("Terminal Font Family"))
-                                .child(Input::new(&self.pref_terminal_font_family_input).small()),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_3()
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .gap_1()
-                                        .child(div().text_xs().child("Font Size (10-50)"))
-                                        .child(
-                                            Input::new(&self.pref_terminal_font_size_input).small(),
-                                        ),
-                                )
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .gap_1()
-                                        .child(div().text_xs().child("Default Shell Path"))
-                                        .child(Input::new(&self.pref_terminal_shell_input).small()),
-                                ),
-                        )
-                        .child(
-                            h_flex()
-                                .items_center()
-                                .justify_between()
-                                .child(div().text_sm().child("Terminal Theme"))
-                                .child(
-                                    h_flex().gap_1p5().children(
-                                        [
-                                            (TerminalTheme::Match, "Match App"),
-                                            (TerminalTheme::Dark, "Dark"),
-                                            (TerminalTheme::Light, "Light"),
-                                        ]
-                                        .into_iter()
-                                        .map(
-                                            |(tt, label)| {
-                                                let active = draft.terminal.theme == tt;
-                                                Button::new(SharedString::from(format!(
-                                                    "pref-term-theme-{label}"
-                                                )))
-                                                .xsmall()
-                                                .when(active, |b| b.primary())
-                                                .when(!active, |b| b.outline())
-                                                .label(label)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.preferences_draft.terminal.theme = tt;
-                                                    cx.notify();
-                                                }))
-                                            },
-                                        ),
-                                    ),
-                                ),
-                        )
-                        .child(
-                            Switch::new("pref-term-copy-on-select")
-                                .label("Copy selection to clipboard automatically")
-                                .checked(draft.terminal.copy_on_select)
-                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                    this.preferences_draft.terminal.copy_on_select = *checked;
-                                    cx.notify();
-                                })),
-                        )
-                        .into_any_element(),
-                }),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        Button::new("cancel-preferences-btn")
-                            .small()
-                            .outline()
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.preferences_open = false;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("save-preferences-btn")
-                            .small()
-                            .primary()
-                            .label("Save Preferences")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_preferences(window, cx);
-                            })),
-                    ),
-            )
     }
 }

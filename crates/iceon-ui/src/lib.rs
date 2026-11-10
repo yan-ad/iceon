@@ -1,5 +1,6 @@
 //! Pure-Rust GPUI (`gpui-kit`) desktop UI shell for Iceon (`icekube`).
 
+pub mod badge;
 pub mod catalog_view;
 pub mod cluster_view;
 pub mod inspector_view;
@@ -64,6 +65,7 @@ pub struct IceonApp {
 
     pub(crate) search_modal_open: bool,
     pub(crate) preferences_open: bool,
+    pub(crate) preferences_window: Option<AnyWindowHandle>,
     pub(crate) preferences_section: PreferencesSection,
     pub(crate) preferences_revision: u64,
     pub(crate) preferences_draft: Preferences,
@@ -315,6 +317,7 @@ impl IceonApp {
             expanded_cluster_groups,
             search_modal_open: false,
             preferences_open: false,
+            preferences_window: None,
             preferences_section: PreferencesSection::App,
             preferences_revision,
             preferences_draft: preferences_draft.clone(),
@@ -661,16 +664,6 @@ impl Render for IceonApp {
                         .top(px(44.0))
                         .left(px(180.0))
                         .child(self.render_search_modal(cx)),
-                )
-            })
-            .when(self.preferences_open, |el| {
-                el.child(
-                    v_flex()
-                        .occlude()
-                        .absolute()
-                        .top(px(56.0))
-                        .left(px(140.0))
-                        .child(self.render_preferences_modal(window, cx)),
                 )
             })
     }

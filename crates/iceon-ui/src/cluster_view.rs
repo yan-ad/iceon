@@ -1,15 +1,18 @@
-//! Cluster workspace views: Overview, 41 Kubernetes Resource tables, Helm, Custom Resources, and RBAC Users.
+//! Cluster workspace views: Overview, 41 Kubernetes Resource tables, Port Forwarding, Helm, Custom Resources, and RBAC Users.
 
-use std::{rc::Rc, time::Duration};
+use std::rc::Rc;
+use std::time::Duration;
 
+use crate::navigation::{cell_value, format_age, resource_view_by_kind};
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, Input},
+    scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
-    v_flex, v_virtual_list,
+    v_flex,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,21 +150,41 @@ pub fn parse_custom_resource_target(section: &str) -> Option<(Option<String>, Op
 pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
     use ResourceKind::*;
     match kind {
+        Namespaces => &[ColumnDef {
+            header: "Labels",
+            key: "labels",
+            width: 260.0,
+        }],
         Nodes => &[
+            ColumnDef {
+                header: "CPU",
+                key: "cpu",
+                width: 120.0,
+            },
+            ColumnDef {
+                header: "Memory",
+                key: "memory",
+                width: 125.0,
+            },
             ColumnDef {
                 header: "Roles",
                 key: "roles",
-                width: 140.0,
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Taints",
+                key: "taints",
+                width: 70.0,
             },
             ColumnDef {
                 header: "Version",
                 key: "version",
-                width: 120.0,
+                width: 115.0,
             },
             ColumnDef {
                 header: "Schedulable",
                 key: "schedulable",
-                width: 100.0,
+                width: 95.0,
             },
         ],
         Pods => &[
@@ -272,6 +295,28 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
                 header: "Last Schedule",
                 key: "lastSchedule",
                 width: 160.0,
+            },
+        ],
+        ConfigMaps => &[ColumnDef {
+            header: "Keys",
+            key: "keys",
+            width: 240.0,
+        }],
+        Secrets => &[
+            ColumnDef {
+                header: "Type",
+                key: "type",
+                width: 180.0,
+            },
+            ColumnDef {
+                header: "Keys",
+                key: "keys",
+                width: 160.0,
+            },
+            ColumnDef {
+                header: "Labels",
+                key: "labels",
+                width: 120.0,
             },
         ],
         Services => &[
@@ -654,6 +699,57 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
                 width: 95.0,
             },
         ],
+        MutatingWebhookConfigurations | ValidatingWebhookConfigurations => &[ColumnDef {
+            header: "Webhooks",
+            key: "webhooks",
+            width: 120.0,
+        }],
+        ValidatingAdmissionPolicies => &[
+            ColumnDef {
+                header: "Failure Policy",
+                key: "failurePolicy",
+                width: 130.0,
+            },
+            ColumnDef {
+                header: "Validations",
+                key: "validations",
+                width: 100.0,
+            },
+            ColumnDef {
+                header: "Param Kind",
+                key: "paramKind",
+                width: 140.0,
+            },
+        ],
+        ValidatingAdmissionPolicyBindings => &[
+            ColumnDef {
+                header: "Policy",
+                key: "policyName",
+                width: 190.0,
+            },
+            ColumnDef {
+                header: "Param Ref",
+                key: "paramRef",
+                width: 150.0,
+            },
+            ColumnDef {
+                header: "Actions",
+                key: "validationActions",
+                width: 130.0,
+            },
+        ],
+        PodSecurityPolicies => &[
+            ColumnDef {
+                header: "Privileged",
+                key: "privileged",
+                width: 110.0,
+            },
+            ColumnDef {
+                header: "Volumes",
+                key: "volumes",
+                width: 220.0,
+            },
+        ],
         CustomResourceDefinitions => &[
             ColumnDef {
                 header: "Group",
@@ -676,7 +772,6 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
                 width: 120.0,
             },
         ],
-        _ => &[],
     }
 }
 
@@ -783,6 +878,7 @@ impl IceonApp {
                     Ok(snap) => {
                         let status = snap.status;
                         let err = snap.error;
+                        if let Some(ver) = snap.api_version.clone() {}
                         this.cluster_session = Some(snap);
                         this.namespaces = ns_list;
                         this.refresh_catalog(cx);
@@ -1059,6 +1155,9 @@ impl IceonApp {
                 };
 
                 let is_stopped = matches!(snap.status, "stopped" | "error");
+                if snap.sequence <= last_seq && !is_stopped {
+                    continue;
+                }
                 let mut still_active = false;
                 let _ = this.update_in(cx, |this, _, cx| {
                     if this.active_pod_sync_id.as_deref() == Some(sync_id.as_str()) {
@@ -1747,6 +1846,9 @@ impl IceonApp {
         {
             return self.render_overview_body(cx).into_any_element();
         }
+        if section == "port-forwarding" {
+            return self.render_port_forwarding_body(cx).into_any_element();
+        }
         if section == "helm-charts"
             || section == "helm-releases"
             || section == "helm/charts"
@@ -1924,11 +2026,13 @@ impl IceonApp {
             .unwrap_or_default();
 
         v_flex()
+            .flex_1()
             .w_full()
             .h_full()
             .min_h_0()
             .p_4()
             .gap_4()
+            .overflow_y_scrollbar()
             .child(
                 h_flex()
                     .w_full()
@@ -2078,6 +2182,89 @@ impl IceonApp {
             )
     }
 
+    fn render_port_forwarding_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let forwards = self.port_forwards.clone();
+        v_flex()
+            .flex_1()
+            .w_full()
+            .h_full()
+            .min_h_0()
+            .p_4()
+            .gap_2()
+            .overflow_y_scrollbar()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("Active Local Port Forwards ({})", forwards.len())),
+            )
+            .when(forwards.is_empty(), |el| {
+                el.child(
+                    div()
+                        .p_4()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().secondary)
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No active port-forwards. Start one from a Service row or Pod container port."),
+                )
+            })
+            .children(forwards.into_iter().enumerate().map(|(idx, fwd)| {
+                let fid = fwd.id.clone();
+                let copy_addr = format!("127.0.0.1:{}", fwd.local_port);
+                h_flex()
+                    .w_full()
+                    .h(px(38.0))
+                    .px_3()
+                    .justify_between()
+                    .items_center()
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().secondary)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("127.0.0.1:{} → {}:{}", fwd.local_port, fwd.name, fwd.remote_port)),
+                            )
+                            .child(Tag::secondary().small().child(fwd.namespace))
+                            .child(row_status_tag(fwd.status)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Button::new(SharedString::from(format!("pf-copy-{idx}")))
+                                    .xsmall()
+                                    .outline()
+                                    .label("Copy")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_addr.clone(),
+                                        ));
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("pf-stop-{idx}")))
+                                    .xsmall()
+                                    .danger()
+                                    .label("Stop")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.stop_pod_forward(fid.clone(), cx);
+                                    })),
+                            ),
+                    )
+            }))
+    }
+
     fn render_resource_table_body(
         &mut self,
         kind: ResourceKind,
@@ -2125,26 +2312,88 @@ impl IceonApp {
 
         let cols = columns_for_kind(kind);
         let show_ns = namespaced_kind(kind);
+        let status_options: &'static [&'static str] = resource_view_by_kind(kind)
+            .map(|v| v.statuses)
+            .unwrap_or(&[]);
+        let active_status = self.selected_status_filter.clone();
+        let items: Vec<ResourceItem> = if let Some(ref st) = active_status {
+            items
+                .into_iter()
+                .filter(|item| item.status.eq_ignore_ascii_case(st))
+                .collect()
+        } else {
+            items
+        };
+        let item_count = items.len();
+        let shared_items = Rc::new(items);
+        let item_sizes = Rc::new(vec![size(px(42.0), px(42.0)); item_count]);
+        let entity = cx.entity();
 
         v_flex()
+            .flex_1()
+            .h_full()
+            .min_h_0()
             .w_full()
             .p_4()
             .gap_2()
-            // Table Pagination & Count Header
+            .overflow_hidden()
+            // Table Pagination, Status Filter Pills & Count Header
             .child(
                 h_flex()
                     .w_full()
                     .justify_between()
                     .items_center()
+                    .gap_2()
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "Showing {} {:?} items (Page {page_num})",
-                                items.len(),
-                                kind
-                            )),
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .flex_wrap()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "Showing {} {:?} items (Page {page_num})",
+                                        item_count, kind
+                                    )),
+                            )
+                            .when(!status_options.is_empty(), |row| {
+                                row.child(
+                                    Button::new("tbl-status-all")
+                                        .xsmall()
+                                        .ghost()
+                                        .selected(active_status.is_none())
+                                        .label("All")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.selected_status_filter = None;
+                                            this.current_continue_token = None;
+                                            this.continue_token_history.clear();
+                                            this.load_resource_table(kind, window, cx);
+                                        })),
+                                )
+                                .children(
+                                    status_options.iter().copied().map(|st| {
+                                        let is_sel = active_status.as_deref() == Some(st);
+                                        let st_str = st.to_owned();
+                                        Button::new(SharedString::from(format!("tbl-st-{st}")))
+                                            .xsmall()
+                                            .ghost()
+                                            .selected(is_sel)
+                                            .label(st)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.selected_status_filter = if is_sel {
+                                                    None
+                                                } else {
+                                                    Some(st_str.clone())
+                                                };
+                                                this.current_continue_token = None;
+                                                this.continue_token_history.clear();
+                                                this.load_resource_table(kind, window, cx);
+                                            }))
+                                    }),
+                                )
+                            }),
                     )
                     .child(
                         h_flex()
@@ -2217,13 +2466,6 @@ impl IceonApp {
                                 .child("Namespace"),
                         )
                     })
-                    .child(
-                        div()
-                            .w(px(110.0))
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Status"),
-                    )
                     .children(cols.iter().map(|c| {
                         div()
                             .w(px(c.width))
@@ -2233,31 +2475,53 @@ impl IceonApp {
                     }))
                     .child(
                         div()
+                            .w(px(76.0))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Age"),
+                    )
+                    .child(
+                        div()
+                            .w(px(124.0))
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Status"),
+                    )
+                    .child(
+                        div()
                             .flex_1()
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Actions"),
                     ),
             )
-            // Virtualized rows: only visible resource rows are laid out.
+            // Virtualized Table Rows (strictly bounded viewport height; only builds visible rows)
             .child(
                 v_virtual_list(
-                    cx.entity(),
-                    format!("resource-rows-{kind:?}"),
-                    Rc::new(vec![size(px(44.0), px(44.0)); items.len()]),
-                    move |this, range, _window, cx| {
-                        range
-                            .filter_map(|idx| items.get(idx).cloned().map(|item| (idx, item)))
-                            .map(|(idx, item)| {
-                                this.render_resource_row(kind, item, idx, show_ns, cols, cx)
-                                    .into_any_element()
+                    entity,
+                    SharedString::from(format!("virtual-resource-table-{kind:?}")),
+                    item_sizes,
+                    move |this, visible_range, _window, cx| {
+                        visible_range
+                            .filter_map(|idx| {
+                                let item = shared_items.get(idx)?.clone();
+                                Some(
+                                    div()
+                                        .w_full()
+                                        .h(px(42.0))
+                                        .pb(px(4.0))
+                                        .child(this.render_resource_row(
+                                            kind, item, idx, show_ns, cols, cx,
+                                        ))
+                                        .into_any_element(),
+                                )
                             })
                             .collect()
                     },
                 )
                 .flex_1()
-                .h_full()
-                .min_h_0(),
+                .min_h_0()
+                .w_full(),
             )
     }
 
@@ -2279,17 +2543,19 @@ impl IceonApp {
         let row_actions = self
             .render_row_actions(kind, &item, idx, cx)
             .into_any_element();
+        let age_str = format_age(item.created_at.as_deref());
 
         h_flex()
             .w_full()
+            .h(px(38.0))
             .px_3()
-            .py_2()
             .gap_2()
             .items_center()
             .rounded(px(6.0))
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().secondary)
+            .hover(|s| s.bg(cx.theme().table_hover))
             .child(
                 div()
                     .w(px(220.0))
@@ -2308,15 +2574,56 @@ impl IceonApp {
                         .child(item.namespace.clone().unwrap_or_default()),
                 )
             })
-            .child(div().w(px(110.0)).child(row_status_tag(&item.status)))
             .children(cols.iter().map(|c| {
-                div().w(px(c.width)).text_xs().truncate().child(
-                    item.columns
-                        .get(c.key)
-                        .cloned()
-                        .unwrap_or_else(|| "-".into()),
-                )
+                if kind == ResourceKind::Namespaces && c.key == "labels" {
+                    let extra_count = item
+                        .columns
+                        .get("labels")
+                        .and_then(|v| v.parse::<usize>().ok())
+                        .unwrap_or(0)
+                        .saturating_sub(1);
+                    h_flex()
+                        .w(px(c.width))
+                        .gap_1()
+                        .items_center()
+                        .overflow_hidden()
+                        .child(
+                            Tag::secondary()
+                                .small()
+                                .child(format!("kubernetes.io/metadata.name={}", item.name)),
+                        )
+                        .when(extra_count > 0, |row| {
+                            row.child(
+                                Tag::outline()
+                                    .small()
+                                    .without_icon()
+                                    .child(format!("+{extra_count}")),
+                            )
+                        })
+                        .into_any_element()
+                } else {
+                    div()
+                        .w(px(c.width))
+                        .text_xs()
+                        .truncate()
+                        .child(cell_value(&item, c.key))
+                        .into_any_element()
+                }
             }))
+            .child(
+                div()
+                    .w(px(76.0))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(age_str),
+            )
+            .child(
+                h_flex()
+                    .w(px(124.0))
+                    .items_center()
+                    .child(row_status_tag(&item.status)),
+            )
             .child(
                 h_flex()
                     .flex_1()
@@ -2617,9 +2924,13 @@ impl IceonApp {
             .unwrap_or(HelmView::Charts);
 
         v_flex()
+            .flex_1()
             .w_full()
+            .h_full()
+            .min_h_0()
             .p_4()
             .gap_3()
+            .overflow_y_scrollbar()
             .when_some(self.helm_install_chart.clone(), |el, chart| {
                 el.child(
                     v_flex()
@@ -2793,9 +3104,13 @@ impl IceonApp {
         let instances = self.custom_instances_page.clone();
 
         v_flex()
+            .flex_1()
             .w_full()
+            .h_full()
+            .min_h_0()
             .p_4()
             .gap_4()
+            .overflow_y_scrollbar()
             .child(
                 v_flex()
                     .w_full()
@@ -2931,9 +3246,13 @@ impl IceonApp {
         let all_ns = self.rbac_all_namespaces;
 
         v_flex()
+            .flex_1()
             .w_full()
+            .h_full()
+            .min_h_0()
             .p_4()
             .gap_4()
+            .overflow_y_scrollbar()
             // Managed ServiceAccount User Builder & Template Selector
             .child(
                 v_flex()
@@ -3343,32 +3662,7 @@ impl IceonApp {
 }
 
 fn row_status_tag(status: &str) -> Tag {
-    let lower = status.to_lowercase();
-    if lower.contains("running")
-        || lower.contains("ready")
-        || lower.contains("active")
-        || lower.contains("bound")
-        || lower.contains("complete")
-        || lower.contains("succeeded")
-        || lower.contains("deployed")
-        || lower.contains("applied")
-        || lower == "true"
-    {
-        Tag::success().small().child(status.to_owned())
-    } else if lower.contains("pending")
-        || lower.contains("terminating")
-        || lower.contains("warning")
-    {
-        Tag::warning().small().child(status.to_owned())
-    } else if lower.contains("fail")
-        || lower.contains("error")
-        || lower.contains("crash")
-        || lower == "false"
-    {
-        Tag::danger().small().child(status.to_owned())
-    } else {
-        Tag::secondary().small().child(status.to_owned())
-    }
+    Tag::for_resource_status(status)
 }
 
 pub fn default_yaml_template(kind: ResourceKind, namespace: &str) -> String {

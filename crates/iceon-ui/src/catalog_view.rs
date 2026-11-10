@@ -276,6 +276,11 @@ impl IceonApp {
                                     "error" => Tag::danger().child("Error"),
                                     _ => Tag::secondary().child("Disconnected"),
                                 };
+                                let badge_color = crate::sidebar_view::cluster_badge_color(
+                                    &cluster.color,
+                                    &cluster.id,
+                                    cx.theme().mode.is_dark(),
+                                );
 
                                 h_flex()
                                     .id(SharedString::from(format!("catalog-row-{idx}")))
@@ -296,7 +301,7 @@ impl IceonApp {
                                                     .w(px(10.0))
                                                     .h(px(10.0))
                                                     .rounded_full()
-                                                    .bg(cx.theme().primary),
+                                                    .bg(badge_color),
                                             )
                                             .child(
                                                 v_flex()

@@ -7,9 +7,9 @@
 use gpui_kit::component::theme::{Theme, ThemeColor, ThemeMode};
 use gpui_kit::{App, Hsla, Window, WindowBackgroundAppearance, rgb};
 
-const CHROME_ALPHA_LIGHT: f32 = 0.70;
-const CHROME_ALPHA_DARK: f32 = 0.70;
-const SELECTED_ALPHA: f32 = 0.10;
+const CHROME_ALPHA_LIGHT: f32 = 0.48;
+const CHROME_ALPHA_DARK: f32 = 0.38;
+const SELECTED_ALPHA: f32 = 0.12;
 
 fn neutral(value: u32, alpha: f32) -> Hsla {
     Hsla::from(rgb(value)).alpha(alpha)

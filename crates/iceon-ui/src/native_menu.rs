@@ -12,7 +12,6 @@ use gpui_kit::{
 use crate::{IceonApp, navigation::Route};
 use iceon_core::project::REPOSITORY_URL;
 
-// Unsupported actions intentionally have neither listeners nor key bindings.
 gpui_kit::actions!(
     iceon,
     [
@@ -26,7 +25,7 @@ gpui_kit::actions!(
         AddCluster,
         CloseWindow,
         Catalog,
-        Vault,
+        ToggleSidebar,
         CommandPalette,
         Back,
         Forward,
@@ -101,10 +100,14 @@ fn bindings(macos: bool) -> Vec<KeyBinding> {
     bind!(",", Preferences);
     bind!("o", AddCluster);
     bind!("w", CloseWindow);
+    bind!("b", ToggleSidebar);
     bind!("k", CommandPalette);
     bind!("[", Back);
     bind!("]", Forward);
     bind!("r", Reload);
+    bind!("0", ActualSize);
+    bind!("=", ZoomIn);
+    bind!("-", ZoomOut);
     if macos {
         keys.push(KeyBinding::new("cmd-h", Hide, Some("Iceon")));
         keys.push(KeyBinding::new("cmd-alt-h", HideOthers, Some("Iceon")));
@@ -131,6 +134,7 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
                 v_flex()
                     .gap_2()
                     .child(format!("Iceon {}", env!("CARGO_PKG_VERSION")))
+                    .child("Pure-Rust Kubernetes IDE built on GPUI")
                     .child(format!("License: {}", env!("CARGO_PKG_LICENSE")))
                     .child(REPOSITORY_URL),
             )
@@ -138,6 +142,16 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     });
     register!(Preferences, |this, _: &Preferences, window, cx| {
         this.open_preferences(window, cx);
+    });
+    register!(Extensions, |_, _: &Extensions, window, cx| {
+        window.open_dialog(cx, |dialog, _, _| {
+            dialog.title("Extensions").child(
+                v_flex()
+                    .gap_2()
+                    .child("Iceon runs a native 100% Rust engine without external JS/Electron extensions.")
+                    .child("Built-in capabilities include Kubernetes 41-kind inventory, live Pod watch, logs/exec/attach, port-forwarding, Helm v3/v4, CRD discovery, and RBAC permission planner."),
+            )
+        });
     });
     register!(AddCluster, |this, _: &AddCluster, window, cx| {
         this.prompt_import_kubeconfig(window, cx);
@@ -147,21 +161,80 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(Catalog, |this, _: &Catalog, window, cx| {
         this.navigate(Route::Catalog, true, window, cx);
     });
-    register!(Vault, |this, _: &Vault, window, cx| {
-        this.navigate(Route::Secrets, true, window, cx);
+    register!(ToggleSidebar, |this, _: &ToggleSidebar, _, cx| {
+        this.sidebar_collapsed = !this.sidebar_collapsed;
+        cx.notify();
     });
     register!(Welcome, |this, _: &Welcome, window, cx| {
         this.navigate(Route::Catalog, true, window, cx);
     });
     register!(CommandPalette, |this, _: &CommandPalette, _, cx| {
-        this.search_modal_open = true;
+        this.search_modal_open = !this.search_modal_open;
         cx.notify();
     });
     register!(Reload, |this, _: &Reload, window, cx| {
         this.navigate(this.history.current().clone(), false, window, cx);
     });
+    register!(DeveloperTools, |this, _: &DeveloperTools, window, cx| {
+        let cluster_count = this.catalog_snapshot.clusters.len();
+        let revision = this.catalog_snapshot.revision;
+        let session_info = match &this.cluster_session {
+            Some(s) => format!(
+                "{} · status={} · version={}",
+                s.cluster_id,
+                s.status,
+                s.api_version.as_deref().unwrap_or("n/a")
+            ),
+            None => "No active cluster session".into(),
+        };
+        let active_section = this.active_cluster_section.clone();
+        let loaded_rows = this
+            .resource_page
+            .as_ref()
+            .map(|p| p.items.len())
+            .unwrap_or(0);
+        window.open_dialog(cx, move |dialog, _, _| {
+            dialog.title("Runtime Diagnostics").child(
+                v_flex()
+                    .gap_1p5()
+                    .child(format!(
+                        "Catalog Revision: {revision} ({cluster_count} clusters)"
+                    ))
+                    .child(format!("Active Session: {session_info}"))
+                    .child(format!(
+                        "Active Section: {active_section} ({loaded_rows} rows loaded)"
+                    )),
+            )
+        });
+    });
+    register!(ActualSize, |this, _: &ActualSize, window, cx| {
+        this.adjust_font_zoom(0, window, cx);
+    });
+    register!(ZoomIn, |this, _: &ZoomIn, window, cx| {
+        this.adjust_font_zoom(1, window, cx);
+    });
+    register!(ZoomOut, |this, _: &ZoomOut, window, cx| {
+        this.adjust_font_zoom(-1, window, cx);
+    });
     register!(FullScreen, |_, _: &FullScreen, window, _| window
         .toggle_fullscreen());
+    register!(Documentation, |_, _: &Documentation, _, cx| {
+        cx.open_url(REPOSITORY_URL);
+    });
+    register!(Licenses, |_, _: &Licenses, window, cx| {
+        window.open_dialog(cx, |dialog, _, _| {
+            dialog.title("Open Source Licenses").child(
+                v_flex()
+                    .gap_2()
+                    .child(format!(
+                        "Iceon {} is licensed under {}.",
+                        env!("CARGO_PKG_VERSION"),
+                        env!("CARGO_PKG_LICENSE")
+                    ))
+                    .child(REPOSITORY_URL),
+            )
+        });
+    });
     register!(Support, |_, _: &Support, _, cx| cx.open_url(REPOSITORY_URL));
     register!(Back, |this, _: &Back, window, cx| {
         if let Some(route) = this.history.go_back() {
@@ -190,8 +263,6 @@ fn register_window_action<A: Action>(
     let app = app.downgrade();
     let window = window.window_handle();
     cx.on_action(move |action: &A, cx| {
-        // Both updates can fail normally after closure; never target another
-        // window or rely on its root type (gpui-kit wraps it in Root).
         let _ = window.update(cx, |_, window, cx| {
             let _ = app.update(cx, |this, cx| handler(this, action, window, cx));
         });
@@ -199,6 +270,34 @@ fn register_window_action<A: Action>(
 }
 
 impl IceonApp {
+    pub(crate) fn adjust_font_zoom(
+        &mut self,
+        delta: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if delta == 0 {
+            self.preferences_draft.editor.font_size = 12;
+            self.preferences_draft.terminal.font_size = 12;
+        } else {
+            let next_editor =
+                (self.preferences_draft.editor.font_size as i32 + delta).clamp(10, 50) as u8;
+            let next_term =
+                (self.preferences_draft.terminal.font_size as i32 + delta).clamp(10, 50) as u8;
+            self.preferences_draft.editor.font_size = next_editor;
+            self.preferences_draft.terminal.font_size = next_term;
+        }
+        let editor_str = self.preferences_draft.editor.font_size.to_string();
+        let term_str = self.preferences_draft.terminal.font_size.to_string();
+        self.pref_editor_font_size_input.update(cx, |input, cx| {
+            input.set_value(editor_str, window, cx);
+        });
+        self.pref_terminal_font_size_input.update(cx, |input, cx| {
+            input.set_value(term_str, window, cx);
+        });
+        cx.notify();
+    }
+
     /// Use this Div as the ancestor of the ENTIRE shell (including inputs).
     /// Do not mount it as an empty sibling: actions bubble along the focus path.
     pub(crate) fn menu_action_surface(&self, cx: &mut Context<Self>) -> Div {
@@ -211,6 +310,7 @@ impl IceonApp {
                         v_flex()
                             .gap_2()
                             .child(format!("Iceon {}", env!("CARGO_PKG_VERSION")))
+                            .child("Pure-Rust Kubernetes IDE built on GPUI")
                             .child(format!("License: {}", env!("CARGO_PKG_LICENSE")))
                             .child(REPOSITORY_URL),
                     )
@@ -219,6 +319,16 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &Preferences, window, cx| {
                 this.open_preferences(window, cx);
             }))
+            .on_action(cx.listener(|_, _: &Extensions, window, cx| {
+                window.open_dialog(cx, |dialog, _, _| {
+                    dialog.title("Extensions").child(
+                        v_flex()
+                            .gap_2()
+                            .child("Iceon runs a native 100% Rust engine without external JS/Electron extensions.")
+                            .child("Built-in capabilities include Kubernetes 41-kind inventory, live Pod watch, logs/exec/attach, port-forwarding, Helm v3/v4, CRD discovery, and RBAC permission planner."),
+                    )
+                });
+            }))
             .on_action(cx.listener(|this, _: &AddCluster, window, cx| {
                 this.prompt_import_kubeconfig(window, cx);
             }))
@@ -226,24 +336,79 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &Catalog, window, cx| {
                 this.navigate(Route::Catalog, true, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &Vault, window, cx| {
-                this.navigate(Route::Secrets, true, window, cx);
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.sidebar_collapsed = !this.sidebar_collapsed;
+                cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Welcome, window, cx| {
                 this.navigate(Route::Catalog, true, window, cx);
             }))
             .on_action(cx.listener(|this, _: &CommandPalette, _, cx| {
-                this.search_modal_open = true;
+                this.search_modal_open = !this.search_modal_open;
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Reload, window, cx| {
                 this.navigate(this.history.current().clone(), false, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &DeveloperTools, window, cx| {
+                let cluster_count = this.catalog_snapshot.clusters.len();
+                let revision = this.catalog_snapshot.revision;
+                let session_info = match &this.cluster_session {
+                    Some(s) => format!(
+                        "{} · status={} · version={}",
+                        s.cluster_id,
+                        s.status,
+                        s.api_version.as_deref().unwrap_or("n/a")
+                    ),
+                    None => "No active cluster session".into(),
+                };
+                let active_section = this.active_cluster_section.clone();
+                let loaded_rows = this
+                    .resource_page
+                    .as_ref()
+                    .map(|p| p.items.len())
+                    .unwrap_or(0);
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog.title("Runtime Diagnostics").child(
+                        v_flex()
+                            .gap_1p5()
+                            .child(format!(
+                                "Catalog Revision: {revision} ({cluster_count} clusters)"
+                            ))
+                            .child(format!("Active Session: {session_info}"))
+                            .child(format!(
+                                "Active Section: {active_section} ({loaded_rows} rows loaded)"
+                            )),
+                    )
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ActualSize, window, cx| {
+                this.adjust_font_zoom(0, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ZoomIn, window, cx| {
+                this.adjust_font_zoom(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ZoomOut, window, cx| {
+                this.adjust_font_zoom(-1, window, cx);
+            }))
             .on_action(cx.listener(|_, _: &FullScreen, window, _| window.toggle_fullscreen()))
+            .on_action(cx.listener(|_, _: &Documentation, _, cx| cx.open_url(REPOSITORY_URL)))
+            .on_action(cx.listener(|_, _: &Licenses, window, cx| {
+                window.open_dialog(cx, |dialog, _, _| {
+                    dialog.title("Open Source Licenses").child(
+                        v_flex()
+                            .gap_2()
+                            .child(format!(
+                                "Iceon {} is licensed under {}.",
+                                env!("CARGO_PKG_VERSION"),
+                                env!("CARGO_PKG_LICENSE")
+                            ))
+                            .child(REPOSITORY_URL),
+                    )
+                });
+            }))
             .on_action(cx.listener(|_, _: &Support, _, cx| cx.open_url(REPOSITORY_URL)));
         // Local fallbacks stop bubbling, so the app handler never runs twice.
-        // Native history validation uses separate unhandled placeholder actions
-        // in the menu model when navigation is unavailable.
         let surface = if self.history.can_go_back() {
             surface.on_action(cx.listener(|this, _: &Back, window, cx| {
                 if let Some(route) = this.history.go_back() {
@@ -270,13 +435,26 @@ impl IceonApp {
         surface
     }
 
-    /// Call on every render, before constructing the header. Only changed models
-    /// are published/reloaded. No extra IceonApp fields are necessary.
-    pub(crate) fn sync_menus(&self, window: &mut Window, _cx: &mut Context<Self>) {
-        // The first render has no dispatch tree yet. Inspect the completed frame
-        // rather than calling root_node_id on an empty tree during startup.
+    /// Synchronize menu capabilities only when navigation history state changes on macOS,
+    /// avoiding per-frame `on_next_frame` dispatch tree walks during list scrolling.
+    pub(crate) fn sync_menus(&self, window: &mut Window, cx: &mut Context<Self>) {
         let back = self.history.can_go_back();
         let forward = self.history.can_go_forward();
+        if cfg!(target_os = "macos") {
+            let current = cx.global::<MenuState>().capabilities;
+            if current.is_some_and(|c| c.back == back && c.forward == forward) {
+                return;
+            }
+            publish_menus(
+                Capabilities {
+                    back,
+                    forward,
+                    edit: [true; 7],
+                },
+                cx,
+            );
+            return;
+        }
         window.on_next_frame(move |window, cx| {
             let capabilities = Capabilities {
                 back,
@@ -300,7 +478,6 @@ impl IceonApp {
 
 fn publish_menus(capabilities: Capabilities, cx: &mut App) {
     let menus = menu_model(cfg!(target_os = "macos"), capabilities);
-    // Preserve a single source model. Menu is not Clone in gpui-pre 0.3.11.
     let owned = menus.iter().map(owned_menu).collect();
     GlobalState::global_mut(cx).set_app_menus(owned);
     cx.set_menus(menus);
@@ -349,7 +526,7 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
         MenuItem::action("About Iceon", About),
         MenuItem::separator(),
         MenuItem::action("Preferences…", Preferences),
-        MenuItem::action("Extensions…", Extensions).disabled(true),
+        MenuItem::action("Extensions…", Extensions),
     ];
     if macos {
         app.extend([
@@ -362,8 +539,6 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
         ]);
     }
     app.extend([MenuItem::separator(), MenuItem::action("Quit Iceon", Quit)]);
-    // On macOS leave editing enablement to native validation at menu-open time,
-    // avoiding stale explicit disabled bits after an input gains focus.
     let edit_disabled = |i: usize| !macos && !caps.edit[i];
     vec![
         Menu::new("Iceon").items(app),
@@ -386,7 +561,7 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
         ]),
         Menu::new("View").items([
             MenuItem::action("Catalog", Catalog),
-            MenuItem::action("Vault", Vault),
+            MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Command Palette…", CommandPalette),
             MenuItem::separator(),
             if caps.back {
@@ -401,18 +576,18 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
             },
             MenuItem::action("Reload", Reload),
             MenuItem::separator(),
-            MenuItem::action("Developer Tools", DeveloperTools).disabled(true),
+            MenuItem::action("Developer Tools", DeveloperTools),
             MenuItem::separator(),
-            MenuItem::action("Actual Size", ActualSize).disabled(true),
-            MenuItem::action("Zoom In", ZoomIn).disabled(true),
-            MenuItem::action("Zoom Out", ZoomOut).disabled(true),
+            MenuItem::action("Actual Size", ActualSize),
+            MenuItem::action("Zoom In", ZoomIn),
+            MenuItem::action("Zoom Out", ZoomOut),
             MenuItem::separator(),
             MenuItem::action("Toggle Full Screen", FullScreen),
         ]),
         Menu::new("Help").items([
             MenuItem::action("Welcome", Welcome),
-            MenuItem::action("Documentation", Documentation).disabled(true),
-            MenuItem::action("Licenses", Licenses).disabled(true),
+            MenuItem::action("Documentation", Documentation),
+            MenuItem::action("Licenses", Licenses),
             MenuItem::separator(),
             MenuItem::action("Support", Support),
         ]),
@@ -452,28 +627,37 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_commands_are_explicitly_disabled() {
+    fn interactive_menu_commands_are_enabled_and_history_defaults_disabled() {
         for macos in [true, false] {
             let menus = menu_model(macos, Capabilities::default());
-            for expected in [
+            for enabled_item in [
                 "Extensions…",
+                "Toggle Sidebar",
                 "Developer Tools",
                 "Actual Size",
                 "Zoom In",
                 "Zoom Out",
                 "Documentation",
                 "Licenses",
-                "Back",
-                "Forward",
             ] {
                 let item = menus
                     .iter()
                     .flat_map(|m| &m.items)
-                    .find(
-                        |i| matches!(i, MenuItem::Action { name, .. } if name.as_ref() == expected),
-                    )
+                    .find(|i| {
+                        matches!(i, MenuItem::Action { name, .. } if name.as_ref() == enabled_item)
+                    })
                     .expect("menu entry");
-                assert!(item.is_disabled(), "{expected}");
+                assert!(!item.is_disabled(), "{enabled_item} should be enabled");
+            }
+            for disabled_item in ["Back", "Forward"] {
+                let item = menus
+                    .iter()
+                    .flat_map(|m| &m.items)
+                    .find(|i| {
+                        matches!(i, MenuItem::Action { name, .. } if name.as_ref() == disabled_item)
+                    })
+                    .expect("menu entry");
+                assert!(item.is_disabled(), "{disabled_item}");
             }
         }
     }
@@ -563,7 +747,6 @@ mod tests {
 
     #[test]
     fn platform_binding_definitions_are_valid() {
-        // KeyBinding::new parses the platform-specific syntax; no app/test context needed.
         for (macos, shortcut) in [(true, "cmd-q"), (false, "ctrl-q")] {
             let expected = KeyBinding::new(shortcut, Quit, None);
             let keys = bindings(macos);
