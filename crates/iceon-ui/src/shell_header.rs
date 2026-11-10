@@ -5,8 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
-    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
-    tooltip::Tooltip,
+    select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -193,12 +192,14 @@ impl IceonApp {
                 .map(|item| item.id.clone()),
             Route::Catalog | Route::Secrets => None,
         };
-        let tooltip: SharedString = items
+        let selected_cluster = items
             .iter()
             .find(|item| Some(&item.id) == selected_id.as_ref())
-            .map(|item| format!("{} · {}", item.name, item.context_name))
-            .unwrap_or_else(|| "Select a cluster".into())
-            .into();
+            .cloned();
+        let current_namespace = self
+            .selected_namespace
+            .clone()
+            .unwrap_or_else(|| "default".into());
 
         // Do not replace the delegate on ordinary renders: doing so would reset the
         // filtered view and keyboard cursor while the user types. Exact metadata
@@ -290,34 +291,113 @@ impl IceonApp {
                                     })),
                             )
                             .child(
-                                div()
+                                h_flex()
                                     .id("titlebar-cluster-switcher")
-                                    .ml_2()
-                                    .min_w_0()
-                                    .w(px(300.0))
-                                    .max_w(px(340.0))
-                                    .tooltip(move |window, cx| {
-                                        Tooltip::new(tooltip.clone()).build(window, cx)
-                                    })
+                                    .ml_3()
+                                    .items_center()
+                                    .gap_2()
                                     .child(
-                                        Select::new(&self.cluster_select)
-                                            .id("titlebar-cluster-select")
-                                            .small()
-                                            .w_full()
-                                            .accessibility_label("Select a cluster")
-                                            .placeholder("Select a cluster")
-                                            .search_placeholder("Search clusters or contexts…")
-                                            .menu_width(px(340.0))
-                                            .menu_max_h(px(360.0))
-                                            .empty(|_, cx| {
-                                                div()
-                                                    .px_3()
-                                                    .py_2()
-                                                    .text_sm()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("No matching clusters")
-                                            }),
-                                    ),
+                                        Button::new("app-brand-btn")
+                                            .ghost()
+                                            .xsmall()
+                                            .text_color(cx.theme().sidebar_foreground)
+                                            .label("icekube")
+                                            .tooltip("Clusters Catalog")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.navigate(Route::Catalog, true, window, cx);
+                                            })),
+                                    )
+                                    .when_some(selected_cluster, |bar, cluster| {
+                                        bar.child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap_1p5()
+                                                .child(
+                                                    Button::new("titlebar-cluster-select-btn")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .text_color(cx.theme().sidebar_foreground)
+                                                        .icon(IconName::Network)
+                                                        .label(cluster.name.clone())
+                                                        .tooltip(format!(
+                                                            "Cluster: {} ({}) · Click to switch",
+                                                            cluster.name, cluster.context_name
+                                                        ))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.search_modal_open =
+                                                                !this.search_modal_open;
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("/"),
+                                                )
+                                                .child(
+                                                    Button::new("titlebar-namespace-select-btn")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .text_color(cx.theme().sidebar_foreground)
+                                                        .icon(IconName::Folder)
+                                                        .label(current_namespace.clone())
+                                                        .tooltip(format!(
+                                                            "Namespace: {} · Click to view namespaces",
+                                                            current_namespace
+                                                        ))
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                if let Route::Cluster {
+                                                                    cluster_id,
+                                                                    ..
+                                                                } = this.history.current().clone() {
+                                                                    this.navigate(
+                                                                        Route::Cluster {
+                                                                            cluster_id,
+                                                                            section: "namespaces".into(),
+                                                                        },
+                                                                        true,
+                                                                        window,
+                                                                        cx,
+                                                                    );
+                                                                }
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                    })
+                                    .when(selected_id.is_none(), |bar| {
+                                        let section_name = match self.history.current() {
+                                            Route::Catalog => "Clusters",
+                                            Route::Secrets => "Vault Secrets",
+                                            _ => "Select a cluster",
+                                        };
+                                        bar.child(
+                                            h_flex()
+                                                .items_center()
+                                                .gap_1p5()
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("/"),
+                                                )
+                                                .child(
+                                                    Button::new("titlebar-section-label-btn")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .text_color(cx.theme().sidebar_foreground)
+                                                        .label(section_name)
+                                                        .tooltip("Quick jump to cluster or section")
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.search_modal_open =
+                                                                !this.search_modal_open;
+                                                            cx.notify();
+                                                        })),
+                                                ),
+                                        )
+                                    }),
                             ),
                     )
                     .child(

@@ -2,7 +2,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     scroll::ScrollableElement as _,
     sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
@@ -15,6 +15,29 @@ use crate::{
     IceonApp,
     navigation::{CLUSTER_SECTIONS, Route, destination_label, normalize_destination},
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DragCluster(pub String);
+
+pub(crate) struct ClusterDragPreview {
+    pub(crate) label: SharedString,
+}
+
+impl Render for ClusterDragPreview {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(6.0))
+            .bg(cx.theme().tokens.sidebar_accent)
+            .text_color(cx.theme().sidebar_foreground)
+            .text_xs()
+            .font_semibold()
+            .shadow_md()
+            .child(self.label.clone())
+    }
+}
+
 /// Catalog colors are user-controlled metadata. Only accept an exact RGB hex
 /// triplet (with the conventional `#`), never CSS, paths or arbitrary strings.
 fn cluster_rgb(value: &str) -> Option<u32> {
@@ -116,47 +139,128 @@ impl IceonApp {
             .py_2()
             .gap_2()
             .items_center()
-            .child(Button::new("rail-catalog").ghost().small().size(px(40.0))
-                .selected(matches!(route, Route::Catalog))
-                .text_color(cx.theme().sidebar_foreground)
-                .icon(IconName::LayoutDashboard)
-                .accessibility_label("Clusters Catalog").tooltip("Clusters Catalog")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.navigate(Route::Catalog, true, window, cx);
-                })))
-            .child(Button::new("rail-vault").ghost().small().size(px(40.0))
-                .selected(matches!(route, Route::Secrets))
-                .text_color(cx.theme().sidebar_foreground)
-                .icon(IconName::Globe)
-                .accessibility_label("Vault Secrets").tooltip("Vault Secrets")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.navigate(Route::Secrets, true, window, cx);
-                })))
-            .child(v_flex().flex_1().min_h_0().w_full().gap_2().items_center()
-                .overflow_y_scrollbar()
-                // Every cluster is reachable, whether or not it has pinned resources.
-                .children(self.catalog_snapshot.clusters.iter().map(|cluster| {
-                    let cid = cluster.id.clone();
-                    let selected = matches!(&route, Route::Cluster { cluster_id, .. } if cluster_id == &cid);
-                    // This is user metadata, not the shell's brand/accent color.
-                    let marker = cluster_rgb(&cluster.color);
-                    Button::new(SharedString::from(format!("rail-cluster-{cid}")))
-                        .ghost().small().size(px(40.0)).selected(selected)
-                        .text_color(cx.theme().sidebar_foreground)
-                        .label(cluster_initials(&cluster.name))
-                        .when_some(marker, |button, marker| button.border_color(rgb(marker)))
-                        .accessibility_label(format!("{}: {}", cluster.name, cluster.status))
-                        .tooltip(format!("{} · {}", cluster.name, cluster.status))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate(Route::Cluster { cluster_id: cid.clone(), section: "overview".into() }, true, window, cx);
-                        }))
-                })))
-            .child(Button::new("rail-preferences").ghost().small().size(px(40.0))
-                .selected(self.preferences_open)
-                .text_color(cx.theme().sidebar_foreground)
-                .icon(IconName::Settings)
-                .accessibility_label("Preferences").tooltip("Preferences")
-                .on_click(cx.listener(|this, _, window, cx| this.open_preferences(window, cx))))
+            .child(
+                Button::new("rail-catalog")
+                    .ghost()
+                    .small()
+                    .size(px(40.0))
+                    .selected(matches!(route, Route::Catalog))
+                    .text_color(cx.theme().sidebar_foreground)
+                    .icon(IconName::LayoutDashboard)
+                    .accessibility_label("Clusters Catalog")
+                    .tooltip("Clusters Catalog")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.navigate(Route::Catalog, true, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("rail-vault")
+                    .ghost()
+                    .small()
+                    .size(px(40.0))
+                    .selected(matches!(route, Route::Secrets))
+                    .text_color(cx.theme().sidebar_foreground)
+                    .icon(IconName::Globe)
+                    .accessibility_label("Vault Secrets")
+                    .tooltip("Vault Secrets")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.navigate(Route::Secrets, true, window, cx);
+                    })),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .gap_2()
+                    .items_center()
+                    .overflow_y_scrollbar()
+                    .children({
+                        let mut ordered = Vec::new();
+                        for id in &self.cluster_order {
+                            if let Some(c) =
+                                self.catalog_snapshot.clusters.iter().find(|c| &c.id == id)
+                            {
+                                ordered.push(c);
+                            }
+                        }
+                        for c in &self.catalog_snapshot.clusters {
+                            if !self.cluster_order.contains(&c.id) {
+                                ordered.push(c);
+                            }
+                        }
+                        ordered.into_iter().map(|cluster| {
+                            let cid = cluster.id.clone();
+                            let selected = matches!(&route, Route::Cluster { cluster_id, .. } if cluster_id == &cid);
+                            let marker = cluster_rgb(&cluster.color);
+                            let initials: SharedString = cluster_initials(&cluster.name).into();
+                            let preview_label = initials.clone();
+                            div()
+                                .id(SharedString::from(format!("rail-cluster-drag-{cid}")))
+                                .on_drag(DragCluster(cid.clone()), move |_, _, _, cx| {
+                                    cx.new(|_| ClusterDragPreview {
+                                        label: preview_label.clone(),
+                                    })
+                                })
+                                .drag_over::<DragCluster>(|style, _, _, cx| {
+                                    style.rounded(px(8.0)).bg(cx.theme().tokens.sidebar_accent)
+                                })
+                                .on_drop(cx.listener({
+                                    let target_id = cid.clone();
+                                    move |this, dragged: &DragCluster, window, cx| {
+                                        this.reorder_rail_cluster(
+                                            &dragged.0, &target_id, window, cx,
+                                        );
+                                    }
+                                }))
+                                .child(
+                                    Button::new(SharedString::from(format!("rail-cluster-{cid}")))
+                                        .ghost()
+                                        .small()
+                                        .size(px(40.0))
+                                        .selected(selected)
+                                        .text_color(cx.theme().sidebar_foreground)
+                                        .label(initials)
+                                        .when_some(marker, |button, marker| {
+                                            button.border_color(rgb(marker))
+                                        })
+                                        .accessibility_label(format!(
+                                            "{}: {}",
+                                            cluster.name, cluster.status
+                                        ))
+                                        .tooltip(format!(
+                                            "{} · {}",
+                                            cluster.name, cluster.status
+                                        ))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.navigate(
+                                                Route::Cluster {
+                                                    cluster_id: cid.clone(),
+                                                    section: "overview".into(),
+                                                },
+                                                true,
+                                                window,
+                                                cx,
+                                            );
+                                        })),
+                                )
+                        })
+                    }),
+            )
+            .child(
+                Button::new("rail-preferences")
+                    .ghost()
+                    .small()
+                    .size(px(40.0))
+                    .selected(self.preferences_open)
+                    .text_color(cx.theme().sidebar_foreground)
+                    .icon(IconName::Settings)
+                    .accessibility_label("Preferences")
+                    .tooltip("Preferences")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_preferences(window, cx);
+                    })),
+            )
     }
 
     pub(crate) fn render_cluster_sidebar(
@@ -172,14 +276,14 @@ impl IceonApp {
             .filter(|pin| pin.id == cluster_id)
             .map(|pin| {
                 let destination = pin.section.clone().unwrap_or_else(|| "overview".into());
-                let label = if destination == "overview" {
+                let label: SharedString = if destination == "overview" {
                     "Cluster".into()
                 } else {
-                    destination_label(&destination)
+                    destination_label(&destination).into()
                 };
                 let cid = cluster_id.to_owned();
-                menu_item(
-                    label,
+                let item = menu_item(
+                    label.clone(),
                     Some(IconName::Star),
                     *active == normalize_destination(&destination),
                     IconName::ChevronRight,
@@ -194,7 +298,8 @@ impl IceonApp {
                             cx,
                         );
                     }),
-                )
+                );
+                item
             })
             .collect::<Vec<_>>();
         let mut groups = Vec::new();

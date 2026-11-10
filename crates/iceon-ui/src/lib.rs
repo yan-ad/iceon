@@ -55,6 +55,7 @@ pub struct IceonApp {
     pub(crate) pending_remove_cluster: Option<ClusterSummary>,
 
     pub(crate) history: NavigationHistory,
+    pub(crate) cluster_order: Vec<String>,
     pub(crate) cluster_select: Entity<shell_header::ClusterSelectState>,
     pub(crate) cluster_select_items: Vec<shell_header::ClusterChoice>,
     pub(crate) sidebar_collapsed: bool,
@@ -169,6 +170,21 @@ impl IceonApp {
             pinned_items: vec![],
             discovery_error: None,
         });
+
+        let mut cluster_order = Vec::new();
+        for pin in &catalog_snapshot.pinned_items {
+            if pin.section.is_none()
+                && !cluster_order.contains(&pin.id)
+                && catalog_snapshot.clusters.iter().any(|c| c.id == pin.id)
+            {
+                cluster_order.push(pin.id.clone());
+            }
+        }
+        for cluster in &catalog_snapshot.clusters {
+            if !cluster_order.contains(&cluster.id) {
+                cluster_order.push(cluster.id.clone());
+            }
+        }
 
         let initial_route = if preferences_draft.app.restore_last_page {
             preferences_engine
@@ -291,6 +307,7 @@ impl IceonApp {
             catalog_error: None,
             pending_remove_cluster: None,
             history: NavigationHistory::new(initial_route.clone()),
+            cluster_order,
             cluster_select,
             cluster_select_items,
             sidebar_collapsed: false,
@@ -382,6 +399,101 @@ impl IceonApp {
             app.load_secrets_profiles(window, cx);
         }
         app
+    }
+
+    pub(crate) fn sync_cluster_order(&mut self) {
+        self.cluster_order
+            .retain(|id| self.catalog_snapshot.clusters.iter().any(|c| &c.id == id));
+        for c in &self.catalog_snapshot.clusters {
+            if !self.cluster_order.contains(&c.id) {
+                self.cluster_order.push(c.id.clone());
+            }
+        }
+    }
+
+    pub(crate) fn reorder_rail_cluster(
+        &mut self,
+        from_id: &str,
+        to_id: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if from_id == to_id {
+            return;
+        }
+        self.sync_cluster_order();
+        let Some(from_idx) = self.cluster_order.iter().position(|id| id == from_id) else {
+            return;
+        };
+        let Some(to_idx) = self.cluster_order.iter().position(|id| id == to_id) else {
+            return;
+        };
+        let item = self.cluster_order.remove(from_idx);
+        self.cluster_order.insert(to_idx, item);
+
+        let pinned = &self.catalog_snapshot.pinned_items;
+        let p_from = pinned
+            .iter()
+            .position(|p| p.id == from_id && p.section.is_none());
+        let p_to = pinned
+            .iter()
+            .position(|p| p.id == to_id && p.section.is_none());
+        if let (Some(from), Some(to)) = (p_from, p_to) {
+            let mut next_pins = pinned.clone();
+            let moved = next_pins.remove(from);
+            next_pins.insert(to, moved);
+            if let Ok(snapshot) = self
+                .catalog
+                .reorder_pins(iceon_core::catalog::ReorderPinsRequest { items: next_pins })
+            {
+                self.catalog_snapshot = snapshot;
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn reorder_favorite_pin(
+        &mut self,
+        cluster_id: &str,
+        from_section: &str,
+        to_section: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if from_section == to_section {
+            return;
+        }
+        let from_target = iceon_core::catalog::PinTarget {
+            id: cluster_id.to_string(),
+            section: if from_section == "overview" {
+                None
+            } else {
+                Some(from_section.to_string())
+            },
+        };
+        let to_target = iceon_core::catalog::PinTarget {
+            id: cluster_id.to_string(),
+            section: if to_section == "overview" {
+                None
+            } else {
+                Some(to_section.to_string())
+            },
+        };
+        let pinned = &self.catalog_snapshot.pinned_items;
+        let p_from = pinned.iter().position(|p| p == &from_target);
+        let p_to = pinned.iter().position(|p| p == &to_target);
+        if let (Some(from), Some(to)) = (p_from, p_to) {
+            let mut next_pins = pinned.clone();
+            let moved = next_pins.remove(from);
+            next_pins.insert(to, moved);
+            if let Ok(snapshot) = self
+                .catalog
+                .reorder_pins(iceon_core::catalog::ReorderPinsRequest { items: next_pins })
+            {
+                self.catalog_snapshot = snapshot;
+            }
+        }
+        cx.notify();
     }
 
     pub(crate) fn next_operation_id(&mut self) -> u64 {

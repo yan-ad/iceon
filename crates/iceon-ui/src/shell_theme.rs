@@ -1,16 +1,14 @@
-//! One theme write path for Iceon's black, native-material chrome.
+//! One theme write path for Iceon's native-material chrome.
 //!
 //! Call `apply` instead of `Theme::change` at startup and on preference changes.
 //! Keep the window/root layout transparent and paint only the main content with
 //! `theme.background`; otherwise an opaque root hides the native material.
-//! TitleBar 0.9 mixes its token with the content background into a gradient:
-//! set the standard TitleBar's `.bg(cx.theme().tokens.title_bar)` and
-//! `.text_color(cx.theme().sidebar_foreground)` to avoid a light-mode gradient.
 
 use gpui_kit::component::theme::{Theme, ThemeColor, ThemeMode};
 use gpui_kit::{App, Hsla, Window, WindowBackgroundAppearance, rgb};
 
-const CHROME_ALPHA: f32 = 0.90;
+const CHROME_ALPHA_LIGHT: f32 = 0.70;
+const CHROME_ALPHA_DARK: f32 = 0.70;
 const SELECTED_ALPHA: f32 = 0.10;
 
 fn neutral(value: u32, alpha: f32) -> Hsla {
@@ -28,21 +26,18 @@ pub(crate) fn background_appearance() -> WindowBackgroundAppearance {
 }
 
 fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
-    colors.sidebar = neutral(0x000000, CHROME_ALPHA);
-    colors.title_bar = colors.sidebar;
-    colors.sidebar_foreground = neutral(0xe6e6e6, 1.0);
-    colors.sidebar_accent = neutral(0xffffff, SELECTED_ALPHA);
-    colors.sidebar_accent_foreground = colors.sidebar_foreground;
-    colors.sidebar_primary = colors.sidebar_accent;
-    colors.sidebar_primary_foreground = colors.sidebar_foreground;
-    colors.sidebar_border = neutral(0xffffff, 0.08);
-    colors.title_bar_border = colors.sidebar_border;
-    // Ghost Button's selected state reads secondary_active, not sidebar_accent.
-    colors.secondary_active = colors.sidebar_accent;
-
-    // Preserve the saved light content palette. Only dark content is branded;
-    // sidebar/titlebar tokens remain black independently of the content mode.
     if mode.is_dark() {
+        colors.sidebar = neutral(0x121214, CHROME_ALPHA_DARK);
+        colors.title_bar = colors.sidebar;
+        colors.sidebar_foreground = neutral(0xededed, 1.0);
+        colors.sidebar_accent = neutral(0xffffff, SELECTED_ALPHA);
+        colors.sidebar_accent_foreground = colors.sidebar_foreground;
+        colors.sidebar_primary = colors.sidebar_accent;
+        colors.sidebar_primary_foreground = colors.sidebar_foreground;
+        colors.sidebar_border = neutral(0xffffff, 0.08);
+        colors.title_bar_border = colors.sidebar_border;
+        colors.secondary_active = colors.sidebar_accent;
+
         colors.background = neutral(0x090909, 1.0);
         colors.foreground = colors.sidebar_foreground;
         colors.muted = neutral(0x151515, 1.0);
@@ -56,6 +51,18 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
         colors.secondary_hover = neutral(0xffffff, 0.08);
         colors.border = neutral(0xffffff, 0.10);
         colors.ring = neutral(0x969696, 1.0);
+    } else {
+        colors.sidebar = neutral(0xf6f6f7, CHROME_ALPHA_LIGHT);
+        colors.title_bar = colors.sidebar;
+        colors.sidebar_foreground = neutral(0x18181b, 1.0);
+        colors.sidebar_accent = neutral(0x000000, 0.06);
+        colors.sidebar_accent_foreground = colors.sidebar_foreground;
+        colors.sidebar_primary = colors.sidebar_accent;
+        colors.sidebar_primary_foreground = colors.sidebar_foreground;
+        colors.sidebar_border = neutral(0x000000, 0.08);
+        colors.title_bar_border = colors.sidebar_border;
+        colors.secondary_active = colors.sidebar_accent;
+        colors.secondary_hover = neutral(0x000000, 0.05);
     }
 }
 
@@ -76,19 +83,27 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
 
 #[cfg(test)]
 mod tests {
-    use super::{CHROME_ALPHA, SELECTED_ALPHA, brand_colors, neutral};
+    use super::{CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, SELECTED_ALPHA, brand_colors, neutral};
     use gpui_kit::component::theme::{ThemeColor, ThemeMode};
 
     #[test]
-    fn black_chrome_is_independent_of_content_mode() {
-        for mode in [ThemeMode::Light, ThemeMode::Dark] {
-            let mut colors = ThemeColor::default();
-            brand_colors(&mut colors, mode);
-            assert_eq!(colors.sidebar, neutral(0x000000, CHROME_ALPHA));
-            assert_eq!(colors.title_bar, colors.sidebar);
-            assert_eq!(colors.sidebar_accent, neutral(0xffffff, SELECTED_ALPHA));
-            assert_eq!(colors.sidebar_foreground, neutral(0xe6e6e6, 1.0));
-        }
+    fn chrome_colors_match_mode_palette() {
+        let mut dark_colors = ThemeColor::default();
+        brand_colors(&mut dark_colors, ThemeMode::Dark);
+        assert_eq!(dark_colors.sidebar, neutral(0x121214, CHROME_ALPHA_DARK));
+        assert_eq!(dark_colors.title_bar, dark_colors.sidebar);
+        assert_eq!(
+            dark_colors.sidebar_accent,
+            neutral(0xffffff, SELECTED_ALPHA)
+        );
+        assert_eq!(dark_colors.sidebar_foreground, neutral(0xededed, 1.0));
+
+        let mut light_colors = ThemeColor::default();
+        brand_colors(&mut light_colors, ThemeMode::Light);
+        assert_eq!(light_colors.sidebar, neutral(0xf6f6f7, CHROME_ALPHA_LIGHT));
+        assert_eq!(light_colors.title_bar, light_colors.sidebar);
+        assert_eq!(light_colors.sidebar_accent, neutral(0x000000, 0.06));
+        assert_eq!(light_colors.sidebar_foreground, neutral(0x18181b, 1.0));
     }
 
     #[test]

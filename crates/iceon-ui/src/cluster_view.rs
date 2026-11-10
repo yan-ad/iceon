@@ -1,6 +1,6 @@
 //! Cluster workspace views: Overview, 41 Kubernetes Resource tables, Helm, Custom Resources, and RBAC Users.
 
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _,
@@ -10,7 +10,7 @@ use gpui_kit::component::{
     scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
-    v_flex,
+    v_flex, v_virtual_list,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2088,7 +2088,7 @@ impl IceonApp {
     }
 
     fn render_resource_table_body(
-        &self,
+        &mut self,
         kind: ResourceKind,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -2248,72 +2248,99 @@ impl IceonApp {
                             .child("Actions"),
                     ),
             )
-            // Table Rows
-            .children(items.into_iter().enumerate().map(|(idx, item)| {
-                let reference = ResourceReference {
-                    kind,
-                    name: item.name.clone(),
-                    namespace: item.namespace.clone(),
-                    uid: item.uid.clone(),
-                };
-                let row_actions = self
-                    .render_row_actions(kind, &item, idx, cx)
-                    .into_any_element();
+            // Virtualized rows: only visible resource rows are laid out.
+            .child(
+                v_virtual_list(
+                    cx.entity(),
+                    format!("resource-rows-{kind:?}"),
+                    Rc::new(vec![size(px(44.0), px(44.0)); items.len()]),
+                    move |this, range, _window, cx| {
+                        range
+                            .filter_map(|idx| items.get(idx).cloned().map(|item| (idx, item)))
+                            .map(|(idx, item)| {
+                                this.render_resource_row(kind, item, idx, show_ns, cols, cx)
+                                    .into_any_element()
+                            })
+                            .collect()
+                    },
+                )
+                .flex_1()
+                .min_h_0(),
+            )
+    }
 
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .items_center()
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
-                    .child(
-                        div()
-                            .w(px(220.0))
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(item.name.clone()),
-                    )
-                    .when(show_ns, |el| {
-                        el.child(
-                            div()
-                                .w(px(120.0))
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .truncate()
-                                .child(item.namespace.clone().unwrap_or_default()),
-                        )
-                    })
-                    .child(div().w(px(110.0)).child(row_status_tag(&item.status)))
-                    .children(cols.iter().map(|c| {
-                        div().w(px(c.width)).text_xs().truncate().child(
-                            item.columns
-                                .get(c.key)
-                                .cloned()
-                                .unwrap_or_else(|| "-".into()),
-                        )
-                    }))
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .gap_1()
-                            .items_center()
-                            .child(row_actions)
-                            .child(
-                                Button::new(SharedString::from(format!("inspect-row-{idx}")))
-                                    .xsmall()
-                                    .outline()
-                                    .label("Inspect")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_resource_inspector(reference.clone(), window, cx);
-                                    })),
-                            ),
-                    )
+    fn render_resource_row(
+        &mut self,
+        kind: ResourceKind,
+        item: ResourceItem,
+        idx: usize,
+        show_ns: bool,
+        cols: &'static [ColumnDef],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let reference = ResourceReference {
+            kind,
+            name: item.name.clone(),
+            namespace: item.namespace.clone(),
+            uid: item.uid.clone(),
+        };
+        let row_actions = self
+            .render_row_actions(kind, &item, idx, cx)
+            .into_any_element();
+
+        h_flex()
+            .w_full()
+            .px_3()
+            .py_2()
+            .gap_2()
+            .items_center()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().secondary)
+            .child(
+                div()
+                    .w(px(220.0))
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .truncate()
+                    .child(item.name.clone()),
+            )
+            .when(show_ns, |el| {
+                el.child(
+                    div()
+                        .w(px(120.0))
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .truncate()
+                        .child(item.namespace.clone().unwrap_or_default()),
+                )
+            })
+            .child(div().w(px(110.0)).child(row_status_tag(&item.status)))
+            .children(cols.iter().map(|c| {
+                div().w(px(c.width)).text_xs().truncate().child(
+                    item.columns
+                        .get(c.key)
+                        .cloned()
+                        .unwrap_or_else(|| "-".into()),
+                )
             }))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .gap_1()
+                    .items_center()
+                    .child(row_actions)
+                    .child(
+                        Button::new(SharedString::from(format!("inspect-row-{idx}")))
+                            .xsmall()
+                            .outline()
+                            .label("Inspect")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_resource_inspector(reference.clone(), window, cx);
+                            })),
+                    ),
+            )
     }
 
     fn render_row_actions(
