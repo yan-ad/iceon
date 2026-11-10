@@ -1472,7 +1472,7 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .label("Copy UID")
-                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                          .on_click(cx.listener(move |_, _, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 uid_copy.clone(),
                                             ));
@@ -2082,6 +2082,7 @@ impl IceonApp {
                             .child(format!("CONTAINERS ({})", pod.containers.len())),
                     )
                     .children(pod.containers.iter().map(|c| {
+                        let listener_cx = &*cx;
                         let ns = pod.namespace.clone();
                         let pname = pod.name.clone();
                         let puid = pod.uid.clone();
@@ -2152,7 +2153,7 @@ impl IceonApp {
                                                 .xsmall()
                                                 .primary()
                                                 .label("Logs")
-                                                .on_click(cx.listener(
+                                                .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
                                                             ns.clone(),
@@ -2174,7 +2175,7 @@ impl IceonApp {
                                                 .xsmall()
                                                 .outline()
                                                 .label("Shell")
-                                                .on_click(cx.listener(
+                                                             .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
                                                             ns_shell.clone(),
@@ -2196,7 +2197,7 @@ impl IceonApp {
                                                 .xsmall()
                                                 .ghost()
                                                 .label("Attach")
-                                                .on_click(cx.listener(
+                                                             .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
                                                             ns_attach.clone(),
@@ -2231,7 +2232,7 @@ impl IceonApp {
                                         .xsmall()
                                         .ghost()
                                         .label("Copy")
-                                        .on_click(cx.listener(move |_, _, _, cx| {
+                                        .on_click(listener_cx.listener(move |_, _, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 image_copy.clone(),
                                             ));
@@ -2265,7 +2266,7 @@ impl IceonApp {
                                             .xsmall()
                                             .outline()
                                             .label(port_label)
-                                            .on_click(cx.listener(
+                                            .on_click(listener_cx.listener(
                                                 move |this, _, window, cx| {
                                                     this.start_pod_forward(
                                                         ns_p.clone(),

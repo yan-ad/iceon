@@ -1807,7 +1807,9 @@ impl IceonApp {
                     namespace: item.namespace.clone(),
                     uid: item.uid.clone(),
                 };
-                let row_actions = self.render_row_actions(kind, &item, idx, cx);
+                let row_actions = self
+                    .render_row_actions(kind, &item, idx, cx)
+                    .into_any_element();
 
                 h_flex()
                     .w_full()
@@ -2930,7 +2932,8 @@ pub fn default_yaml_template(kind: ResourceKind, namespace: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{columns_for_kind, default_yaml_template};
+    use iceon_core::connection::ResourceKind;
 
     #[test]
     fn columns_and_templates_cover_core_resource_kinds() {

@@ -1,16 +1,15 @@
+<div align="center">
+<img src="./assets/icons/128x128.png" alt="" width="60" height="60">
+
+[![Build](https://img.shields.io/github/actions/workflow/status/yan-ad/iceon/release.yml?style=flat-square&label=build)](https://github.com/yan-ad/iceon/actions/workflows/release.yml)
+[![License](https://img.shields.io/github/license/yan-ad/iceon?style=flat-square&label=license&cacheSeconds=3600)](./COPYING)
+![Installs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fad.yan.iceon%2Fcount&query=%24.count&label=Installs&color=blue&style=flat-square)
 # Iceon
 
-**A native Kubernetes IDE, built entirely in Rust.**
+### A native Kubernetes IDE, built entirely in Rust.
+Understand your clusters. Manage your workloads. Stay in control.
 
-Iceon is a modern, native desktop environment for working with Kubernetes. Designed to make cluster management, workload inspection, resource orchestration, and day-to-day Kubernetes workflows feel intuitive without sacrificing the power and flexibility developers expect.
-
-No Electron. No web frontend. No runtime built around JavaScript.
-
-Just Rust, native performance, and a workspace designed for Kubernetes.
-
-<p align="center">
-  <em>Understand your clusters. Manage your workloads. Stay in control.</em>
-</p>
+</div>
 
 ---
 
