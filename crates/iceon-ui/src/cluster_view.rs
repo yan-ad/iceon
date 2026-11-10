@@ -1720,10 +1720,12 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let sidebar_open = !self.sidebar_collapsed && !self.cluster_sidebar_collapsed;
-        let console_open = self.pod_dock_open
-            && (!self.pod_dock_tabs.is_empty() || !self.port_forwards.is_empty());
-        let inspector_open = self.inspector_open && self.inspector.target.is_some();
+        let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
+        let sidebar_open =
+            cluster_route && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed;
+        let console_open = self.pod_dock_open;
+        let inspector_open =
+            cluster_route && self.inspector_open && self.inspector.target.is_some();
         let area = self.workspace_dock.as_mut().map(|dock| {
             dock.sync(console_open, window, cx);
             dock.dock_area.clone()
@@ -1747,7 +1749,16 @@ impl IceonApp {
                         .child(self.render_cluster_sidebar(&cluster_id, cx)),
                 )
             })
-            .child(div().flex_1().min_w_0().h_full().children(area))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(div().flex_1().min_h_0().min_w_0().children(area))
+                    .when(!console_open, |column| {
+                        column.child(self.render_console_tabs(window, cx))
+                    }),
+            )
             .when(inspector_open, |row| {
                 row.child(
                     div()

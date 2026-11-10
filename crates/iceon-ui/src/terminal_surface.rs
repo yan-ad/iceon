@@ -35,6 +35,52 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
+#[derive(Default)]
+struct DeviceReplies {
+    enabled: bool,
+    pending: String,
+}
+
+impl vt100::Callbacks for DeviceReplies {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        prefix: Option<u8>,
+        intermediate: Option<u8>,
+        params: &[&[u16]],
+        command: char,
+    ) {
+        if !self.enabled || intermediate.is_some() || self.pending.len() > 4096 {
+            return;
+        }
+        let parameter = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
+        match (prefix, parameter, command) {
+            (None, 0, 'c') => self.pending.push_str("\x1b[?1;2c"),
+            (Some(b'>'), 0, 'c') => self.pending.push_str("\x1b[>0;0;0c"),
+            (None, 5, 'n') => self.pending.push_str("\x1b[0n"),
+            (None, 6, 'n') => {
+                let (row, col) = screen.cursor_position();
+                self.pending
+                    .push_str(&format!("\x1b[{};{}R", row + 1, col + 1));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn surface_parser(cols: u16, rows: u16, enabled: bool) -> vt100::Parser<DeviceReplies> {
+    let (cols, rows) = dimensions(cols, rows);
+    vt100::Parser::new_with_callbacks(
+        rows,
+        cols,
+        SCROLLBACK_LINES,
+        DeviceReplies {
+            enabled,
+            pending: String::new(),
+        },
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalEvent {
     Input(String),
@@ -42,7 +88,7 @@ pub(crate) enum TerminalEvent {
 }
 
 pub(crate) struct TerminalSurface {
-    parser: vt100::Parser,
+    parser: vt100::Parser<DeviceReplies>,
     focus_handle: FocusHandle,
     bounds: Bounds<Pixels>,
     selection: Option<((u16, u16), (u16, u16))>,
@@ -66,6 +112,7 @@ fn dimensions(cols: u16, rows: u16) -> (NonZeroU16, NonZeroU16) {
     )
 }
 
+#[cfg(test)]
 fn parser(cols: u16, rows: u16) -> vt100::Parser {
     let (cols, rows) = dimensions(cols, rows);
     vt100::Parser::new(rows, cols, SCROLLBACK_LINES)
@@ -74,7 +121,7 @@ fn parser(cols: u16, rows: u16) -> vt100::Parser {
 impl TerminalSurface {
     pub(crate) fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
-            parser: parser(80, 24),
+            parser: surface_parser(80, 24, false),
             focus_handle: cx.focus_handle(),
             bounds: Bounds::default(),
             selection: None,
@@ -92,12 +139,21 @@ impl TerminalSurface {
     /// Prefer this entry point if transport chunks may split a UTF-8 code point.
     pub(crate) fn feed_bytes(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         self.parser.process(bytes);
+        let reply = std::mem::take(&mut self.parser.callbacks_mut().pending);
+        if !reply.is_empty() {
+            cx.emit(TerminalEvent::Input(reply));
+        }
         cx.notify();
+    }
+
+    pub(crate) fn enable_device_replies(&mut self) {
+        self.parser.callbacks_mut().enabled = true;
     }
 
     pub(crate) fn reset(&mut self, cx: &mut Context<Self>) {
         let (cols, rows) = self.size();
-        self.parser = parser(cols, rows);
+        let enabled = self.parser.callbacks().enabled;
+        self.parser = surface_parser(cols, rows, enabled);
         self.selection = None;
         cx.notify();
     }
@@ -582,6 +638,24 @@ mod tests {
             },
         );
         assert_eq!(runs.len(), 2);
+    }
+
+    #[::core::prelude::v1::test]
+    fn device_query_replies_are_bounded_and_pod_callbacks_stay_inert() {
+        let mut local = super::surface_parser(80, 24, true);
+        local.process(b"\x1b[");
+        local.process(b"c\x1b[5n\x1b[6n");
+        assert_eq!(local.callbacks().pending, "\x1b[?1;2c\x1b[0n\x1b[1;1R");
+        local.callbacks_mut().pending.clear();
+        local.process(b"\x1b]52;c;secret\x07\x1b]52;c;?\x07");
+        assert!(local.callbacks().pending.is_empty());
+        for _ in 0..1000 {
+            local.process(b"\x1b[c");
+        }
+        assert!(local.callbacks().pending.len() < 4120);
+        let mut pod = super::surface_parser(80, 24, false);
+        pod.process(b"\x1b[c\x1b[5n\x1b[6n");
+        assert!(pod.callbacks().pending.is_empty());
     }
 
     fn key(name: &str, control: bool, alt: bool, shift: bool) -> Keystroke {

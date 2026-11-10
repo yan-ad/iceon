@@ -23,6 +23,7 @@ kube.workspace = true
 log.workspace = true
 percent-encoding.workspace = true
 process-wrap.workspace = true
+portable-pty.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true

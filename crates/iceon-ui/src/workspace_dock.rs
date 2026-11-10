@@ -7,14 +7,14 @@ use gpui_kit::component::{
     Icon, IconName,
     dock::{
         BasePanel, DockArea, DockLayout, DockPlacement, DockSkin, DockToggleEvent, Panel,
-        PanelControl, PanelEvent, panel_handle,
+        PanelControl, PanelEvent, PanelId, panel_handle,
     },
     h_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::IceonApp;
+use crate::{IceonApp, navigation::Route};
 
 const CONSOLE_HEIGHT: f32 = 320.;
 
@@ -23,6 +23,7 @@ pub(crate) struct WorkspaceDock {
     _dock_skin: Rc<DockSkin>,
     console: Entity<WorkspacePanel>,
     desired: Rc<Cell<Option<bool>>>,
+    console_height: Pixels,
     _toggle_subscription: Subscription,
     _owner_subscription: Subscription,
 }
@@ -43,6 +44,7 @@ pub(crate) fn create(
         focus_handle: cx.focus_handle(),
     });
     let (dock_area, dock_skin) = DockSkin::dock_area("iceon-workspace", Some(2), window, cx);
+    dock_skin.set_toggle_button_visible(false, cx);
     dock_area.update(cx, |area, cx| {
         area.set_center(
             DockLayout::tabs().panel_view(panel_handle(main.clone()), cx),
@@ -86,6 +88,7 @@ pub(crate) fn create(
         _dock_skin: dock_skin,
         console,
         desired,
+        console_height: px(CONSOLE_HEIGHT),
         _toggle_subscription: toggle_subscription,
         _owner_subscription: owner_subscription,
     }
@@ -97,12 +100,30 @@ impl WorkspaceDock {
             return;
         }
         self.desired.set(Some(console_open));
+        let console = self.console.clone();
+        let height = &mut self.console_height;
         self.dock_area.update(cx, |area, cx| {
             if area.is_zoomed() {
                 area.set_zoomed_out(window, cx);
             }
-            if area.is_dock_open(DockPlacement::Bottom) != console_open {
-                area.toggle_dock(DockPlacement::Bottom, window, cx);
+            if console_open {
+                if !area.has_dock(DockPlacement::Bottom) {
+                    area.set_dock(
+                        DockPlacement::Bottom,
+                        DockLayout::tabs().panel_view(panel_handle(console), cx),
+                        window,
+                        cx,
+                    );
+                    area.set_dock_size(DockPlacement::Bottom, *height, window, cx);
+                }
+                if !area.is_dock_open(DockPlacement::Bottom) {
+                    area.toggle_dock(DockPlacement::Bottom, window, cx);
+                }
+            } else if area.has_dock(DockPlacement::Bottom) {
+                if let Some(size) = area.dock_size(DockPlacement::Bottom) {
+                    *height = size;
+                }
+                area.remove_dock(DockPlacement::Bottom, window, cx);
             }
         });
     }
@@ -110,6 +131,20 @@ impl WorkspaceDock {
     /// Log chunks/status changes do not need to invalidate the resource table.
     pub(crate) fn notify_console(&self, cx: &mut App) {
         self.console.update(cx, |_, cx| cx.notify());
+    }
+
+    pub(crate) fn toggle_console_zoom(&self, window: &mut Window, cx: &mut App) {
+        let panel = PanelId::from(self.console.entity_id());
+        self.dock_area.update(cx, |area, cx| {
+            if area.is_zoomed() {
+                area.set_zoomed_out(window, cx);
+            } else if let Some(node) = area
+                .layout(DockPlacement::Bottom)
+                .and_then(|tree| tree.find_panel_node(panel))
+            {
+                area.set_zoomed_in(node, window, cx);
+            }
+        });
     }
 }
 
@@ -131,6 +166,10 @@ impl PanelKind {
     }
     fn chrome(self) -> bool {
         self == Self::Console
+    }
+
+    fn title_bar(self) -> bool {
+        false // All session navigation is owned by the single persistent TabBar.
     }
 }
 
@@ -168,13 +207,13 @@ impl Panel for WorkspacePanel {
         self.kind.chrome().then(|| "Terminal".into())
     }
     fn title_bar(&self, _: &App) -> bool {
-        self.kind.chrome()
+        self.kind.title_bar()
     }
     fn inner_padding(&self, _: &App) -> bool {
         false
     }
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {
-        self.kind.chrome().then_some(PanelControl::Toolbar)
+        None // Standard Button controls in the session row invoke the Dock API.
     }
 }
 impl Render for WorkspacePanel {
@@ -183,8 +222,24 @@ impl Render for WorkspacePanel {
         let content = self
             .owner
             .update(cx, |app, cx| match kind {
-                PanelKind::Cluster => app.render_cluster_main(window, cx),
-                PanelKind::Console => app.render_pod_dock_panel(window, cx).into_any_element(),
+                PanelKind::Cluster => match app.history.current() {
+                    Route::Catalog => app.render_catalog_view(window, cx).into_any_element(),
+                    Route::Secrets => app.render_secrets_view(window, cx).into_any_element(),
+                    Route::Cluster { .. } => app.render_cluster_main(window, cx),
+                },
+                PanelKind::Console => gpui_kit::component::v_flex()
+                    .size_full()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(app.render_console_tabs(window, cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .child(app.render_pod_dock_panel(window, cx)),
+                    )
+                    .into_any_element(),
             })
             .unwrap_or_else(|_| Empty.into_any_element());
         div()
@@ -205,6 +260,8 @@ mod tests {
         assert!(!PanelKind::Cluster.chrome());
         assert!(PanelKind::Console.chrome());
         assert_ne!(PanelKind::Cluster.name(), PanelKind::Console.name());
+        assert!(!PanelKind::Cluster.title_bar());
+        assert!(!PanelKind::Console.title_bar());
     }
     #[test]
     fn unchanged_visibility_never_invalidates_the_dock() {

@@ -2,6 +2,7 @@ pub mod catalog;
 pub mod connection;
 pub mod dev_engine;
 pub mod kubernetes_tools;
+pub mod local_terminal;
 pub mod preferences;
 pub mod project;
 pub mod route_history;

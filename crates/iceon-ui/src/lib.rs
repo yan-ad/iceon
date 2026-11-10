@@ -10,6 +10,7 @@ mod console_probe;
 pub use console_probe::run as run_console_probe;
 pub mod inspector_view;
 mod kubectl_tools;
+mod local_console;
 mod native_menu;
 pub mod navigation;
 pub mod pod_dock_view;
@@ -55,6 +56,9 @@ use pod_dock_view::PodDockTab;
 use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
+    pub(crate) local_terminal_active: bool,
+    pub(crate) device_terminals: Vec<local_console::DeviceTerminalTab>,
+    pub(crate) active_device_terminal: Option<u64>,
     pub(crate) workspace_dock: Option<workspace_dock::WorkspaceDock>,
     pub(crate) inspector_open: bool,
     pub(crate) shell_focus: FocusHandle,
@@ -286,6 +290,9 @@ impl IceonApp {
         });
 
         let mut app = Self {
+            local_terminal_active: true,
+            device_terminals: Vec::new(),
+            active_device_terminal: None,
             workspace_dock: None,
             inspector_open: false,
             shell_focus,
@@ -679,7 +686,6 @@ impl Render for IceonApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_runtime_preferences(window, cx);
         self.sync_menus(window, cx);
-        let current_route = self.history.current().clone();
         self.menu_action_surface(cx)
             .flex()
             .flex_col()
@@ -700,17 +706,7 @@ impl Render for IceonApp {
                             .h_full()
                             .bg(cx.theme().background)
                             .overflow_hidden()
-                            .child(match current_route {
-                                Route::Catalog => {
-                                    self.render_catalog_view(window, cx).into_any_element()
-                                }
-                                Route::Secrets => {
-                                    self.render_secrets_view(window, cx).into_any_element()
-                                }
-                                Route::Cluster { .. } => {
-                                    self.render_cluster_workspace(window, cx).into_any_element()
-                                }
-                            }),
+                            .child(self.render_cluster_workspace(window, cx)),
                     ),
             )
             .when(self.search_modal_open, |el| {
@@ -752,6 +748,7 @@ pub fn run() {
             let shutdown_connection = connection.clone();
             let shutdown_secrets = secrets_engine.clone();
             cx.on_app_quit(move |_| {
+                iceon_core::local_terminal::shutdown_all();
                 let _ = tray::shutdown();
                 shutdown_connection.shutdown();
                 shutdown_secrets.shutdown();
@@ -759,7 +756,11 @@ pub fn run() {
                 let secrets = shutdown_secrets.clone();
                 async move {
                     let _ = tokio::time::timeout(std::time::Duration::from_millis(750), async {
-                        tokio::join!(connection.drain(), secrets.drain());
+                        tokio::join!(
+                            connection.drain(),
+                            secrets.drain(),
+                            iceon_core::local_terminal::drain()
+                        );
                     })
                     .await;
                 }

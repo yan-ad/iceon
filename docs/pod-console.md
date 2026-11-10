@@ -2,7 +2,9 @@
 
 The bottom Pod console uses GPUI Kit 0.9's standard `DockArea` and `DockSkin`. Only the bottom console has a Dock indicator, title, collapse and maximize controls. The resource sidebar and inspector are ordinary views; the main pane has no Dock chrome. Console resizing, collapse, maximize, and restore come from the library rather than a custom docking system.
 
-Sessions use compact icon tabs with stable identities, individual close controls, and a `+` action to duplicate the active session. The new-console menu opens a shell, log, or attach session for the active Pod/container. Closing a background tab does not change the selected session.
+There is one persistent console tab row: **Terminal**, additional device sessions, Pod sessions, and **+ New**. There is no separate Dock title row. When collapsed the same row remains visible, including on the catalog page. Clicking **Terminal** explicitly opens or focuses this device's shell; **+ New** opens another local device session. The dropdown also opens shell, log, or attach sessions for the selected Pod/container. Closing a background tab does not change the selected session, and closing the primary device shell leaves the permanent Terminal action available.
+
+Device terminals use `portable-pty` and the local user's validated `$SHELL` (or the Windows command shell), never the remote Pod shell preference. They are distinct from Kubernetes streams, bounded to a combined 12 console sessions, and killed/reaped when closed. Application quit closes every device session, including pending opens. Merely displaying Terminal or an empty console does not spawn a process.
 
 ## Rendering and fonts
 
@@ -18,13 +20,13 @@ Retention is bounded to 2,500 lines and 1 MiB, with incomplete lines capped at 2
 
 ## Terminal choice
 
-A terminal needs a stateful screen emulator, not newline splitting. The shell/attach surface uses the pure-Rust [`vt100` 0.18.1](https://docs.rs/vt100/0.18.1/vt100/) parser and GPUI text primitives for rendering. Kubernetes exec/attach remains the transport; no local shell or PTY is started.
+A terminal needs a stateful screen emulator, not newline splitting. The shell/attach surface uses the pure-Rust [`vt100` 0.18.1](https://docs.rs/vt100/0.18.1/vt100/) parser and GPUI text primitives for rendering. Kubernetes exec/attach remains the transport for Pod sessions; only explicit device-terminal actions start a local PTY.
 
 The evaluated [`gpui-terminal`](https://github.com/zortax/gpui-terminal) component uses `alacritty_terminal`, but its published dependency targets GPUI 0.2.2 rather than this workspace's GPUI Kit 0.9 backend. Its README also lists missing mouse selection and scrollback navigation. Adding a second GPUI engine would not be a compatible drop-in, so it is not used.
 
 Supported behavior includes incremental ANSI/VT parsing, cursor positioning and clearing, alternate screens, ANSI/256/RGB colors, bold/italic/underline, raw keyboard input, application-cursor arrows, control keys, explicit paste, bracketed paste, native resize messages, bounded scrollback, and mouse selection/copy. Input is not locally echoed; remote output drives the screen.
 
-Terminal output cannot trigger host clipboard writes, URL opening, local processes, or other OSC side effects. Clipboard reads and writes require user gestures. Existing Pod UID checks, session lease ownership, stream limits, and cancellation remain in the core engine.
+Terminal output cannot trigger host clipboard writes, URL opening, local process creation, or other OSC side effects. Clipboard reads and writes require user gestures. Existing Pod UID checks, session lease ownership, stream limits, and cancellation remain in the core engine. Device shell input is intentionally local and is sent only from an explicit user input or paste gesture.
 
 Limitations: this is not a full OS terminal application; advanced keyboard protocols, mouse reporting to remote applications, and IME preedit/composition are not implemented. Log search is over retained output, and log styling is a readable text projection rather than a full terminal screen.
 

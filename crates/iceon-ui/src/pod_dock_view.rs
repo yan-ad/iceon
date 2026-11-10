@@ -11,6 +11,7 @@ use gpui_kit::component::{
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tab::{Tab, TabBar},
     tag::Tag,
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::*;
@@ -294,7 +295,7 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        if self.pod_dock_tabs.len() >= 12 {
+        if self.pod_dock_tabs.len() + self.device_terminals.len() >= 12 {
             self.cluster_error =
                 Some("Close a pod console before opening another (maximum 12).".into());
             cx.notify();
@@ -418,6 +419,7 @@ impl IceonApp {
             .detach();
         }
         self.active_pod_tab = Some(tab_index);
+        self.local_terminal_active = false;
         self.pod_dock_open = true;
         if mode != PodStreamMode::Logs {
             if let Some(terminal) = &self.pod_dock_tabs[tab_index].terminal {
@@ -743,7 +745,7 @@ impl IceonApp {
         }
         if self.pod_dock_tabs.is_empty() {
             self.active_pod_tab = None;
-            self.pod_dock_open = false;
+            self.local_terminal_active = true;
         } else {
             self.active_pod_tab =
                 active_after_close(self.active_pod_tab, index, self.pod_dock_tabs.len());
@@ -803,11 +805,285 @@ impl IceonApp {
         cx.notify();
     }
 
+    /// Persistent session strip, rendered by the workspace outside the dock body.
+    /// Rendering this strip never starts a shell or constructs pod output caches.
+    pub(crate) fn render_console_tabs(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // The first device session is represented by the permanent Terminal tab.
+        // Snapshot keys, not indices: close/reconnect can change positions before a click.
+        let primary_key = self.device_terminals.first().map(|tab| tab.key);
+        let extra_keys = self
+            .device_terminals
+            .iter()
+            .skip(1)
+            .map(|tab| tab.key)
+            .collect::<Vec<_>>();
+        let pod_keys = self
+            .pod_dock_tabs
+            .iter()
+            .map(|tab| tab.key)
+            .collect::<Vec<_>>();
+        let pod_offset = 1 + extra_keys.len();
+        let selected_index = if self.local_terminal_active {
+            extra_keys
+                .iter()
+                .position(|key| Some(*key) == self.active_device_terminal)
+                .map(|index| index + 1)
+                .unwrap_or(0)
+        } else {
+            self.active_pod_tab
+                .filter(|index| *index < pod_keys.len())
+                .map(|index| index + pod_offset)
+                .unwrap_or(usize::MAX)
+        };
+        let mut tabs = vec![
+            Tab::new()
+                .label("Terminal")
+                .aria_label("Terminal — device shell")
+                .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
+                .when_some(primary_key, |tab, key| {
+                    tab.suffix(
+                        Button::new("close-primary-device-terminal")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Close)
+                            .tooltip("Close device shell")
+                            .accessibility_label("Close device shell")
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                cx.stop_propagation();
+                                app.close_device_terminal(key, cx);
+                            })),
+                    )
+                })
+                .tooltip(|window, cx| Tooltip::new("Open your device terminal").build(window, cx)),
+        ];
+        tabs.extend(self.device_terminals.iter().skip(1).map(|tab| {
+            let key = tab.key;
+            let title = tab.title.clone();
+            let tooltip = format!("{} — {}", title, tab.status);
+            Tab::new()
+                .label(title)
+                .aria_label(tooltip.clone())
+                .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .suffix(
+                    Button::new(SharedString::from(format!("close-device-console-{key}")))
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::Close)
+                        .tooltip("Close device terminal")
+                        .accessibility_label("Close device terminal")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.close_device_terminal(key, cx);
+                        })),
+                )
+        }));
+        tabs.extend(self.pod_dock_tabs.iter().map(|tab| {
+            let key = tab.key;
+            let title = format!("{} — {}", tab.pod_name, tab.container);
+            let tooltip = format!(
+                "{} / {} — {} — {}",
+                tab.namespace,
+                title,
+                tab.mode_label(),
+                tab.status
+            );
+            Tab::new()
+                .label(title)
+                .aria_label(tooltip.clone())
+                .prefix(
+                    gpui_kit::component::Icon::new(if tab.mode == PodStreamMode::Logs {
+                        IconName::FileText
+                    } else {
+                        IconName::SquareTerminal
+                    })
+                    .small(),
+                )
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .suffix(
+                    Button::new(SharedString::from(format!("close-console-{key}")))
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::Close)
+                        .tooltip("Close pod console")
+                        .accessibility_label("Close pod console")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            if let Some(index) =
+                                this.pod_dock_tabs.iter().position(|tab| tab.key == key)
+                            {
+                                this.close_pod_tab(index, cx);
+                            }
+                        })),
+                )
+        }));
+        let duplicate_key = (!self.local_terminal_active)
+            .then(|| {
+                self.active_pod_tab
+                    .and_then(|index| self.pod_dock_tabs.get(index))
+                    .map(|tab| tab.key)
+            })
+            .flatten();
+        let menu_owner = cx.entity().downgrade();
+        let new_menu = Button::new("console-new-menu")
+            .small()
+            .ghost()
+            .icon(IconName::ChevronDown)
+            .tooltip("New session options")
+            .accessibility_label("New session options")
+            .dropdown_menu(move |mut menu, _, _| {
+                let owner = menu_owner.clone();
+                menu = menu.item(PopupMenuItem::new("Device Terminal").on_click(
+                    move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| this.new_device_terminal(window, cx));
+                    },
+                ));
+                for (label, mode) in [
+                    ("Pod Shell", PodStreamMode::Shell),
+                    ("Pod Logs", PodStreamMode::Logs),
+                    ("Pod Attach", PodStreamMode::Attach),
+                ] {
+                    let owner = menu_owner.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .disabled(duplicate_key.is_none())
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |this, cx| {
+                                    if let Some(key) = duplicate_key {
+                                        this.duplicate_pod_console(key, Some(mode), window, cx);
+                                    }
+                                });
+                            }),
+                    );
+                }
+                menu
+            });
+        TabBar::new("pod-console-tabs")
+            .underline()
+            .max_width(px(280.))
+            .menu(true)
+            .small()
+            .h(px(36.))
+            .w_full()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .selected_index(selected_index)
+            .children(tabs)
+            .last_empty_space(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Button::new("console-new")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Plus)
+                            .label("New")
+                            .tooltip("New device terminal")
+                            .accessibility_label("New device terminal")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_device_terminal(window, cx)
+                            })),
+                    )
+                    .child(new_menu),
+            )
+            .suffix(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Button::new("console-collapse")
+                            .small()
+                            .ghost()
+                            .icon(if self.pod_dock_open {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronUp
+                            })
+                            .tooltip(if self.pod_dock_open {
+                                "Collapse console"
+                            } else {
+                                "Expand console"
+                            })
+                            .accessibility_label(if self.pod_dock_open {
+                                "Collapse console"
+                            } else {
+                                "Expand console"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.pod_dock_open = !this.pod_dock_open;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("console-zoom")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Maximize)
+                            .tooltip("Toggle console maximize")
+                            .accessibility_label("Toggle console maximize")
+                            .disabled(!self.pod_dock_open)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_console_zoom(window, cx)
+                            })),
+                    ),
+            )
+            .on_click(cx.listener(move |this, index: &usize, window, cx| {
+                if *index == 0 {
+                    this.local_terminal_active = true;
+                    this.pod_dock_open = true;
+                    this.active_device_terminal = primary_key
+                        .filter(|key| this.device_terminals.iter().any(|tab| tab.key == *key));
+                    this.open_device_terminal(window, cx);
+                    return;
+                }
+                if let Some(key) = index.checked_sub(1).and_then(|index| extra_keys.get(index)) {
+                    if let Some(tab) = this.device_terminals.iter().find(|tab| tab.key == *key) {
+                        this.active_device_terminal = Some(*key);
+                        this.local_terminal_active = true;
+                        this.pod_dock_open = true;
+                        window.focus(&tab.terminal.focus_handle(cx), cx);
+                        cx.notify();
+                    }
+                    return;
+                }
+                let Some(key) = index
+                    .checked_sub(pod_offset)
+                    .and_then(|index| pod_keys.get(index))
+                else {
+                    return;
+                };
+                let Some(index) = this.pod_dock_tabs.iter().position(|tab| tab.key == *key) else {
+                    return;
+                };
+                this.active_pod_tab = Some(index);
+                this.local_terminal_active = false;
+                this.pod_dock_open = true;
+                if let Some(terminal) = this
+                    .pod_dock_tabs
+                    .get(index)
+                    .filter(|tab| tab.mode != PodStreamMode::Logs)
+                    .and_then(|tab| tab.terminal.as_ref())
+                {
+                    window.focus(&terminal.focus_handle(cx), cx);
+                }
+                cx.notify();
+            }))
+    }
+
     pub(crate) fn render_pod_dock_panel(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
+        if self.local_terminal_active {
+            return self.render_device_terminal(window, cx).into_any_element();
+        }
         let active_idx = self.active_pod_tab.unwrap_or(0);
         // Each tab owns a persistent standard searchable Select. Identity lookup survives closes.
         if let Some(tab) = self.pod_dock_tabs.get(active_idx) {
@@ -886,120 +1162,12 @@ impl IceonApp {
         }
         // All output and visual rows are Rc-backed: this snapshot never copies log history.
         let active = self.pod_dock_tabs.get(active_idx).cloned();
-        let tab_keys = self
-            .pod_dock_tabs
-            .iter()
-            .map(|tab| tab.key)
-            .collect::<Vec<_>>();
-        let tabs = self
-            .pod_dock_tabs
-            .iter()
-            .map(|tab| {
-                let key = tab.key;
-                Tab::new()
-                    .label(format!("{} — {}", tab.pod_name, tab.container))
-                    .prefix(
-                        gpui_kit::component::Icon::new(if tab.mode == PodStreamMode::Logs {
-                            IconName::FileText
-                        } else {
-                            IconName::SquareTerminal
-                        })
-                        .small(),
-                    )
-                    .suffix(
-                        Button::new(SharedString::from(format!("close-console-{key}")))
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Close)
-                            .tooltip("Close console")
-                            .accessibility_label("Close console")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                if let Some(index) =
-                                    this.pod_dock_tabs.iter().position(|tab| tab.key == key)
-                                {
-                                    this.close_pod_tab(index, cx);
-                                }
-                            })),
-                    )
-            })
-            .collect::<Vec<_>>();
-        let duplicate_key = active.as_ref().map(|tab| tab.key);
-        let menu_owner = cx.entity().downgrade();
-        let new_menu = Button::new("pod-console-new-menu")
-            .small()
-            .ghost()
-            .icon(IconName::ChevronDown)
-            .tooltip("New console")
-            .accessibility_label("New console")
-            .disabled(duplicate_key.is_none())
-            .dropdown_menu(move |mut menu, _, _| {
-                for (label, mode) in [
-                    ("New terminal", PodStreamMode::Shell),
-                    ("New logs", PodStreamMode::Logs),
-                    ("New attach", PodStreamMode::Attach),
-                ] {
-                    let owner = menu_owner.clone();
-                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                        let _ = owner.update(cx, |this, cx| {
-                            if let Some(key) = duplicate_key {
-                                this.duplicate_pod_console(key, Some(mode), window, cx);
-                            }
-                        });
-                    }));
-                }
-                menu
-            });
         v_flex()
             .size_full()
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
             .bg(cx.theme().background)
-            .child(
-                TabBar::new("pod-console-tabs")
-                    .small()
-                    .selected_index(active_idx)
-                    .children(tabs)
-                    .suffix(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new("pod-console-new")
-                                    .small()
-                                    .ghost()
-                                    .icon(IconName::Plus)
-                                    .tooltip("Duplicate active console")
-                                    .accessibility_label("Duplicate active console")
-                                    .disabled(duplicate_key.is_none())
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if let Some(key) = duplicate_key {
-                                            this.duplicate_pod_console(key, None, window, cx);
-                                        }
-                                    })),
-                            )
-                            .child(new_menu),
-                    )
-                    .on_click(cx.listener(move |this, index: &usize, window, cx| {
-                        let Some(key) = tab_keys.get(*index) else {
-                            return;
-                        };
-                        let Some(index) = this.pod_dock_tabs.iter().position(|tab| tab.key == *key)
-                        else {
-                            return;
-                        };
-                        this.active_pod_tab = Some(index);
-                        if let Some(terminal) = this
-                            .pod_dock_tabs
-                            .get(index)
-                            .filter(|tab| tab.mode != PodStreamMode::Logs)
-                            .and_then(|tab| tab.terminal.as_ref())
-                        {
-                            window.focus(&terminal.focus_handle(cx), cx);
-                        }
-                        cx.notify();
-                    })),
-            )
             .when_some(active, |el, tab| {
                 let logs = tab.mode == PodStreamMode::Logs;
                 let active_key = tab.key;
@@ -1425,6 +1593,7 @@ impl IceonApp {
                     }),
                 ))
             })
+            .into_any_element()
     }
 }
 
