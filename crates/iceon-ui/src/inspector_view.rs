@@ -102,6 +102,7 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) {
         self.inspector.target = Some(InspectorTarget::Resource(reference.clone()));
+        self.inspector_open = true;
         self.inspector.loading = true;
         self.inspector.error = None;
         self.inspector.action_message = None;
@@ -208,6 +209,7 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.inspector_open = true;
         self.inspector.target = Some(InspectorTarget::Helm {
             view,
             name: name.clone(),
@@ -849,7 +851,7 @@ impl IceonApp {
                 .sum::<usize>();
 
         v_flex()
-            .w(px(500.0))
+            .w_full()
             .flex_shrink_0()
             .h_full()
             .border_l_1()
@@ -900,6 +902,7 @@ impl IceonApp {
                                     .icon(IconName::Close)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.inspector.target = None;
+                                        this.inspector_open = false;
                                         cx.notify();
                                     })),
                             ),
@@ -1435,7 +1438,13 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!("Created: {created}")),
+                                .child(format!(
+                                    "Created: {}",
+                                    crate::preference_runtime::timestamp(
+                                        &created,
+                                        &self.preferences_draft.app.timezone
+                                    )
+                                )),
                         )
                     })
                     .when_some(uid_opt, |el, uid| {
@@ -1902,11 +1911,13 @@ impl IceonApp {
                                         r.child(Tag::secondary().small().child(qos))
                                     })
                                     .when_some(pod.deletion_timestamp.clone(), |r, dt| {
-                                        r.child(
-                                            Tag::danger()
-                                                .small()
-                                                .child(format!("Terminating ({dt})")),
-                                        )
+                                        r.child(Tag::danger().small().child(format!(
+                                            "Terminating ({})",
+                                            crate::preference_runtime::timestamp(
+                                                &dt,
+                                                &self.preferences_draft.app.timezone
+                                            )
+                                        )))
                                     }),
                             ),
                     )
@@ -2299,12 +2310,13 @@ impl IceonApp {
                             }),
                     )
                     .when_some(meta.deletion_timestamp.clone(), |el, dt| {
-                        el.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().danger)
-                                .child(format!("Deletion Timestamp: {dt}")),
-                        )
+                        el.child(div().text_xs().text_color(cx.theme().danger).child(format!(
+                            "Deletion Timestamp: {}",
+                            crate::preference_runtime::timestamp(
+                                &dt,
+                                &self.preferences_draft.app.timezone
+                            )
+                        )))
                     })
                     .when(!meta.finalizers.is_empty(), |el| {
                         el.child(
@@ -2462,7 +2474,13 @@ impl IceonApp {
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(format!("Updated: {t}")),
+                                            .child(format!(
+                                                "Updated: {}",
+                                                crate::preference_runtime::timestamp(
+                                                    &t,
+                                                    &self.preferences_draft.app.timezone
+                                                )
+                                            )),
                                     )
                                 })
                         })),

@@ -20,6 +20,24 @@ pub enum PreferencesError {
     StoreCorrupt,
 }
 
+/// HTTP is accepted only for literal loopback hosts (local mirrors/tests).
+pub(crate) fn secure_download_url(value: &str) -> Option<url::Url> {
+    let u = url::Url::parse(value).ok()?;
+    let loopback = match u.host()? {
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+        url::Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
+    };
+    (value.len() <= 4096
+        && !value.chars().any(char::is_control)
+        && (u.scheme() == "https" || (u.scheme() == "http" && loopback))
+        && u.username().is_empty()
+        && u.password().is_none()
+        && u.query().is_none()
+        && u.fragment().is_none())
+    .then_some(u)
+}
+
 pub type Result<T> = std::result::Result<T, PreferencesError>;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,10 +82,39 @@ pub struct ProxyPreferences {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HelmRepository {
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DownloadMirror {
+    #[default]
+    Default,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KubernetesPreferences {
     pub helm_binary_path: String,
     pub helm_server_side: bool,
     pub discover_default_kubeconfig: bool,
+    #[serde(default)]
+    pub kubectl_auto_download: bool,
+    #[serde(default)]
+    pub kubectl_download_mirror: DownloadMirror,
+    #[serde(default)]
+    pub kubectl_mirror_url: String,
+    #[serde(default)]
+    pub binaries_directory: String,
+    #[serde(default)]
+    pub kubectl_binary_path: String,
+    #[serde(default)]
+    pub kubeconfig_sync_paths: Vec<String>,
+    #[serde(default)]
+    pub helm_repositories: Vec<HelmRepository>,
 }
 
 impl Default for KubernetesPreferences {
@@ -76,6 +123,13 @@ impl Default for KubernetesPreferences {
             helm_binary_path: String::new(),
             helm_server_side: false,
             discover_default_kubeconfig: true,
+            kubectl_auto_download: false,
+            kubectl_download_mirror: DownloadMirror::Default,
+            kubectl_mirror_url: String::new(),
+            binaries_directory: String::new(),
+            kubectl_binary_path: String::new(),
+            kubeconfig_sync_paths: Vec::new(),
+            helm_repositories: Vec::new(),
         }
     }
 }
@@ -197,6 +251,42 @@ fn validate(p: &Preferences) -> Result<()> {
         }
     }
     if p.kubernetes.helm_binary_path.len() > 4096 || p.kubernetes.helm_binary_path.contains('\0') {
+        return Err(PreferencesError::InvalidInput);
+    }
+    let k = &p.kubernetes;
+    if (k.kubectl_download_mirror == DownloadMirror::Custom || !k.kubectl_mirror_url.is_empty())
+        && secure_download_url(&k.kubectl_mirror_url).is_none()
+    {
+        return Err(PreferencesError::InvalidInput);
+    }
+    for value in [
+        &k.kubectl_mirror_url,
+        &k.binaries_directory,
+        &k.kubectl_binary_path,
+    ] {
+        if value.len() > 4096 || value.contains('\0') {
+            return Err(PreferencesError::InvalidInput);
+        }
+    }
+    if k.kubeconfig_sync_paths.len() > 64
+        || k.kubeconfig_sync_paths
+            .iter()
+            .any(|path| path.len() > 4096 || path.contains('\0'))
+    {
+        return Err(PreferencesError::InvalidInput);
+    }
+    if k.helm_repositories.len() > 128
+        || k.helm_repositories.iter().any(|repo| {
+            repo.name.is_empty()
+                || repo.name.len() > 256
+                || repo.name.contains('\0')
+                || repo.url.len() > 4096
+                || repo.url.contains('\0')
+                || url::Url::parse(&repo.url)
+                    .map(|u| !matches!(u.scheme(), "http" | "https") || u.host_str().is_none())
+                    .unwrap_or(true)
+        })
+    {
         return Err(PreferencesError::InvalidInput);
     }
     if !(10..=50).contains(&p.editor.font_size)
@@ -350,6 +440,7 @@ impl PreferencesEngine {
 
         let preferences: Preferences =
             serde_json::from_str(&payload).map_err(|_| PreferencesError::StoreCorrupt)?;
+        validate(&preferences).map_err(|_| PreferencesError::StoreCorrupt)?;
         Ok(PreferencesSnapshot {
             revision: revision as u64,
             preferences,

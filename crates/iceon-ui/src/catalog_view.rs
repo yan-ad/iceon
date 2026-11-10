@@ -6,7 +6,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
-    scroll::ScrollableElement as _,
+    scroll::{ScrollableElement as _, ScrollbarAxis},
     tag::Tag,
     v_flex,
 };
@@ -17,12 +17,71 @@ use crate::IceonApp;
 use crate::navigation::{Route, catalog_error_message};
 use iceon_core::catalog::{CatalogSnapshot, ClusterSummary, PinRequest, RemoveRequest};
 
+// Shared geometry keeps column boundaries identical for the header and every row.
+// Source takes any spare width; the other columns never shrink into their neighbors.
+#[derive(Clone, Copy)]
+struct CatalogColumn {
+    title: &'static str,
+    width: f32,
+    flexible: bool,
+    separator: bool,
+}
+
+const CATALOG_COLUMNS: [CatalogColumn; 4] = [
+    CatalogColumn {
+        title: "Name / Context",
+        width: 260.0,
+        flexible: false,
+        separator: true,
+    },
+    CatalogColumn {
+        title: "Source",
+        width: 220.0,
+        flexible: true,
+        separator: true,
+    },
+    CatalogColumn {
+        title: "Status",
+        width: 150.0,
+        flexible: false,
+        separator: true,
+    },
+    CatalogColumn {
+        title: "Actions",
+        width: 220.0,
+        flexible: false,
+        separator: false,
+    },
+];
+const CATALOG_TABLE_MIN_WIDTH: f32 = 850.0;
+
+fn catalog_cell(column: CatalogColumn, border: Hsla) -> Div {
+    h_flex()
+        .items_center()
+        .px_4()
+        .py_2p5()
+        .flex_shrink_0()
+        .when(column.flexible, |cell| {
+            cell.flex_1().min_w(px(column.width))
+        })
+        .when(!column.flexible, |cell| cell.w(px(column.width)))
+        .when(column.separator, |cell| {
+            cell.border_r_1().border_color(border)
+        })
+}
+
 impl IceonApp {
     pub(crate) fn render_catalog_view(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // One scroll handle owns both axes and the header/body viewport. Keeping
+        // the minimum width on the content (not the viewport) allows overflow.
+        let table_scroll = window
+            .use_keyed_state("catalog-table-scroll", cx, |_, _| ScrollHandle::default())
+            .read(cx)
+            .clone();
         let query = self
             .catalog_search_input
             .read(cx)
@@ -51,6 +110,7 @@ impl IceonApp {
 
         v_flex()
             .size_full()
+            .min_w_0()
             .p_5()
             .gap_4()
             .bg(cx.theme().background)
@@ -208,190 +268,190 @@ impl IceonApp {
                 )
             })
             .child(
-                v_flex()
+                div()
+                    .id("catalog-table-viewport")
                     .flex_1()
+                    .min_h_0()
+                    .min_w_0()
                     .w_full()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(px(8.0))
-                    .overflow_hidden()
+                    .overflow_scroll()
+                    .track_scroll(&table_scroll)
+                    .scrollbar(&table_scroll, ScrollbarAxis::Both)
                     .child(
-                        h_flex()
-                            .w_full()
-                            .px_4()
-                            .py_2()
-                            .bg(cx.theme().table_head)
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(div().w(px(260.0)).child("Name / Context"))
-                            .child(div().flex_1().child("Source"))
-                            .child(div().w(px(130.0)).child("Status"))
-                            .child(div().w(px(220.0)).child("Actions")),
-                    )
-                    .child(if clusters.is_empty() {
                         v_flex()
-                            .flex_1()
                             .w_full()
-                            .items_center()
-                            .justify_center()
-                            .p_8()
-                            .gap_2()
+                            .min_w(px(CATALOG_TABLE_MIN_WIDTH))
+                            .min_h_full()
+                            .flex_none()
                             .child(
-                                div()
-                                    .text_sm()
-                                    .font_medium()
-                                    .child("No clusters match the current view"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "Import a kubeconfig file or place one at ~/.kube/config to get started.",
-                                    ),
-                            )
-                            .into_any_element()
-                    } else {
-                        v_flex()
-                            .flex_1()
-                            .w_full()
-                            .overflow_y_scrollbar()
-                            .children(clusters.into_iter().enumerate().map(|(idx, cluster)| {
-                                let cluster_id = cluster.id.clone();
-                                let open_id = cluster.id.clone();
-                                let pin_id = cluster.id.clone();
-                                let is_pinned = cluster.pinned;
-                                let remove_target = cluster.clone();
-                                let source = cluster
-                                    .labels
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or_else(|| cluster.source.clone());
-                                let status_badge = match cluster.status {
-                                    "connected" => Tag::success().child("Connected"),
-                                    "connecting" => Tag::warning().child("Connecting"),
-                                    "error" => Tag::danger().child("Error"),
-                                    _ => Tag::secondary().child("Disconnected"),
-                                };
-                                let badge_color = crate::sidebar_view::cluster_badge_color(
-                                    &cluster.color,
-                                    &cluster.id,
-                                    cx.theme().mode.is_dark(),
-                                );
-
                                 h_flex()
-                                    .id(SharedString::from(format!("catalog-row-{idx}")))
                                     .w_full()
-                                    .px_4()
-                                    .py_2p5()
-                                    .border_b_1()
-                                    .border_color(cx.theme().border)
+                                    .flex_shrink_0()
+                                    .items_stretch()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .children(CATALOG_COLUMNS.into_iter().map(|column| {
+                                        catalog_cell(column, cx.theme().border).child(column.title)
+                                    })),
+                            )
+                            .child(if clusters.is_empty() {
+                                v_flex()
+                                    .flex_1()
+                                    .w_full()
                                     .items_center()
-                                    .hover(|s| s.bg(cx.theme().table_hover))
+                                    .justify_center()
+                                    .p_8()
+                                    .gap_2()
                                     .child(
-                                        h_flex()
-                                            .w(px(260.0))
-                                            .items_center()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .w(px(10.0))
-                                                    .h(px(10.0))
-                                                    .rounded_full()
-                                                    .bg(badge_color),
-                                            )
-                                            .child(
-                                                v_flex()
-                                                    .overflow_hidden()
-                                                    .child(
-                                                        div()
-                                                            .text_sm()
-                                                            .font_medium()
-                                                            .truncate()
-                                                            .child(cluster.name.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .text_color(
-                                                                cx.theme().muted_foreground,
-                                                            )
-                                                            .truncate()
-                                                            .child(cluster.context_name.clone()),
-                                                    ),
-                                            ),
+                                        div()
+                                            .text_sm()
+                                            .font_medium()
+                                            .child("No clusters match the current view"),
                                     )
                                     .child(
                                         div()
-                                            .flex_1()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .truncate()
-                                            .child(source),
-                                    )
-                                    .child(div().w(px(130.0)).child(status_badge))
-                                    .child(
-                                        h_flex()
-                                            .w(px(220.0))
-                                            .items_center()
-                                            .gap_1p5()
                                             .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "open-cluster-{cluster_id}"
-                                                )))
-                                                .xsmall()
-                                                .primary()
-                                                .label("Open")
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.navigate(
-                                                            Route::Cluster {
-                                                                cluster_id: open_id.clone(),
-                                                                section: "overview".into(),
-                                                            },
-                                                            true,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
-                                            )
-                                            .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "pin-cluster-{cluster_id}"
-                                                )))
-                                                .xsmall()
-                                                .outline()
-                                                .icon(IconName::Star)
-                                                .label(if is_pinned { "Unpin" } else { "Pin" })
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.toggle_cluster_pin(
-                                                        pin_id.clone(),
-                                                        !is_pinned,
-                                                        cx,
-                                                    );
-                                                })),
-                                            )
-                                            .child(
-                                                Button::new(SharedString::from(format!(
-                                                    "remove-cluster-{cluster_id}"
-                                                )))
-                                                .xsmall()
-                                                .ghost()
-                                                .icon(gpui_kit::assets::IconName::Trash)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.pending_remove_cluster =
-                                                        Some(remove_target.clone());
-                                                    cx.notify();
-                                                })),
+                                                "Import a kubeconfig file or place one at ~/.kube/config to get started.",
                                             ),
                                     )
-                            }))
-                            .into_any_element()
-                    }),
+                                    .into_any_element()
+                            } else {
+                                v_flex()
+                                    .flex_1()
+                                    .w_full()
+                                    .min_w_0()
+                                    .children(clusters.into_iter().enumerate().map(|(idx, cluster)| {
+                                        let cluster_id = cluster.id.clone();
+                                        let open_id = cluster.id.clone();
+                                        let pin_id = cluster.id.clone();
+                                        let is_pinned = cluster.pinned;
+                                        let remove_target = cluster.clone();
+                                        let source = cluster
+                                            .labels
+                                            .first()
+                                            .cloned()
+                                            .unwrap_or_else(|| cluster.source.clone());
+                                        let status_badge = match cluster.status {
+                                            "connected" => Tag::success().child("Connected"),
+                                            "connecting" => Tag::warning().child("Connecting"),
+                                            "error" => Tag::danger().child("Error"),
+                                            _ => Tag::secondary().child("Disconnected"),
+                                        };
+                                        let badge_color = crate::sidebar_view::cluster_badge_color(
+                                            &cluster.color,
+                                            &cluster.id,
+                                            cx.theme().mode.is_dark(),
+                                        );
+
+                                        h_flex()
+                                            .id(SharedString::from(format!("catalog-row-{idx}")))
+                                            .w_full()
+                                            .flex_shrink_0()
+                                            .items_stretch()
+                                            .child(
+                                                catalog_cell(CATALOG_COLUMNS[0], cx.theme().border)
+                                                    .gap_2()
+                                                    .child(
+                                                        div()
+                                                            .w(px(10.0))
+                                                            .h(px(10.0))
+                                                            .flex_shrink_0()
+                                                            .rounded_full()
+                                                            .bg(badge_color),
+                                                    )
+                                                    .child(
+                                                        v_flex()
+                                                            .min_w_0()
+                                                            .overflow_hidden()
+                                                            .child(
+                                                                div()
+                                                                    .text_sm()
+                                                                    .font_medium()
+                                                                    .truncate()
+                                                                    .child(cluster.name.clone()),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .text_xs()
+                                                                    .text_color(
+                                                                        cx.theme().muted_foreground,
+                                                                    )
+                                                                    .truncate()
+                                                                    .child(cluster.context_name.clone()),
+                                                            ),
+                                                    ),
+                                            )
+                                            .child(
+                                                catalog_cell(CATALOG_COLUMNS[1], cx.theme().border)
+                                                    .text_xs()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(div().min_w_0().truncate().child(source)),
+                                            )
+                                            .child(
+                                                catalog_cell(CATALOG_COLUMNS[2], cx.theme().border)
+                                                    .child(status_badge),
+                                            )
+                                            .child(
+                                                catalog_cell(CATALOG_COLUMNS[3], cx.theme().border)
+                                                    .gap_1p5()
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "open-cluster-{cluster_id}"
+                                                        )))
+                                                        .xsmall()
+                                                        .primary()
+                                                        .label("Open")
+                                                        .on_click(cx.listener(
+                                                            move |this, _, window, cx| {
+                                                                this.navigate(
+                                                                    Route::Cluster {
+                                                                        cluster_id: open_id.clone(),
+                                                                        section: "overview".into(),
+                                                                    },
+                                                                    true,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                    )
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "pin-cluster-{cluster_id}"
+                                                        )))
+                                                        .xsmall()
+                                                        .outline()
+                                                        .icon(IconName::Star)
+                                                        .label(if is_pinned { "Unpin" } else { "Pin" })
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.toggle_cluster_pin(
+                                                                pin_id.clone(),
+                                                                !is_pinned,
+                                                                cx,
+                                                            );
+                                                        })),
+                                                    )
+                                                    .child(
+                                                        Button::new(SharedString::from(format!(
+                                                            "remove-cluster-{cluster_id}"
+                                                        )))
+                                                        .xsmall()
+                                                        .ghost()
+                                                        .icon(gpui_kit::assets::IconName::Trash)
+                                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                                            this.pending_remove_cluster =
+                                                                Some(remove_target.clone());
+                                                            cx.notify();
+                                                        })),
+                                                    ),
+                                            )
+                                    }))
+                                    .into_any_element()
+                            }),
+                    ),
             )
     }
 
@@ -502,5 +562,30 @@ impl IceonApp {
             }
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod catalog_table_tests {
+    use super::{CATALOG_COLUMNS, CATALOG_TABLE_MIN_WIDTH};
+
+    #[test]
+    fn table_minimum_fits_all_columns() {
+        let total: f32 = CATALOG_COLUMNS.iter().map(|column| column.width).sum();
+        assert_eq!(CATALOG_TABLE_MIN_WIDTH, total);
+        assert!(CATALOG_COLUMNS.iter().all(|column| column.width > 0.0));
+    }
+
+    #[test]
+    fn only_source_expands_and_only_internal_edges_have_separators() {
+        assert_eq!(
+            CATALOG_COLUMNS.map(|column| column.flexible),
+            [false, true, false, false]
+        );
+        assert_eq!(
+            CATALOG_COLUMNS.map(|column| column.separator),
+            [true, true, true, false]
+        );
+        assert_eq!(CATALOG_COLUMNS[1].title, "Source");
     }
 }

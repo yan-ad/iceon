@@ -7,12 +7,15 @@ pub mod inspector_view;
 mod native_menu;
 pub mod navigation;
 pub mod pod_dock_view;
+mod preference_runtime;
 pub mod preferences_view;
 mod resource_scroll;
 pub mod secrets_view;
 mod shell_header;
 mod shell_theme;
 mod sidebar_view;
+mod terminal_surface;
+mod workspace_dock;
 
 use std::sync::Arc;
 
@@ -46,6 +49,8 @@ use preferences_view::PreferencesSection;
 use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
+    pub(crate) workspace_dock: Option<workspace_dock::WorkspaceDock>,
+    pub(crate) inspector_open: bool,
     pub(crate) shell_focus: FocusHandle,
     pub(crate) catalog: Arc<CatalogEngine>,
     pub(crate) connection: Arc<ConnectionEngine>,
@@ -69,6 +74,7 @@ pub struct IceonApp {
     pub(crate) preferences_window: Option<AnyWindowHandle>,
     pub(crate) preferences_section: PreferencesSection,
     pub(crate) preferences_revision: u64,
+    runtime_editor_preferences: Option<iceon_core::preferences::EditorPreferences>,
     pub(crate) preferences_draft: Preferences,
     pub(crate) preferences_error: Option<String>,
 
@@ -120,6 +126,8 @@ pub struct IceonApp {
     pub(crate) resource_filter_input: Entity<InputState>,
     pub(crate) namespace_select: Entity<cluster_view::NamespaceSelectState>,
     pub(crate) namespace_select_items: Vec<cluster_view::NamespaceChoice>,
+    pub(crate) status_select: Entity<cluster_view::NamespaceSelectState>,
+    pub(crate) status_select_items: Vec<cluster_view::NamespaceChoice>,
     pub(crate) scale_replicas_input: Entity<InputState>,
     pub(crate) service_port_input: Entity<InputState>,
     pub(crate) pod_terminal_input: Entity<InputState>,
@@ -215,6 +223,7 @@ impl IceonApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources by name..."));
         let (namespace_select, namespace_select_items) =
             cluster_view::create_namespace_select(window, cx);
+        let status_select = cluster_view::create_status_select(window, cx);
         let scale_replicas_input = cx.new(|cx| InputState::new(window, cx).default_value("1"));
         let service_port_input = cx.new(|cx| InputState::new(window, cx).default_value("80"));
         let pod_terminal_input =
@@ -302,6 +311,8 @@ impl IceonApp {
         });
 
         let mut app = Self {
+            workspace_dock: None,
+            inspector_open: false,
             shell_focus,
             catalog,
             connection,
@@ -322,6 +333,7 @@ impl IceonApp {
             preferences_window: None,
             preferences_section: PreferencesSection::App,
             preferences_revision,
+            runtime_editor_preferences: None,
             preferences_draft: preferences_draft.clone(),
             preferences_error: None,
             cluster_session: None,
@@ -365,6 +377,8 @@ impl IceonApp {
             resource_filter_input,
             namespace_select,
             namespace_select_items,
+            status_select,
+            status_select_items: Vec::new(),
             scale_replicas_input,
             service_port_input,
             pod_terminal_input,
@@ -394,7 +408,31 @@ impl IceonApp {
             secret_password_input,
         };
 
-        app.apply_theme(preferences_draft.app.theme, Some(window), cx);
+        cx.set_global(preferences_view::GlobalPreferencesState {
+            engine: app.preferences_engine.clone(),
+            revision: app.preferences_revision,
+            preferences: app.preferences_draft.clone(),
+            error: None,
+            main_app: cx.entity().downgrade(),
+        });
+        let initial_mode = preference_runtime::theme_mode(
+            &app.preferences_draft,
+            matches!(
+                window.appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            ),
+        );
+        shell_theme::apply(initial_mode, Some(window), cx);
+        app.sync_runtime_preferences(window, cx);
+        let owner = cx.entity().downgrade();
+        window
+            .observe_window_appearance(move |window, cx| {
+                let _ = owner.update(cx, |app, cx| {
+                    app.sync_runtime_preferences(window, cx);
+                    cx.notify();
+                });
+            })
+            .detach();
         if let Route::Cluster {
             cluster_id,
             section,
@@ -405,6 +443,53 @@ impl IceonApp {
             app.load_secrets_profiles(window, cx);
         }
         app
+    }
+
+    /// Apply live editor/theme policy without replacing editor entities or their undo history.
+    fn sync_runtime_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let prefs = &self.preferences_draft;
+        let dark = matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        );
+        let mode = preference_runtime::theme_mode(prefs, dark);
+        if cx.theme().mode != mode {
+            shell_theme::apply(mode, Some(window), cx);
+        }
+        // All Editor widgets use the kit's dedicated code font tokens, not UI typography.
+        let editor = self.preferences_draft.editor.clone();
+        let family = preference_runtime::font_family(&editor.font_family, cx);
+        if cx.theme().mono_font_family != family
+            || cx.theme().mono_font_size != px(f32::from(editor.font_size))
+        {
+            gpui_kit::component::theme::Theme::update(cx, |theme| {
+                theme.mono_font_family = family;
+                theme.mono_font_size = px(f32::from(editor.font_size));
+            });
+        }
+        if self.runtime_editor_preferences.as_ref() != Some(&editor) {
+            for state in [
+                &self.create_yaml_editor,
+                &self.inspector_yaml_editor,
+                &self.helm_values_editor,
+            ] {
+                state.update(cx, |state, cx| {
+                    state.set_line_number(
+                        editor.line_numbers != iceon_core::preferences::LineNumbers::Off,
+                        window,
+                        cx,
+                    );
+                    state.set_tab_size(
+                        gpui_kit::component::input::TabSize {
+                            tab_size: usize::from(editor.tab_size),
+                            hard_tabs: false,
+                        },
+                        cx,
+                    );
+                });
+            }
+            self.runtime_editor_preferences = Some(editor);
+        }
     }
 
     pub(crate) fn sync_cluster_order(&mut self) {
@@ -614,13 +699,9 @@ impl IceonApp {
 
 impl Render for IceonApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_runtime_preferences(window, cx);
         self.sync_menus(window, cx);
         let current_route = self.history.current().clone();
-        let active_cluster_id = match &current_route {
-            Route::Cluster { cluster_id, .. } => Some(cluster_id.clone()),
-            _ => None,
-        };
-
         self.menu_action_surface(cx)
             .flex()
             .flex_col()
@@ -634,11 +715,6 @@ impl Render for IceonApp {
                     .w_full()
                     .overflow_hidden()
                     .child(self.render_primary_sidebar(cx))
-                    .when_some(
-                        active_cluster_id
-                            .filter(|_| !self.sidebar_collapsed && !self.cluster_sidebar_collapsed),
-                        |el, cid| el.child(self.render_cluster_sidebar(&cid, cx)),
-                    )
                     .child(
                         v_flex()
                             .flex_1()
@@ -692,6 +768,7 @@ pub fn run() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            terminal_surface::init(cx);
             native_menu::init(cx);
             let shutdown_connection = connection.clone();
             let shutdown_secrets = secrets_engine.clone();
@@ -734,6 +811,8 @@ pub fn run() {
                     )
                 });
                 native_menu::register_window(&app, window, cx);
+                let dock = workspace_dock::create(app.downgrade(), window, cx);
+                app.update(cx, |app, _| app.workspace_dock = Some(dock));
                 app
             })
             .expect("failed to open Iceon GPUI window");

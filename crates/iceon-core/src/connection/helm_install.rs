@@ -4,6 +4,62 @@ use std::time::Duration;
 const VALUES_LIMIT: usize = 256 * 1024;
 const INSTALL_DEADLINE: Duration = Duration::from_secs(120);
 
+/// Identity of the Helm release Secret shown to the user. This is a
+/// conservative preflight, not an atomic compare-and-swap (Helm has no such CLI flag).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HelmUpgradePreconditions {
+    pub revision: u32,
+    pub uid: String,
+    pub resource_version: String,
+}
+
+fn reopen_config(file: &tempfile::NamedTempFile) -> Result<tempfile::NamedTempFile> {
+    let mut copy =
+        tempfile::NamedTempFile::new().map_err(|_| ConnectionError::KubeconfigUnavailable)?;
+    std::io::copy(
+        &mut file
+            .reopen()
+            .map_err(|_| ConnectionError::KubeconfigUnavailable)?,
+        &mut copy,
+    )
+    .map_err(|_| ConnectionError::KubeconfigUnavailable)?;
+    Ok(copy)
+}
+
+// Helm 3 has no native SSA/force-conflicts flags. Do not silently downgrade
+// a requested ownership policy. Helm 4 install is bool; upgrade is string.
+fn apply_preference_arguments(
+    args: &mut Vec<OsString>,
+    version: &[u8],
+    preferences: &HelmPreferences,
+    force_conflicts: bool,
+) -> Result<()> {
+    let version = std::str::from_utf8(version).map_err(|_| ConnectionError::HelmUnavailable)?;
+    let version =
+        semver::Version::parse(version.trim().strip_prefix('v').unwrap_or(version.trim()))
+            .map_err(|_| ConnectionError::HelmUnavailable)?;
+    if version.major == 3 {
+        if preferences.server_side || force_conflicts {
+            return Err(ConnectionError::HelmUnavailable);
+        }
+    } else if version.major == 4 {
+        args.push(
+            format!(
+                "--server-side={}",
+                preferences.server_side || force_conflicts
+            )
+            .into(),
+        );
+        if force_conflicts {
+            args.push("--force-conflicts".into());
+        }
+    } else {
+        return Err(ConnectionError::HelmUnavailable);
+    }
+    Ok(())
+}
+
 // Helm 3.17 install flags: https://github.com/helm/helm/blob/v3.17.0/cmd/helm/install.go
 // Helm 4.3.1: https://helm.sh/docs/helm/helm_install/
 // Both support server dry-run/hide-secret and --wait; rollback flags differ, so neither is used.
@@ -213,7 +269,89 @@ fn supported_version(output: &[u8]) -> bool {
     )
 }
 impl ConnectionEngine {
+    pub async fn helm_upgrade(
+        &self,
+        request: HelmInstallRequest,
+        expected: HelmUpgradePreconditions,
+    ) -> Result<HelmInstallResult> {
+        self.helm_upgrade_with_preferences(request, expected, HelmPreferences::default(), false).await
+    }
+    pub async fn helm_upgrade_with_preferences(
+        &self,
+        request: HelmInstallRequest,
+        expected: HelmUpgradePreconditions,
+        preferences: HelmPreferences,
+        force_conflicts: bool,
+    ) -> Result<HelmInstallResult> {
+        if expected.revision == 0
+            || expected.uid.is_empty()
+            || expected.resource_version.is_empty()
+            || expected.uid.len() > 256
+            || expected.resource_version.len() > 256
+            || expected
+                .uid
+                .chars()
+                .chain(expected.resource_version.chars())
+                .any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err(ConnectionError::InvalidInput);
+        }
+        self.helm_mutate(request, preferences, force_conflicts, Some(expected))
+            .await
+    }
+    async fn check_helm_upgrade(
+        &self,
+        request: &HelmInstallRequest,
+        expected: &HelmUpgradePreconditions,
+    ) -> Result<()> {
+        let client = {
+            let state = self
+                .session
+                .lock()
+                .map_err(|_| ConnectionError::StoreUnavailable)?;
+            current(&state, &request.session())?
+                .client
+                .clone()
+                .ok_or(ConnectionError::NotConnected)?
+        };
+        let api: kube::Api<k8s_openapi::api::core::v1::Secret> =
+            kube::Api::namespaced(client, &request.namespace);
+        let name = format!(
+            "sh.helm.release.v1.{}.v{}",
+            request.release_name, expected.revision
+        );
+        let metadata = api
+            .get_metadata(&name)
+            .await
+            .map_err(|_| ConnectionError::Conflict)?
+            .metadata;
+        if metadata.uid.as_deref() != Some(expected.uid.as_str())
+            || metadata.resource_version.as_deref() != Some(expected.resource_version.as_str())
+        {
+            return Err(ConnectionError::Conflict);
+        }
+        Ok(())
+    }
     pub async fn helm_install(&self, request: HelmInstallRequest) -> Result<HelmInstallResult> {
+        self.helm_install_with_preferences(request, HelmPreferences::default(), false)
+            .await
+    }
+    pub async fn helm_install_with_preferences(
+        &self,
+        request: HelmInstallRequest,
+        preferences: HelmPreferences,
+        force_conflicts: bool,
+    ) -> Result<HelmInstallResult> {
+        self.helm_mutate(request, preferences, force_conflicts, None)
+            .await
+    }
+    async fn helm_mutate(
+        &self,
+        request: HelmInstallRequest,
+        preferences: HelmPreferences,
+        force_conflicts: bool,
+        upgrade: Option<HelmUpgradePreconditions>,
+    ) -> Result<HelmInstallResult> {
         validate(&request)?;
         let _permit = self
             .workers
@@ -240,7 +378,7 @@ impl ConnectionEngine {
             biased;
             _ = cancel.cancelled() => Err(ConnectionError::StaleSession),
             result = tokio::time::timeout(INSTALL_DEADLINE, async {
-                let executable = executable()?;
+                let executable = executable_with_preferences(&preferences)?;
                 let catalog = self.catalog.clone();
                 let id = request.cluster_id.clone();
                 let expected = target.clone();
@@ -253,9 +391,9 @@ impl ConnectionEngine {
                 }).await.map_err(|_| ConnectionError::KubeconfigUnavailable)??;
                 let base = target.source_path.parent().ok_or(ConnectionError::KubeconfigUnavailable)?;
                 auth::resolve_tracked(&mut prepared, base, &self.auth_tasks).await?;
-                let version = self.auth_tasks.spawn(supervise(executable.clone(),
+                let version = self.auth_tasks.spawn(supervise_preferences(executable.clone(),
                     ["version", "--template", "{{.Version}}"].map(Into::into).to_vec(),
-                    tempfile::NamedTempFile::new().map_err(|_| ConnectionError::KubeconfigUnavailable)?, cancel.clone()))
+                    tempfile::NamedTempFile::new().map_err(|_| ConnectionError::KubeconfigUnavailable)?, cancel.clone(), preferences.clone()))
                     .await.map_err(|_| ConnectionError::ConnectionFailed)??;
                 if !supported_version(&version) { return Err(ConnectionError::HelmUnavailable); }
                 let directory = tempfile::tempdir().map_err(|_| ConnectionError::KubeconfigUnavailable)?;
@@ -267,15 +405,30 @@ impl ConnectionEngine {
                 values.write_all(request.values_yaml.as_bytes()).map_err(|_| ConnectionError::KubeconfigUnavailable)?;
                 values.flush().map_err(|_| ConnectionError::KubeconfigUnavailable)?;
                 self.check_pod_session(&request.session())?;
-                let args = install_arguments(&request, values.path());
+                let mut args = install_arguments(&request, values.path());
+                if let Some(expected) = &upgrade {
+                    // Check both the displayed latest revision and its Kubernetes identity.
+                    self.check_helm_upgrade(&request, expected).await?;
+                    let history = self.auth_tasks.spawn(supervise_preferences(executable.clone(),
+                        vec!["history".into(), request.release_name.clone().into(), "--namespace".into(), request.namespace.clone().into(), "--max".into(), "1".into(), "--output".into(), "json".into()],
+                        reopen_config(&kubeconfig)?, cancel.clone(), preferences.clone())).await.map_err(|_| ConnectionError::ConnectionFailed)??;
+                    let history: Value = serde_json::from_slice(&history).map_err(|_| ConnectionError::InvalidResponse)?;
+                    if history.as_array().filter(|rows| rows.len() == 1).and_then(|rows| rows[0].get("revision")).and_then(Value::as_u64) != Some(expected.revision as u64) {
+                        return Err(ConnectionError::Conflict);
+                    }
+                    args[0] = "upgrade".into();
+                }
+                apply_preference_arguments(&mut args, &version, &preferences, force_conflicts)?;
+                if preferences.allow_untrusted_cas { args.push("--insecure-skip-tls-verify".into()); }
+                self.check_pod_session(&request.session())?;
                 // The tracked supervisor, not the IPC future, owns all files until the child is reaped.
                 let process_cancel = cancel.clone();
                 self.auth_tasks.spawn(async move {
                     let _values = values;
-                    supervise_owned(executable, args, kubeconfig, process_cancel, INSTALL_DEADLINE, Some(directory)).await
+                    supervise_configured(executable, args, kubeconfig, process_cancel, INSTALL_DEADLINE, Some(directory), preferences).await
                 }).await.map_err(|_| ConnectionError::ConnectionFailed)??;
                 Ok(HelmInstallResult { cluster_id: request.cluster_id.clone(), session_id: request.session_id.clone(),
-                    namespace: request.namespace.clone(), release_name: request.release_name.clone(), chart: request.chart.clone(), created: !request.dry_run })
+                    namespace: request.namespace.clone(), release_name: request.release_name.clone(), chart: request.chart.clone(), created: !request.dry_run && upgrade.is_none() })
             }) => result.unwrap_or(Err(ConnectionError::Timeout)),
         };
         self.check_pod_session(&request.session())?;

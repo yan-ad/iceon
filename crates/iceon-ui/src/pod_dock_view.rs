@@ -3,11 +3,12 @@
 use std::time::Duration;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
-    scroll::ScrollableElement as _,
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
+    tab::{Tab, TabBar},
     tag::Tag,
     v_flex,
 };
@@ -23,6 +24,23 @@ use iceon_core::connection::{
 };
 
 use crate::IceonApp;
+use crate::terminal_surface::{TerminalEvent, TerminalSurface};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContainerChoice(String);
+impl SelectItem for ContainerChoice {
+    type Value = String;
+    fn title(&self) -> SharedString {
+        self.0.clone().into()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.0
+    }
+    fn matches(&self, query: &str) -> bool {
+        self.0.to_lowercase().contains(&query.to_lowercase())
+    }
+}
+type ContainerSelectState = SelectState<SearchableVec<ContainerChoice>>;
 
 #[derive(Clone, Debug)]
 pub struct PodDockTab {
@@ -43,6 +61,13 @@ pub struct PodDockTab {
     pub cols: u16,
     pub rows: u16,
     pub command_history: Vec<String>,
+    pub(crate) terminal: Option<Entity<TerminalSurface>>,
+    pub log_scroll: UniformListScrollHandle,
+    pub follow: bool,
+    pub word_wrap: bool,
+    pub log_pending: String,
+    container_select: Option<Entity<ContainerSelectState>>,
+    log_columns: usize,
 }
 
 impl PodDockTab {
@@ -204,8 +229,21 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
+        if self.pod_dock_tabs.len() >= 12 {
+            self.cluster_error =
+                Some("Close a pod console before opening another (maximum 12).".into());
+            cx.notify();
+            return;
+        }
         let placeholder_id = format!("opening-{}", self.next_operation_id());
-        let default_shell = shell_option_path("sh").to_string();
+        // An empty default preserves the backend's /bin/sh fallback. Send an
+        // explicit saved path unchanged: unsupported paths produce a real
+        // backend InvalidInput error rather than silently launching another shell.
+        let default_shell = if self.preferences_draft.terminal.shell_path.trim().is_empty() {
+            shell_option_path("sh").to_string()
+        } else {
+            self.preferences_draft.terminal.shell_path.trim().to_owned()
+        };
 
         let tab = PodDockTab {
             id: placeholder_id.clone(),
@@ -216,10 +254,7 @@ impl IceonApp {
             available_containers,
             mode,
             status: "opening".into(),
-            output_lines: vec![format!(
-                "Connecting {:?} stream to {namespace}/{pod_name} ({container})...",
-                mode
-            )],
+            output_lines: Vec::new(),
             previous: false,
             timestamps: true,
             tail_lines: 500,
@@ -228,11 +263,86 @@ impl IceonApp {
             cols: 120,
             rows: 36,
             command_history: vec![],
+            terminal: Some(cx.new(|cx| TerminalSurface::new(window, cx))),
+            log_scroll: UniformListScrollHandle::new(),
+            follow: true,
+            word_wrap: false,
+            log_pending: String::new(),
+            container_select: None,
+            log_columns: 120,
         };
         self.pod_dock_tabs.push(tab);
         let tab_index = self.pod_dock_tabs.len() - 1;
+        if let Some(terminal) = self.pod_dock_tabs[tab_index].terminal.clone() {
+            cx.subscribe_in(
+                &terminal,
+                window,
+                move |this, entity, event: &TerminalEvent, window, cx| {
+                    let Some(idx) = this
+                        .pod_dock_tabs
+                        .iter()
+                        .position(|tab| tab.terminal.as_ref() == Some(entity))
+                    else {
+                        return;
+                    };
+                    if let TerminalEvent::Resize { cols, rows } = event {
+                        this.pod_dock_tabs[idx].cols = *cols;
+                        this.pod_dock_tabs[idx].rows = *rows;
+                    }
+                    let Some(session) = this.cluster_session.clone() else {
+                        return;
+                    };
+                    let Some(stream_id) = this.pod_dock_tabs.get(idx).map(|tab| tab.id.clone())
+                    else {
+                        return;
+                    };
+                    if stream_id.starts_with("opening-") {
+                        return;
+                    }
+                    match event {
+                        TerminalEvent::Input(data) => {
+                            let connection = this.connection.clone();
+                            let request = PodInputRequest {
+                                stream: PodStreamRequest {
+                                    cluster_id: session.cluster_id,
+                                    session_id: session.session_id,
+                                    stream_id,
+                                },
+                                data: data.clone(),
+                            };
+                            cx.spawn_in(window, async move |_, _| {
+                                let _ = connection.pod_stream_write(request);
+                            })
+                            .detach();
+                        }
+                        TerminalEvent::Resize { cols, rows } => {
+                            let connection = this.connection.clone();
+                            let request = PodResizeRequest {
+                                stream: PodStreamRequest {
+                                    cluster_id: session.cluster_id,
+                                    session_id: session.session_id,
+                                    stream_id,
+                                },
+                                cols: *cols,
+                                rows: *rows,
+                            };
+                            cx.spawn_in(window, async move |_, _| {
+                                let _ = connection.pod_stream_resize(request);
+                            })
+                            .detach();
+                        }
+                    }
+                },
+            )
+            .detach();
+        }
         self.active_pod_tab = Some(tab_index);
         self.pod_dock_open = true;
+        if mode != PodStreamMode::Logs {
+            if let Some(terminal) = &self.pod_dock_tabs[tab_index].terminal {
+                window.focus(&terminal.focus_handle(cx), cx);
+            }
+        }
         cx.notify();
 
         self.spawn_pod_stream_worker(
@@ -278,10 +388,11 @@ impl IceonApp {
             tab.id = placeholder_id.clone();
             tab.status = "opening".into();
             tab.paused = false;
-            tab.output_lines = vec![format!(
-                "Reconnecting {:?} stream to {}/{} ({})...",
-                tab.mode, tab.namespace, tab.pod_name, tab.container
-            )];
+            tab.log_pending.clear();
+            if let Some(terminal) = &tab.terminal {
+                terminal.update(cx, |terminal, cx| terminal.reset(cx));
+            }
+            tab.output_lines.clear();
         }
         cx.notify();
 
@@ -351,7 +462,7 @@ impl IceonApp {
                             .find(|t| t.id == placeholder_id)
                         {
                             tab.status = "error".into();
-                            tab.output_lines.push(format!("Stream error: {err:?}"));
+                            tab.status = format!("error: {err:?}");
                         }
                         cx.notify();
                     });
@@ -373,9 +484,23 @@ impl IceonApp {
                     tab.id = stream_id.clone();
                     tab.status = initial_status;
                     if !initial_output.is_empty() {
-                        for line in initial_output.lines() {
-                            tab.output_lines.push(line.to_owned());
-                        }
+                        feed_tab_output(tab, &initial_output, cx);
+                    }
+                    if mode != PodStreamMode::Logs {
+                        let (cols, rows) = tab
+                            .terminal
+                            .as_ref()
+                            .map(|terminal| terminal.read(cx).size())
+                            .unwrap_or((tab.cols, tab.rows));
+                        let _ = connection.pod_stream_resize(PodResizeRequest {
+                            stream: PodStreamRequest {
+                                cluster_id: cluster_id.clone(),
+                                session_id: session_id.clone(),
+                                stream_id: stream_id.clone(),
+                            },
+                            cols,
+                            rows,
+                        });
                     }
                     tab_present = true;
                 }
@@ -393,6 +518,22 @@ impl IceonApp {
 
             loop {
                 tokio::time::sleep(Duration::from_millis(120)).await;
+                // Do not drain the backend ring while paused: resume reads the retained
+                // bounded backlog, rather than silently discarding every paused chunk.
+                let mut paused = false;
+                let mut present = false;
+                let _ = this.update_in(cx, |this, _, _| {
+                    if let Some(tab) = this.pod_dock_tabs.iter().find(|t| t.id == stream_id) {
+                        present = true;
+                        paused = tab.mode == PodStreamMode::Logs && tab.paused;
+                    }
+                });
+                if !present {
+                    break;
+                }
+                if paused {
+                    continue;
+                }
                 let snapshot = match connection.pod_stream_read(PodStreamRequest {
                     cluster_id: cluster_id.clone(),
                     session_id: session_id.clone(),
@@ -408,19 +549,13 @@ impl IceonApp {
                     if let Some(tab) = this.pod_dock_tabs.iter_mut().find(|t| t.id == stream_id) {
                         still_open = true;
                         tab.status = snapshot.status.to_string();
-                        if !tab.paused && !snapshot.output.is_empty() {
-                            for line in snapshot.output.lines() {
-                                tab.output_lines.push(line.to_owned());
-                            }
-                            if tab.output_lines.len() > 2500 {
-                                let drain_count = tab.output_lines.len() - 2500;
-                                tab.output_lines.drain(0..drain_count);
-                            }
+                        if !snapshot.output.is_empty() {
+                            feed_tab_output(tab, &snapshot.output, cx);
                         }
                         if let Some(err) = snapshot.error {
-                            tab.output_lines.push(format!("[stream error: {err:?}]"));
+                            tab.status = format!("error: {err:?}");
                         } else if snapshot.status == "exited" {
-                            tab.output_lines.push("[stream closed]".into());
+                            tab.status = "exited".into();
                         }
                         cx.notify();
                     }
@@ -454,73 +589,6 @@ impl IceonApp {
         } else {
             self.active_pod_tab = Some(index.min(self.pod_dock_tabs.len() - 1));
         }
-        cx.notify();
-    }
-
-    pub(crate) fn send_pod_terminal_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(active_idx) = self.active_pod_tab else {
-            return;
-        };
-        let Some(tab) = self.pod_dock_tabs.get_mut(active_idx) else {
-            return;
-        };
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let input_text = self.pod_terminal_input.read(cx).value().to_string();
-        if input_text.is_empty() || tab.id.starts_with("opening-") {
-            return;
-        }
-        let stream_id = tab.id.clone();
-        tab.output_lines.push(format!("$ {input_text}"));
-        if tab.command_history.last() != Some(&input_text) {
-            tab.command_history.push(input_text.clone());
-            if tab.command_history.len() > 20 {
-                tab.command_history.remove(0);
-            }
-        }
-        self.pod_terminal_input
-            .update(cx, |state, cx| state.set_value("", window, cx));
-
-        let payload = format!("{input_text}\n");
-        let _ = self.connection.pod_stream_write(PodInputRequest {
-            stream: PodStreamRequest {
-                cluster_id: session.cluster_id,
-                session_id: session.session_id,
-                stream_id,
-            },
-            data: payload,
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn send_pod_terminal_raw(&mut self, raw: &str, label: &str, cx: &mut Context<Self>) {
-        let Some(active_idx) = self.active_pod_tab else {
-            return;
-        };
-        let Some(tab) = self.pod_dock_tabs.get_mut(active_idx) else {
-            return;
-        };
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        if tab.id.starts_with("opening-") {
-            return;
-        }
-        let stream_id = tab.id.clone();
-        if label == "clear" {
-            tab.output_lines.clear();
-        } else {
-            tab.output_lines.push(format!("[sent {label}]"));
-        }
-        let _ = self.connection.pod_stream_write(PodInputRequest {
-            stream: PodStreamRequest {
-                cluster_id: session.cluster_id,
-                session_id: session.session_id,
-                stream_id,
-            },
-            data: raw.to_owned(),
-        });
         cx.notify();
     }
 
@@ -609,493 +677,603 @@ impl IceonApp {
 
     pub(crate) fn render_pod_dock_panel(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active_idx = self.active_pod_tab.unwrap_or(0);
-        let active_tab = self.pod_dock_tabs.get(active_idx).cloned();
-        let forwards = self.port_forwards.clone();
-        let log_filter = self
-            .pod_log_filter_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_lowercase();
-
+        // Each tab owns a persistent standard searchable Select. Identity lookup survives closes.
+        if let Some(tab) = self.pod_dock_tabs.get(active_idx) {
+            if tab.container_select.is_none() {
+                let items = tab
+                    .available_containers
+                    .iter()
+                    .cloned()
+                    .map(ContainerChoice)
+                    .collect::<Vec<_>>();
+                let selected = tab.container.clone();
+                let select = cx.new(|cx| {
+                    SelectState::new(SearchableVec::new(items), None, window, cx).searchable(true)
+                });
+                select.update(cx, |state, cx| {
+                    state.set_selected_value(&selected, window, cx)
+                });
+                cx.subscribe_in(
+                    &select,
+                    window,
+                    |this,
+                     entity,
+                     event: &SelectEvent<SearchableVec<ContainerChoice>>,
+                     window,
+                     cx| {
+                        let SelectEvent::Confirm(Some(value)) = event else {
+                            return;
+                        };
+                        if let Some(index) = this
+                            .pod_dock_tabs
+                            .iter()
+                            .position(|tab| tab.container_select.as_ref() == Some(entity))
+                        {
+                            if this.pod_dock_tabs[index].container != *value {
+                                this.pod_dock_tabs[index].container = value.clone();
+                                this.reopen_pod_tab(index, window, cx);
+                            }
+                        }
+                    },
+                )
+                .detach();
+                self.pod_dock_tabs[active_idx].container_select = Some(select);
+            }
+        }
+        let active = self.pod_dock_tabs.get(active_idx).cloned();
+        let tabs = self
+            .pod_dock_tabs
+            .iter()
+            .map(|tab| Tab::new().label(format!("{} · {}", tab.mode_label(), tab.pod_name)))
+            .collect::<Vec<_>>();
         v_flex()
-            .w_full()
-            .h(px(300.0))
-            .flex_shrink_0()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .size_full()
+            .min_h_0()
+            .min_w_0()
             .overflow_hidden()
+            .bg(cx.theme().background)
             .child(
-                h_flex()
-                    .w_full()
-                    .h(px(36.0))
-                    .px_3()
-                    .justify_between()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().table_head)
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .overflow_x_scrollbar()
-                            .children(self.pod_dock_tabs.iter().enumerate().map(|(idx, tab)| {
-                                let selected = Some(idx) == self.active_pod_tab;
-                                let status_dot = match tab.status.as_str() {
-                                    "running" => "●",
-                                    "opening" => "◐",
-                                    "error" => "✕",
-                                    _ => "○",
-                                };
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "pod-dock-tab-{idx}"
-                                        )))
-                                        .xsmall()
-                                        .ghost()
-                                        .selected(selected)
-                                        .label(format!(
-                                            "{status_dot} [{}] {}:{}",
-                                            tab.mode_label(),
-                                            tab.pod_name,
-                                            tab.container
-                                        ))
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.active_pod_tab = Some(idx);
-                                                cx.notify();
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "pod-dock-close-{idx}"
-                                        )))
-                                        .xsmall()
-                                        .ghost()
-                                        .icon(IconName::Close)
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.close_pod_tab(idx, cx);
-                                            }),
-                                        ),
-                                    )
-                            })),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .children(forwards.into_iter().map(|fwd| {
-                                let fid = fwd.id.clone();
-                                let copy_fid = fwd.id.clone();
-                                let local_addr = format!("localhost:{}", fwd.local_port);
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(Tag::success().small().child(format!(
-                                        "localhost:{} → {}:{}",
-                                        fwd.local_port, fwd.name, fwd.remote_port
-                                    )))
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "copy-fwd-{copy_fid}"
-                                        )))
-                                        .xsmall()
-                                        .ghost()
-                                        .label("Copy")
-                                        .on_click(
-                                            cx.listener(move |_, _, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    local_addr.clone(),
-                                                ));
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!("stop-fwd-{fid}")))
-                                            .xsmall()
-                                            .ghost()
-                                            .icon(IconName::Close)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.stop_pod_forward(fid.clone(), cx);
-                                            })),
-                                    )
-                            }))
-                            .child(
-                                Button::new("collapse-pod-dock-btn")
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::ChevronDown)
-                                    .label("Hide Dock")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.pod_dock_open = false;
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
+                TabBar::new("pod-console-tabs")
+                    .small()
+                    .selected_index(active_idx)
+                    .children(tabs)
+                    .on_click(cx.listener(|this, index: &usize, window, cx| {
+                        this.active_pod_tab = Some(*index);
+                        if let Some(terminal) = this
+                            .pod_dock_tabs
+                            .get(*index)
+                            .filter(|tab| tab.mode != PodStreamMode::Logs)
+                            .and_then(|tab| tab.terminal.as_ref())
+                        {
+                            window.focus(&terminal.focus_handle(cx), cx);
+                        }
+                        cx.notify();
+                    })),
             )
-            .when_some(active_tab.clone(), |el, tab| {
-                let tab_idx = active_idx;
-                let containers = tab.available_containers.clone();
-                let current_container = tab.container.clone();
-                let is_logs = tab.mode == PodStreamMode::Logs;
-                let is_shell = tab.mode == PodStreamMode::Shell;
-                let is_interactive =
-                    matches!(tab.mode, PodStreamMode::Shell | PodStreamMode::Attach);
-                let prev_enabled = tab.previous;
-                let ts_enabled = tab.timestamps;
-                let paused = tab.paused;
-                let tail_lines = tab.tail_lines;
-                let active_shell = tab.shell.clone();
-                let active_cols = tab.cols;
-                let active_rows = tab.rows;
-                let copy_lines = tab.output_lines.join("\n");
-
+            .when_some(active, |el, tab| {
+                let logs = tab.mode == PodStreamMode::Logs;
+                let filter = self.pod_log_filter_input.read(cx).value().to_lowercase();
+                let lines = tab
+                    .output_lines
+                    .iter()
+                    .filter(|line| filter.is_empty() || line.to_lowercase().contains(&filter))
+                    .map(|line| {
+                        crate::preference_runtime::log_line(
+                            line,
+                            &self.preferences_draft.app.timezone,
+                        )
+                    })
+                    .flat_map(|line| {
+                        visual_log_rows(&line, tab.word_wrap.then_some(tab.log_columns))
+                    })
+                    .collect::<Vec<_>>();
+                let terminal_preferences = &self.preferences_draft.terminal;
+                let log_font =
+                    crate::preference_runtime::font_family(&terminal_preferences.font_family, cx);
+                let log_font_size = f32::from(terminal_preferences.font_size);
+                let (log_bg, log_fg) = crate::preference_runtime::terminal_colors(
+                    terminal_preferences.theme,
+                    cx.theme().mode.is_dark(),
+                );
+                if tab.follow {
+                    tab.log_scroll.scroll_to_bottom();
+                }
                 el.child(
                     h_flex()
                         .w_full()
-                        .px_3()
-                        .py_1p5()
+                        .px_2()
+                        .py_1()
                         .gap_2()
-                        .justify_between()
                         .items_center()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
                         .child(
-                            h_flex()
-                                .gap_1()
-                                .items_center()
-                                .child(
-                                    match tab.status.as_str() {
-                                        "running" => Tag::success().small(),
-                                        "opening" => Tag::warning().small(),
-                                        "error" => Tag::danger().small(),
-                                        _ => Tag::secondary().small(),
-                                    }
-                                    .child(tab.status.clone()),
-                                )
-                                .when(containers.len() > 1, |row| {
-                                    row.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("Container:"),
-                                    )
-                                    .children(
-                                        containers.into_iter().map(|cname| {
-                                            let selected = cname == current_container;
-                                            let target_cname = cname.clone();
-                                            Button::new(SharedString::from(format!(
-                                                "dock-container-switch-{tab_idx}-{cname}"
-                                            )))
-                                            .xsmall()
-                                            .ghost()
-                                            .selected(selected)
-                                            .label(cname)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
-                                                {
-                                                    t.container = target_cname.clone();
-                                                }
-                                                this.reopen_pod_tab(tab_idx, window, cx);
-                                            }))
-                                        }),
-                                    )
-                                }),
+                            Button::new("pod-console-target")
+                                .small()
+                                .ghost()
+                                .disabled(true)
+                                .label(format!("{} / {}", tab.namespace, tab.pod_name)),
                         )
-                        .when(is_logs, |bar| {
-                            bar.child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        div().w(px(190.0)).child(
-                                            Input::new(&self.pod_log_filter_input)
-                                                .small()
-                                                .cleanable(true),
-                                        ),
-                                    )
-                                    .child(
-                                        Button::new("pod-log-pause-toggle")
-                                            .xsmall()
-                                            .ghost()
-                                            .selected(!paused)
-                                            .label(if paused { "Paused" } else { "Following" })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
-                                                {
-                                                    t.paused = !t.paused;
-                                                    cx.notify();
-                                                }
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("pod-log-timestamps-toggle")
-                                            .xsmall()
-                                            .ghost()
-                                            .selected(ts_enabled)
-                                            .label("Timestamps")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
-                                                {
-                                                    t.timestamps = !t.timestamps;
-                                                }
-                                                this.reopen_pod_tab(tab_idx, window, cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("pod-log-previous-toggle")
-                                            .xsmall()
-                                            .ghost()
-                                            .selected(prev_enabled)
-                                            .label("Previous")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
-                                                {
-                                                    t.previous = !t.previous;
-                                                }
-                                                this.reopen_pod_tab(tab_idx, window, cx);
-                                            })),
-                                    )
-                                    .children(TAIL_LINE_OPTIONS.iter().copied().map(|lines| {
-                                        Button::new(SharedString::from(format!(
-                                            "pod-log-tail-{lines}"
-                                        )))
-                                        .xsmall()
-                                        .ghost()
-                                        .selected(tail_lines == lines)
-                                        .label(format!("{lines}L"))
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| {
-                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
-                                                {
-                                                    t.tail_lines = lines;
-                                                }
-                                                this.reopen_pod_tab(tab_idx, window, cx);
-                                            }),
-                                        )
-                                    }))
-                                    .child(
-                                        Button::new("pod-log-copy-btn")
-                                            .xsmall()
-                                            .outline()
-                                            .label("Copy")
-                                            .on_click(cx.listener(move |_, _, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    copy_lines.clone(),
-                                                ));
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("pod-log-clear-btn")
-                                            .xsmall()
-                                            .ghost()
-                                            .label("Clear")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(t) = this.pod_dock_tabs.get_mut(tab_idx)
-                                                {
-                                                    t.output_lines.clear();
-                                                    cx.notify();
-                                                }
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("pod-log-reconnect-btn")
-                                            .xsmall()
-                                            .ghost()
-                                            .icon(IconName::Undo2)
-                                            .label("Reconnect")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.reopen_pod_tab(tab_idx, window, cx);
-                                            })),
-                                    ),
+                        .when_some(tab.container_select.clone(), |el, select| {
+                            el.child(Select::new(&select).small().w(px(160.0)))
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(tab.status.clone()),
+                        )
+                        .when(logs, |el| {
+                            el.child(
+                                div().flex_1().min_w_0().child(
+                                    Input::new(&self.pod_log_filter_input)
+                                        .small()
+                                        .cleanable(true),
+                                ),
                             )
                         })
-                        .when(is_interactive, |bar| {
-                            bar.child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .when(is_shell, |sbar| {
-                                        sbar.children(["sh", "bash", "ash"].into_iter().map(
-                                            |sh_label| {
-                                                let sh_path = shell_option_path(sh_label);
-                                                let selected = active_shell == sh_path;
-                                                let target_sh = sh_path.to_owned();
-                                                Button::new(SharedString::from(format!(
-                                                    "pod-shell-opt-{sh_label}"
-                                                )))
-                                                .xsmall()
-                                                .ghost()
-                                                .selected(selected)
-                                                .label(sh_label)
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        if let Some(t) =
-                                                            this.pod_dock_tabs.get_mut(tab_idx)
-                                                        {
-                                                            t.shell = target_sh.clone();
-                                                        }
-                                                        this.reopen_pod_tab(tab_idx, window, cx);
-                                                    },
-                                                ))
-                                            },
-                                        ))
-                                    })
-                                    .children(TERMINAL_SIZE_PRESETS.iter().copied().map(
-                                        |(cols, rows, label)| {
-                                            Button::new(SharedString::from(format!(
-                                                "pod-pty-size-{cols}x{rows}"
-                                            )))
-                                            .xsmall()
-                                            .ghost()
-                                            .selected(active_cols == cols && active_rows == rows)
-                                            .label(label)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.resize_active_pod_terminal(cols, rows, cx);
-                                            }))
-                                        },
-                                    ))
-                                    .child(
-                                        Button::new("pod-term-sigint")
-                                            .xsmall()
-                                            .outline()
-                                            .label("Ctrl+C")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.send_pod_terminal_raw("\x03", "Ctrl+C", cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("pod-term-eof")
-                                            .xsmall()
-                                            .outline()
-                                            .label("Ctrl+D")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.send_pod_terminal_raw("\x04", "Ctrl+D", cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("pod-term-clear")
-                                            .xsmall()
-                                            .ghost()
-                                            .label("Clear")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.send_pod_terminal_raw("\x0c", "clear", cx);
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("pod-term-reconnect")
-                                            .xsmall()
-                                            .ghost()
-                                            .icon(IconName::Undo2)
-                                            .label("Reconnect")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.reopen_pod_tab(tab_idx, window, cx);
-                                            })),
-                                    ),
+                        .child(
+                            Button::new("pod-console-copy")
+                                .small()
+                                .ghost()
+                                .icon(IconName::Copy)
+                                .tooltip("Copy console output")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if logs {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            this.pod_dock_tabs
+                                                .get(active_idx)
+                                                .map(|tab| tab.output_lines.join("\n"))
+                                                .unwrap_or_default(),
+                                        ));
+                                    } else if let Some(terminal) = this
+                                        .pod_dock_tabs
+                                        .get(active_idx)
+                                        .and_then(|tab| tab.terminal.clone())
+                                    {
+                                        terminal
+                                            .update(cx, |terminal, cx| terminal.copy_snapshot(cx));
+                                    }
+                                })),
+                        )
+                        .when(logs, |el| {
+                            el.child(
+                                Button::new("pod-console-follow")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::ChevronDown)
+                                    .tooltip("Toggle following output")
+                                    .selected(tab.follow)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
+                                            tab.follow = !tab.follow;
+                                        }
+                                        cx.notify();
+                                    })),
                             )
+                        })
+                        .child(
+                            Button::new("pod-console-reconnect")
+                                .small()
+                                .ghost()
+                                .icon(IconName::Undo2)
+                                .tooltip("Reconnect stream")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.reopen_pod_tab(active_idx, window, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("pod-console-close")
+                                .small()
+                                .ghost()
+                                .icon(IconName::Close)
+                                .tooltip("Close console")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.close_pod_tab(active_idx, cx)
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .bg(rgb(log_bg))
+                        .overflow_hidden()
+                        .when(logs, |el| {
+                            el.on_scroll_wheel(cx.listener(move |this, _: &ScrollEvent, _, cx| {
+                                if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
+                                    tab.follow = false;
+                                }
+                                cx.notify();
+                            }))
+                        })
+                        .when(logs, |el| {
+                            el.child(
+                                uniform_list(
+                                    "pod-log-output",
+                                    lines.len(),
+                                    cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
+                                        range
+                                            .map(|index| {
+                                                div()
+                                                    .h(px(log_font_size * 1.5))
+                                                    .px_2()
+                                                    .font_family(log_font.clone())
+                                                    .text_size(px(log_font_size))
+                                                    .text_color(rgb(log_fg))
+                                                    .line_height(px(log_font_size * 1.5))
+                                                    .whitespace_nowrap()
+                                                    .child(gpui_kit::base::SelectableText::new(
+                                                        ("pod-log-row", index),
+                                                        lines[index].clone(),
+                                                    ))
+                                            })
+                                            .collect::<Vec<_>>()
+                                    }),
+                                )
+                                .track_scroll(&tab.log_scroll)
+                                .size_full(),
+                            )
+                        })
+                        .when(logs, |el| {
+                            let weak = cx.entity().downgrade();
+                            let columns = tab.log_columns;
+                            el.child(
+                                canvas(
+                                    move |bounds, window, _| {
+                                        let measured = ((f32::from(bounds.size.width) - 16.0)
+                                            / (log_font_size * 0.65))
+                                            .floor()
+                                            .max(1.0)
+                                            as usize;
+                                        if bounds.size.width > px(0.0) && measured != columns {
+                                            window.on_next_frame(move |_, cx| {
+                                                let _ = weak.update(cx, |this, cx| {
+                                                    if let Some(tab) =
+                                                        this.pod_dock_tabs.get_mut(active_idx)
+                                                    {
+                                                        tab.log_columns = measured;
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            });
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                        })
+                        .when(!logs, |el| {
+                            el.when_some(tab.terminal.clone(), |el, terminal| el.child(terminal))
                         }),
                 )
-            })
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .p_3()
-                    .gap_0p5()
-                    .overflow_y_scrollbar()
-                    .children(
-                        active_tab
-                            .as_ref()
-                            .map(|t| {
-                                t.output_lines
-                                    .iter()
-                                    .filter(|line| {
-                                        t.mode != PodStreamMode::Logs
-                                            || log_filter.is_empty()
-                                            || line.to_lowercase().contains(&log_filter)
-                                    })
-                                    .cloned()
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|line| {
-                                let is_err = line.contains("ERROR")
-                                    || line.contains("error")
-                                    || line.starts_with("[stream error");
-                                div()
-                                    .text_xs()
-                                    .text_color(if is_err {
-                                        cx.theme().danger
-                                    } else {
-                                        cx.theme().foreground
-                                    })
-                                    .child(line)
-                            }),
-                    ),
-            )
-            .when_some(
-                active_tab
-                    .filter(|t| matches!(t.mode, PodStreamMode::Shell | PodStreamMode::Attach)),
-                |el, tab| {
-                    let recent_cmds: Vec<String> =
-                        tab.command_history.iter().rev().take(4).cloned().collect();
+                .when(logs, |el| {
                     el.child(
                         h_flex()
-                            .w_full()
-                            .px_3()
-                            .py_2()
-                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .gap_3()
                             .items_center()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().secondary)
                             .child(
-                                Tag::secondary()
+                                gpui_kit::component::checkbox::Checkbox::new("pod-log-timestamps")
+                                    .label("Timestamps")
+                                    .checked(tab.timestamps)
+                                    .on_click(cx.listener(
+                                        move |this, checked: &bool, window, cx| {
+                                            if let Some(tab) =
+                                                this.pod_dock_tabs.get_mut(active_idx)
+                                            {
+                                                tab.timestamps = *checked;
+                                            }
+                                            this.reopen_pod_tab(active_idx, window, cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                gpui_kit::component::checkbox::Checkbox::new("pod-log-previous")
+                                    .label("Previous")
+                                    .checked(tab.previous)
+                                    .on_click(cx.listener(
+                                        move |this, checked: &bool, window, cx| {
+                                            if let Some(tab) =
+                                                this.pod_dock_tabs.get_mut(active_idx)
+                                            {
+                                                tab.previous = *checked;
+                                            }
+                                            this.reopen_pod_tab(active_idx, window, cx);
+                                        },
+                                    )),
+                            )
+                            .child(
+                                gpui_kit::component::checkbox::Checkbox::new("pod-log-wrap")
+                                    .label("Word wrap")
+                                    .checked(tab.word_wrap)
+                                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                        if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
+                                            tab.word_wrap = *checked;
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("pod-log-pause")
                                     .small()
-                                    .child(format!("{}$", tab.container)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(Input::new(&self.pod_terminal_input).small()),
-                            )
-                            .children(recent_cmds.into_iter().enumerate().map(|(i, cmd)| {
-                                let run_cmd = cmd.clone();
-                                Button::new(SharedString::from(format!("pod-hist-cmd-{i}")))
-                                    .xsmall()
                                     .ghost()
-                                    .label(cmd)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.pod_terminal_input.update(cx, |state, cx| {
-                                            state.set_value(run_cmd.clone(), window, cx);
-                                        });
-                                        this.send_pod_terminal_input(window, cx);
-                                    }))
-                            }))
+                                    .label(if tab.paused { "Resume" } else { "Pause" })
+                                    .tooltip("Pause reading; resume retained backend logs")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
+                                            tab.paused = !tab.paused;
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
                             .child(
-                                Button::new("pod-terminal-send-btn")
-                                    .xsmall()
-                                    .primary()
-                                    .label("Send")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.send_pod_terminal_input(window, cx);
+                                Button::new("pod-log-bottom")
+                                    .small()
+                                    .ghost()
+                                    .label("To bottom")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
+                                            tab.follow = true;
+                                            tab.log_scroll.scroll_to_bottom();
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("pod-log-download")
+                                    .small()
+                                    .ghost()
+                                    .label("Download")
+                                    .tooltip("Save retained logs (up to 2500 lines / 1 MiB)")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        let Some(tab) = this.pod_dock_tabs.get(active_idx) else {
+                                            return;
+                                        };
+                                        let text = tab.output_lines.join("\n");
+                                        let name =
+                                            format!("{}-{}.log", tab.pod_name, tab.container);
+                                        let directory = std::env::var_os("HOME")
+                                            .map(std::path::PathBuf::from)
+                                            .unwrap_or_else(|| std::path::PathBuf::from("."));
+                                        let prompt =
+                                            cx.prompt_for_new_path(&directory, Some(&name));
+                                        cx.spawn_in(window, async move |this, cx| {
+                                            if let Ok(Ok(Some(path))) = prompt.await {
+                                                let result = tokio::fs::write(path, text).await;
+                                                if let Err(error) = result {
+                                                    let _ = this.update_in(cx, |this, _, cx| {
+                                                        this.cluster_error = Some(format!(
+                                                            "Could not save logs: {error}"
+                                                        ));
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            }
+                                        })
+                                        .detach();
                                     })),
                             ),
                     )
-                },
-            )
+                })
+            })
+            .when(!self.port_forwards.is_empty(), |el| {
+                el.child(h_flex().px_2().gap_2().children(
+                    self.port_forwards.clone().into_iter().map(|forward| {
+                        let id = forward.id.clone();
+                        let address = format!("localhost:{}", forward.local_port);
+                        h_flex()
+                            .gap_1()
+                            .child(Tag::success().small().child(format!(
+                                "{} → {}:{}",
+                                address, forward.name, forward.remote_port
+                            )))
+                            .child(
+                                Button::new(SharedString::from(format!("copy-forward-{id}")))
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Copy)
+                                    .tooltip("Copy local address")
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            address.clone(),
+                                        ))
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("stop-forward-{id}")))
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::Close)
+                                    .tooltip("Stop port forward")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.stop_pod_forward(id.clone(), cx)
+                                    })),
+                            )
+                    }),
+                ))
+            })
+    }
+}
+
+const MAX_LOG_LINES: usize = 2500;
+const MAX_LOG_BYTES: usize = 1024 * 1024;
+const MAX_PARTIAL_BYTES: usize = 256 * 1024;
+
+/// Retain a UTF-8-safe suffix, including for a newline-free producer.
+fn bounded_suffix(text: &str, limit: usize) -> &str {
+    let mut start = text.len().saturating_sub(limit);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+/// Snapshots are chunks, not lines. Pending is mirrored in the final visible row;
+/// remove that mirror before extending it. Process one segment at a time so a
+/// single large read cannot temporarily construct an unbounded pending string.
+fn append_log_chunk(lines: &mut Vec<String>, pending: &mut String, chunk: &str) {
+    if chunk.is_empty() {
+        return;
+    }
+    if !pending.is_empty() {
+        lines.pop();
+    }
+    let mut bytes: usize = lines.iter().map(|line| line.len() + 1).sum();
+    for segment in chunk.split_inclusive('\n') {
+        let complete = segment.ends_with('\n');
+        let content = segment.strip_suffix('\n').unwrap_or(segment);
+        if content.len() >= MAX_PARTIAL_BYTES {
+            pending.clear();
+            pending.push_str(bounded_suffix(content, MAX_PARTIAL_BYTES));
+        } else {
+            // Bound before appending, rather than allocating arbitrary producer output.
+            let keep = MAX_PARTIAL_BYTES - content.len();
+            let suffix = bounded_suffix(pending, keep).to_owned();
+            *pending = suffix;
+            pending.push_str(content);
+        }
+        if complete {
+            if pending.ends_with('\r') {
+                pending.pop();
+            }
+            let row = std::mem::take(pending);
+            bytes += row.len() + 1;
+            lines.push(row);
+            trim_log_rows(lines, &mut bytes);
+        }
+    }
+    if !pending.is_empty() {
+        bytes += pending.len() + 1;
+        lines.push(pending.clone());
+        trim_log_rows(lines, &mut bytes);
+    }
+}
+
+fn trim_log_rows(lines: &mut Vec<String>, bytes: &mut usize) {
+    let mut remove = 0;
+    while lines.len() - remove > MAX_LOG_LINES || *bytes > MAX_LOG_BYTES {
+        *bytes = bytes.saturating_sub(lines[remove].len() + 1);
+        remove += 1;
+    }
+    if remove > 0 {
+        lines.drain(..remove);
+    }
+}
+
+/// Virtualize fixed-height visual rows instead of asking uniform_list to render
+/// variable-height children. Only the presentation is wrapped; copy/export keep
+/// the original retained lines. Wide Unicode and tabs consume display cells.
+fn visual_log_rows(line: &str, columns: Option<usize>) -> Vec<String> {
+    let Some(columns) = columns else {
+        return vec![line.to_owned()];
+    };
+    let columns = columns.max(1);
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut width = 0;
+    for ch in line.chars() {
+        let cells = match ch {
+            '\t' => 4 - width % 4,
+            '\u{0300}'..='\u{036f}' | '\u{200b}'..='\u{200f}' | '\u{fe00}'..='\u{fe0f}' => 0,
+            '\u{1100}'..='\u{115f}'
+            | '\u{2e80}'..='\u{a4cf}'
+            | '\u{ac00}'..='\u{d7af}'
+            | '\u{f900}'..='\u{faff}'
+            | '\u{ff01}'..='\u{ff60}'
+            | '\u{1f300}'..='\u{1faff}' => 2,
+            _ => 1,
+        };
+        if width + cells > columns && !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+            width = 0;
+        }
+        if ch == '\t' {
+            row.push_str(&" ".repeat(cells));
+        } else {
+            row.push(ch);
+        }
+        width += cells;
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+fn feed_tab_output(tab: &mut PodDockTab, chunk: &str, cx: &mut Context<IceonApp>) {
+    if tab.mode == PodStreamMode::Logs {
+        append_log_chunk(&mut tab.output_lines, &mut tab.log_pending, chunk);
+    } else if let Some(terminal) = &tab.terminal {
+        terminal.update(cx, |terminal, cx| terminal.feed(chunk, cx));
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::append_log_chunk;
+    #[test]
+    fn split_lines_and_crlf_are_preserved() {
+        let (mut rows, mut pending) = (Vec::new(), String::new());
+        for chunk in ["hel", "lo\r", "\nworld", "\n\nlast"] {
+            append_log_chunk(&mut rows, &mut pending, chunk);
+        }
+        assert_eq!(rows, ["hello", "world", "", "last"]);
+        assert_eq!(pending, "last");
+    }
+    #[test]
+    fn giant_partial_is_utf8_safe_and_bounded() {
+        let (mut rows, mut pending) = (Vec::new(), String::new());
+        append_log_chunk(&mut rows, &mut pending, &"界".repeat(200_000));
+        assert!(pending.len() <= super::MAX_PARTIAL_BYTES);
+        assert_eq!(rows.last(), Some(&pending));
+        append_log_chunk(&mut rows, &mut pending, " end\r");
+        append_log_chunk(&mut rows, &mut pending, "\nnext");
+        assert!(rows[0].ends_with(" end"));
+        assert_eq!(pending, "next");
+    }
+    #[test]
+    fn total_retained_bytes_are_bounded() {
+        let (mut rows, mut pending) = (Vec::new(), String::new());
+        for _ in 0..30 {
+            append_log_chunk(
+                &mut rows,
+                &mut pending,
+                &format!("{}\n", "x".repeat(100_000)),
+            );
+        }
+        assert!(rows.iter().map(|line| line.len() + 1).sum::<usize>() <= super::MAX_LOG_BYTES);
+        assert!(rows.len() <= super::MAX_LOG_LINES);
+    }
+    #[test]
+    fn empty_reads_do_not_remove_partial_rows() {
+        let (mut rows, mut pending) = (Vec::new(), String::new());
+        append_log_chunk(&mut rows, &mut pending, "hello");
+        append_log_chunk(&mut rows, &mut pending, "");
+        assert_eq!(rows, ["hello"]);
+    }
+    #[test]
+    fn visual_wrap_retains_content_and_unicode_boundaries() {
+        assert_eq!(super::visual_log_rows("abcdef", Some(3)), ["abc", "def"]);
+        assert_eq!(super::visual_log_rows("界界a", Some(4)), ["界界", "a"]);
+        assert_eq!(super::visual_log_rows("", Some(4)), [""]);
+        assert_eq!(super::visual_log_rows("abcdef", None), ["abcdef"]);
+    }
+    #[test]
+    fn retention_is_bounded_including_partial_row() {
+        let (mut rows, mut pending) = (Vec::new(), String::new());
+        append_log_chunk(&mut rows, &mut pending, &"line\n".repeat(3000));
+        append_log_chunk(&mut rows, &mut pending, "partial");
+        assert_eq!(rows.len(), 2500);
+        append_log_chunk(&mut rows, &mut pending, " end\n");
+        assert_eq!(rows.len(), 2500);
+        assert_eq!(rows.last().unwrap(), "partial end");
     }
 }

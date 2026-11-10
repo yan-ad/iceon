@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::navigation::{cell_value, format_age, resource_view_by_kind};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, ColorName, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, Input},
@@ -37,6 +37,27 @@ impl SelectItem for NamespaceChoice {
 }
 
 pub(crate) type NamespaceSelectState = SelectState<SearchableVec<NamespaceChoice>>;
+
+pub(crate) fn create_status_select(
+    window: &mut Window,
+    cx: &mut Context<IceonApp>,
+) -> Entity<NamespaceSelectState> {
+    let select = cx.new(|cx| {
+        SelectState::new(SearchableVec::new(Vec::<NamespaceChoice>::new()), None, window, cx)
+    });
+    cx.subscribe_in(
+        &select,
+        window,
+        |this, _, event: &SelectEvent<SearchableVec<NamespaceChoice>>, window, cx| {
+            let SelectEvent::Confirm(Some(status)) = event else { return; };
+            this.selected_status_filter = (status != "All").then(|| status.clone());
+            this.current_continue_token = None;
+            this.continue_token_history.clear();
+            this.reload_active_section(window, cx);
+        },
+    ).detach();
+    select
+}
 
 pub(crate) fn create_namespace_select(
     window: &mut Window,
@@ -113,6 +134,27 @@ pub struct ColumnDef {
     pub header: &'static str,
     pub key: &'static str,
     pub width: f32,
+}
+
+// Shared by the resource table header and rows; fits four compact icon actions.
+const RESOURCE_ACTIONS_WIDTH: f32 = 124.0;
+const RESOURCE_NAME_WIDTH: f32 = 260.0;
+const RESOURCE_NAMESPACE_WIDTH: f32 = 144.0;
+const RESOURCE_AGE_WIDTH: f32 = 76.0;
+const RESOURCE_STATUS_WIDTH: f32 = 148.0;
+
+fn resource_table_min_width(kind: ResourceKind) -> f32 {
+    RESOURCE_NAME_WIDTH + RESOURCE_AGE_WIDTH + RESOURCE_STATUS_WIDTH + RESOURCE_ACTIONS_WIDTH
+        + if namespaced_kind(kind) { RESOURCE_NAMESPACE_WIDTH } else { 0.0 }
+        + columns_for_kind(kind).iter().map(|column| column.width).sum::<f32>()
+}
+
+// Shared cell geometry: padding is inside each column; only internal vertical rules.
+fn table_cell(width: f32, flexible: bool, separator: bool, border: Hsla) -> Div {
+    h_flex().h_full().items_center().px_3().flex_shrink_0().overflow_hidden()
+        .when(flexible, |cell| cell.flex_1().min_w(px(width)))
+        .when(!flexible, |cell| cell.w(px(width)))
+        .when(separator, |cell| cell.border_r_1().border_color(border))
 }
 
 pub fn section_to_resource_kind(section: &str) -> Option<ResourceKind> {
@@ -908,6 +950,8 @@ impl IceonApp {
                 sync_id,
             });
         }
+
+
     }
 
     pub(crate) fn reload_active_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1637,14 +1681,28 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let sidebar_open = !self.sidebar_collapsed && !self.cluster_sidebar_collapsed;
+        let console_open = self.pod_dock_open
+            && (!self.pod_dock_tabs.is_empty() || !self.port_forwards.is_empty());
+        let inspector_open = self.inspector_open && self.inspector.target.is_some();
+        let area = self.workspace_dock.as_mut().map(|dock| {
+            dock.sync(sidebar_open, console_open, inspector_open, window, cx);
+            dock.dock_area.clone()
+        });
+        div().size_full().min_w_0().min_h_0().children(area)
+    }
+
+    pub(crate) fn render_cluster_main(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let section = self.active_cluster_section.clone();
         let active_kind = section_to_resource_kind(&section);
-        let has_inspector = self.inspector.target.is_some();
-        let has_pod_dock = self.pod_dock_open
-            && (!self.pod_dock_tabs.is_empty() || !self.port_forwards.is_empty());
-
         v_flex()
             .size_full()
+            .min_w_0()
+            .min_h_0()
             .overflow_hidden()
             .child(self.render_cluster_toolbar(&section, active_kind, window, cx))
             .when_some(self.cluster_error.clone(), |el, err| {
@@ -1653,35 +1711,20 @@ impl IceonApp {
                         .w_full()
                         .px_4()
                         .py_2()
-                        .bg(cx.theme().secondary)
                         .text_xs()
                         .text_color(cx.theme().danger)
                         .child(err),
                 )
             })
             .child(
-                h_flex()
+                v_flex()
                     .flex_1()
                     .min_h_0()
+                    .min_w_0()
                     .w_full()
-                    .overflow_hidden()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_hidden()
-                            .child(v_flex().flex_1().min_h_0().w_full().child(
-                                self.render_cluster_section_body(&section, active_kind, window, cx),
-                            ))
-                            .when(has_pod_dock, |el| {
-                                el.child(self.render_pod_dock_panel(window, cx))
-                            }),
-                    )
-                    .when(has_inspector, |el| {
-                        el.child(self.render_inspector_drawer(window, cx))
-                    }),
+                    .child(self.render_cluster_section_body(&section, active_kind, window, cx)),
             )
+            .into_any_element()
     }
 
     fn render_cluster_toolbar(
@@ -1721,6 +1764,30 @@ impl IceonApp {
             });
         }
 
+        let statuses = active_kind
+            .and_then(|kind| resource_view_by_kind(kind).map(|view| view.statuses))
+            .unwrap_or(&[]);
+        let show_status_select = !statuses.is_empty();
+        let status_options: Vec<NamespaceChoice> = std::iter::once("All")
+            .chain(statuses.iter().copied())
+            .map(|name| NamespaceChoice { name: name.into() })
+            .collect();
+        if self.status_select_items != status_options {
+            self.status_select.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(status_options.clone()), window, cx);
+            });
+            self.status_select_items = status_options.clone();
+        }
+        let status_value = self
+            .selected_status_filter
+            .clone()
+            .unwrap_or_else(|| "All".into());
+        if self.status_select.read(cx).selected_value() != Some(&status_value) {
+            self.status_select.update(cx, |state, cx| {
+                state.set_selected_value(&status_value, window, cx);
+            });
+        }
+
         v_flex()
             .w_full()
             .px_4()
@@ -1728,14 +1795,18 @@ impl IceonApp {
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().table_head)
             .child(
                 h_flex()
                     .w_full()
                     .justify_between()
                     .items_center()
+                    .flex_wrap()
+                    .gap_2()
                     .child(
-                        h_flex()
+                        v_flex()
+                            .min_w_0()
+                            .gap_0p5()
+                            .child(h_flex()
                             .gap_2()
                             .items_center()
                             .child(
@@ -1760,18 +1831,37 @@ impl IceonApp {
                             })
                             .when(self.active_pod_sync_id.is_some(), |el| {
                                 el.child(Tag::success().small().child("LIVE WATCH"))
-                            }),
+                            }),)
+                            .when_some(active_kind, |el, kind| {
+                                let count = self.filtered_resource_items(kind, cx).len();
+                                el.child(div().text_size(px(11.0)).text_color(cx.theme().muted_foreground)
+                                    .child(format!("Showing {count} {kind:?} items (Page {})", self.continue_token_history.len() + 1)))
+                            })
                     )
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
+                            .flex_wrap()
                             .when(active_kind.is_some(), |el| {
                                 el.child(
                                     div().w(px(210.0)).child(
                                         Input::new(&self.resource_filter_input)
                                             .small()
                                             .cleanable(true),
+                                    ),
+                                )
+                            })
+                            .when(show_status_select, |el| {
+                                el.child(
+                                    div().w(px(150.0)).child(
+                                        Select::new(&self.status_select)
+                                            .id("status-select")
+                                            .small()
+                                            .w_full()
+                                            .placeholder("Status")
+                                            .search_placeholder("Filter statuses…")
+                                            .menu_width(px(190.0)),
                                     ),
                                 )
                             })
@@ -1817,12 +1907,14 @@ impl IceonApp {
                                 Button::new("reload-cluster-section-btn")
                                     .xsmall()
                                     .ghost()
-                                    .icon(IconName::Undo2)
-                                    .label("Refresh")
+                                    .icon(IconName::RefreshCw)
+                                    .tooltip("Refresh")
+                                    .accessibility_label("Refresh")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.reload_active_section(window, cx);
                                     })),
-                            ),
+                            )
+                            .when_some(active_kind, |el, kind| el.child(self.render_resource_pagination(kind, cx))),
                     ),
             )
     }
@@ -2170,9 +2262,13 @@ impl IceonApp {
                             )
                             .child(
                                 Button::new(SharedString::from(format!("ov-ev-insp-{idx}")))
+                                    .ml_auto()
+                                    .flex_shrink_0()
                                     .xsmall()
                                     .ghost()
-                                    .label("Inspect")
+                                    .icon(IconName::Eye)
+                                    .tooltip("Inspect cluster event")
+                                    .accessibility_label("Inspect cluster event")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_resource_inspector(ev_ref.clone(), window, cx);
                                     })),
@@ -2225,6 +2321,8 @@ impl IceonApp {
                     .bg(cx.theme().secondary)
                     .child(
                         h_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_2()
                             .items_center()
                             .child(
@@ -2238,13 +2336,18 @@ impl IceonApp {
                     )
                     .child(
                         h_flex()
+                            .ml_auto()
+                            .flex_shrink_0()
+                            .justify_end()
                             .gap_1()
                             .items_center()
                             .child(
                                 Button::new(SharedString::from(format!("pf-copy-{idx}")))
                                     .xsmall()
-                                    .outline()
-                                    .label("Copy")
+                                    .ghost()
+                                    .icon(IconName::Copy)
+                                    .tooltip("Copy local forwarding address")
+                                    .accessibility_label("Copy local forwarding address")
                                     .on_click(cx.listener(move |_, _, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             copy_addr.clone(),
@@ -2254,8 +2357,10 @@ impl IceonApp {
                             .child(
                                 Button::new(SharedString::from(format!("pf-stop-{idx}")))
                                     .xsmall()
-                                    .danger()
-                                    .label("Stop")
+                                    .ghost()
+                                    .icon(IconName::Square)
+                                    .tooltip("Stop port forwarding")
+                                    .accessibility_label("Stop port forwarding")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.stop_pod_forward(fid.clone(), cx);
                                     })),
@@ -2264,11 +2369,7 @@ impl IceonApp {
             }))
     }
 
-    fn render_resource_table_body(
-        &mut self,
-        kind: ResourceKind,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn filtered_resource_items(&self, kind: ResourceKind, cx: &Context<Self>) -> Vec<ResourceItem> {
         let items: Vec<ResourceItem> = self
             .resource_page
             .as_ref()
@@ -2301,28 +2402,19 @@ impl IceonApp {
                 })
                 .collect()
         };
-        let next_token = self
-            .resource_page
-            .as_ref()
-            .filter(|p| p.kind == kind)
-            .and_then(|p| p.continue_token.clone());
-        let has_prev = !self.continue_token_history.is_empty();
-        let page_num = self.continue_token_history.len() + 1;
+        items.into_iter().filter(|item| self.selected_status_filter.as_ref().is_none_or(|status| item.status.eq_ignore_ascii_case(status))).collect()
+    }
 
+    fn render_resource_table_body(
+        &mut self,
+        kind: ResourceKind,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let items = self.filtered_resource_items(kind, cx);
+        let query = self.resource_filter_input.read(cx).value().trim().to_lowercase();
         let cols = columns_for_kind(kind);
         let show_ns = namespaced_kind(kind);
-        let status_options: &'static [&'static str] = resource_view_by_kind(kind)
-            .map(|v| v.statuses)
-            .unwrap_or(&[]);
         let active_status = self.selected_status_filter.clone();
-        let items: Vec<ResourceItem> = if let Some(ref st) = active_status {
-            items
-                .into_iter()
-                .filter(|item| item.status.eq_ignore_ascii_case(st))
-                .collect()
-        } else {
-            items
-        };
         let item_count = items.len();
         let scroll_handle =
             self.resource_scroll
@@ -2346,196 +2438,56 @@ impl IceonApp {
             .flex_1()
             .h_full()
             .min_h_0()
+            .min_w_0()
             .w_full()
-            .p_4()
-            .gap_2()
             .overflow_hidden()
-            // Table Pagination, Status Filter Pills & Count Header
+            // One horizontal viewport owns the header and rows so they scroll together.
             .child(
-                h_flex()
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
                     .w_full()
-                    .justify_between()
-                    .items_center()
-                    .gap_2()
+                    .overflow_x_scrollbar()
                     .child(
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .flex_wrap()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!(
-                                        "Showing {} {:?} items (Page {page_num})",
-                                        item_count, kind
-                                    )),
-                            )
-                            .when(!status_options.is_empty(), |row| {
-                                row.child(
-                                    Button::new("tbl-status-all")
-                                        .xsmall()
-                                        .ghost()
-                                        .selected(active_status.is_none())
-                                        .label("All")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.selected_status_filter = None;
-                                            this.current_continue_token = None;
-                                            this.continue_token_history.clear();
-                                            this.load_resource_table(kind, window, cx);
-                                        })),
-                                )
-                                .children(
-                                    status_options.iter().copied().map(|st| {
-                                        let is_sel = active_status.as_deref() == Some(st);
-                                        let st_str = st.to_owned();
-                                        Button::new(SharedString::from(format!("tbl-st-{st}")))
-                                            .xsmall()
-                                            .ghost()
-                                            .selected(is_sel)
-                                            .label(st)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.selected_status_filter = if is_sel {
-                                                    None
-                                                } else {
-                                                    Some(st_str.clone())
-                                                };
-                                                this.current_continue_token = None;
-                                                this.continue_token_history.clear();
-                                                this.load_resource_table(kind, window, cx);
-                                            }))
-                                    }),
-                                )
-                            }),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .when(has_prev, |row| {
-                                row.child(
-                                    Button::new("tbl-first-page-btn")
-                                        .xsmall()
-                                        .outline()
-                                        .label("First Page")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.continue_token_history.clear();
-                                            this.current_continue_token = None;
-                                            this.load_resource_table(kind, window, cx);
-                                        })),
-                                )
-                                .child(
-                                    Button::new("tbl-prev-page-btn")
-                                        .xsmall()
-                                        .outline()
-                                        .label("Previous Page")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.current_continue_token =
-                                                this.continue_token_history.pop().flatten();
-                                            this.load_resource_table(kind, window, cx);
-                                        })),
-                                )
-                            })
-                            .when_some(next_token, |row, token| {
-                                row.child(
-                                    Button::new("tbl-next-page-btn")
-                                        .xsmall()
-                                        .primary()
-                                        .label("Next Page")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            let prev = this.current_continue_token.take();
-                                            this.continue_token_history.push(prev);
-                                            this.current_continue_token = Some(token.clone());
-                                            this.load_resource_table(kind, window, cx);
-                                        })),
-                                )
-                            }),
-                    ),
-            )
-            // Table Column Header
-            .child(
-                h_flex()
-                    .w_full()
-                    .px_3()
-                    .py_2()
-                    .gap_2()
-                    .rounded(px(6.0))
-                    .bg(cx.theme().table_head)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .w(px(220.0))
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Name"),
-                    )
-                    .when(show_ns, |el| {
-                        el.child(
-                            div()
-                                .w(px(120.0))
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Namespace"),
-                        )
-                    })
-                    .children(cols.iter().map(|c| {
-                        div()
-                            .w(px(c.width))
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(c.header)
-                    }))
-                    .child(
-                        div()
-                            .w(px(76.0))
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Age"),
-                    )
-                    .child(
-                        div()
-                            .w(px(124.0))
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Status"),
-                    )
-                    .child(
-                        div()
+                        v_flex()
+                            .min_w(px(resource_table_min_width(kind)))
+                            .w_full()
                             .flex_1()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Actions"),
-                    ),
-            )
-            // Virtualized Table Rows (strictly bounded viewport height; only builds visible rows)
-            .child(
-                v_virtual_list(
-                    entity,
-                    SharedString::from(format!("virtual-resource-table-{kind:?}")),
-                    item_sizes,
-                    move |this, visible_range, _window, cx| {
-                        visible_range
-                            .filter_map(|idx| {
-                                let item = shared_items.get(idx)?.clone();
-                                Some(
-                                    div()
-                                        .w_full()
-                                        .h(px(42.0))
-                                        .pb(px(4.0))
-                                        .child(this.render_resource_row(
-                                            kind, item, idx, show_ns, cols, cx,
-                                        ))
-                                        .into_any_element(),
+                            .min_h_0()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .h(px(40.0))
+                                    .items_center()
+                                    .flex_shrink_0()
+                                    .child(table_cell(RESOURCE_NAME_WIDTH, true, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Name"))
+                                    .when(show_ns, |el| el.child(table_cell(RESOURCE_NAMESPACE_WIDTH, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Namespace")))
+                                    .children(cols.iter().map(|c| table_cell(c.width, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child(c.header)))
+                                    .child(table_cell(RESOURCE_AGE_WIDTH, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Age"))
+                                    .child(table_cell(RESOURCE_STATUS_WIDTH, false, true, cx.theme().border).text_xs().font_weight(FontWeight::SEMIBOLD).child("Status"))
+                                    .child(table_cell(RESOURCE_ACTIONS_WIDTH, false, false, cx.theme().border).justify_end().text_xs().font_weight(FontWeight::SEMIBOLD).child("Actions")),
+                            )
+                            .child(
+                                v_virtual_list(
+                                    entity,
+                                    SharedString::from(format!("virtual-resource-table-{kind:?}")),
+                                    item_sizes,
+                                    move |this, visible_range, _window, cx| {
+                                        visible_range
+                                            .filter_map(|idx| {
+                                                let item = shared_items.get(idx)?.clone();
+                                                Some(div().w_full().h(px(42.0)).child(this.render_resource_row(kind, item, idx, show_ns, cols, cx)).into_any_element())
+                                            })
+                                            .collect()
+                                    },
                                 )
-                            })
-                            .collect()
-                    },
-                )
-                .track_scroll(&scroll_handle)
-                .flex_1()
-                .min_h_0()
-                .w_full(),
+                                .track_scroll(&scroll_handle)
+                                .flex_1()
+                                .min_h_0()
+                                .w_full(),
+                            ),
+                    ),
             )
     }
 
@@ -2561,18 +2513,10 @@ impl IceonApp {
 
         h_flex()
             .w_full()
-            .h(px(38.0))
-            .px_3()
-            .gap_2()
+            .h(px(42.0))
             .items_center()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .hover(|s| s.bg(cx.theme().table_hover))
             .child(
-                div()
-                    .w(px(220.0))
+                table_cell(RESOURCE_NAME_WIDTH, true, true, cx.theme().border)
                     .text_xs()
                     .font_weight(FontWeight::MEDIUM)
                     .truncate()
@@ -2580,8 +2524,7 @@ impl IceonApp {
             )
             .when(show_ns, |el| {
                 el.child(
-                    div()
-                        .w(px(120.0))
+                    table_cell(RESOURCE_NAMESPACE_WIDTH, false, true, cx.theme().border)
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .truncate()
@@ -2596,8 +2539,7 @@ impl IceonApp {
                         .and_then(|v| v.parse::<usize>().ok())
                         .unwrap_or(0)
                         .saturating_sub(1);
-                    h_flex()
-                        .w(px(c.width))
+                    table_cell(c.width, false, true, cx.theme().border)
                         .gap_1()
                         .items_center()
                         .overflow_hidden()
@@ -2616,8 +2558,7 @@ impl IceonApp {
                         })
                         .into_any_element()
                 } else {
-                    div()
-                        .w(px(c.width))
+                    table_cell(c.width, false, true, cx.theme().border)
                         .text_xs()
                         .truncate()
                         .child(cell_value(&item, c.key))
@@ -2625,30 +2566,30 @@ impl IceonApp {
                 }
             }))
             .child(
-                div()
-                    .w(px(76.0))
+                table_cell(RESOURCE_AGE_WIDTH, false, true, cx.theme().border)
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .truncate()
                     .child(age_str),
             )
             .child(
-                h_flex()
-                    .w(px(124.0))
+                table_cell(RESOURCE_STATUS_WIDTH, false, true, cx.theme().border)
                     .items_center()
                     .child(row_status_tag(&item.status)),
             )
             .child(
-                h_flex()
-                    .flex_1()
+                table_cell(RESOURCE_ACTIONS_WIDTH, false, false, cx.theme().border)
+                    .justify_end()
                     .gap_1()
                     .items_center()
                     .child(row_actions)
                     .child(
                         Button::new(SharedString::from(format!("inspect-row-{idx}")))
                             .xsmall()
-                            .outline()
-                            .label("Inspect")
+                            .ghost()
+                            .icon(IconName::Eye)
+                            .tooltip("Inspect resource")
+                            .accessibility_label("Inspect resource")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_resource_inspector(reference.clone(), window, cx);
                             })),
@@ -2712,6 +2653,8 @@ impl IceonApp {
         });
 
         h_flex()
+            .flex_shrink_0()
+            .justify_end()
             .gap_1()
             .items_center()
             // Pod row quick actions: Logs & Shell
@@ -2719,8 +2662,10 @@ impl IceonApp {
                 row.child(
                     Button::new(SharedString::from(format!("row-pod-logs-{idx}")))
                         .xsmall()
-                        .primary()
-                        .label("Logs")
+                        .ghost()
+                        .icon(IconName::FileText)
+                        .tooltip("View pod logs")
+                        .accessibility_label("View pod logs")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_pod_stream_for_pod(
                                 ns_logs.clone(),
@@ -2734,8 +2679,10 @@ impl IceonApp {
                 .child(
                     Button::new(SharedString::from(format!("row-pod-shell-{idx}")))
                         .xsmall()
-                        .outline()
-                        .label("Shell")
+                        .ghost()
+                        .icon(IconName::SquareTerminal)
+                        .tooltip("Open pod shell")
+                        .accessibility_label("Open pod shell")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_pod_stream_for_pod(
                                 ns_shell.clone(),
@@ -2761,7 +2708,9 @@ impl IceonApp {
                         Button::new(SharedString::from(format!("row-wl-restart-{idx}")))
                             .xsmall()
                             .ghost()
-                            .label("Restart")
+                            .icon(IconName::RefreshCw)
+                            .tooltip("Restart workload")
+                            .accessibility_label("Restart workload")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.run_workload_action_for(
                                     wref.clone(),
@@ -2788,8 +2737,10 @@ impl IceonApp {
                     row.child(
                         Button::new(SharedString::from(format!("row-cj-trigger-{idx}")))
                             .xsmall()
-                            .primary()
-                            .label("Trigger")
+                            .ghost()
+                            .icon(IconName::Play)
+                            .tooltip("Trigger CronJob")
+                            .accessibility_label("Trigger CronJob")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.run_workload_action_for(
                                     cref.clone(),
@@ -2816,8 +2767,10 @@ impl IceonApp {
                     row.child(
                         Button::new(SharedString::from(format!("row-svc-fwd-{idx}")))
                             .xsmall()
-                            .primary()
-                            .label(format!("Forward :{port}"))
+                            .ghost()
+                            .icon(IconName::Network)
+                            .tooltip(format!("Forward service port :{port}"))
+                            .accessibility_label(format!("Forward service port :{port}"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.start_service_forward_for(
                                     sref.clone(),
@@ -2856,7 +2809,13 @@ impl IceonApp {
                         Button::new(SharedString::from(format!("row-node-cordon-{idx}")))
                             .xsmall()
                             .ghost()
-                            .label(toggle_label)
+                            .icon(if node_schedulable {
+                                IconName::Ban
+                            } else {
+                                IconName::Check
+                            })
+                            .tooltip(toggle_label)
+                            .accessibility_label(toggle_label)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.run_node_action_for(
                                     nref.clone(),
@@ -2870,8 +2829,10 @@ impl IceonApp {
                     .child(
                         Button::new(SharedString::from(format!("row-node-drain-{idx}")))
                             .xsmall()
-                            .danger()
-                            .label("Drain")
+                            .ghost()
+                            .icon(IconName::ArrowDown)
+                            .tooltip("Review node drain")
+                            .accessibility_label("Review node drain")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.review_node_drain_for(
                                     nref_drain.clone(),
@@ -2890,8 +2851,10 @@ impl IceonApp {
                 row.child(
                     Button::new(SharedString::from(format!("row-crd-inst-{idx}")))
                         .xsmall()
-                        .primary()
-                        .label("Instances")
+                        .ghost()
+                        .icon(IconName::GalleryVerticalEnd)
+                        .tooltip("View custom resource instances")
+                        .accessibility_label("View custom resource instances")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if !cid.is_empty() {
                                 this.navigate(
@@ -2917,6 +2880,7 @@ impl IceonApp {
                             .ghost()
                             .icon(IconName::Delete)
                             .tooltip("Delete resource")
+                            .accessibility_label("Delete resource")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.delete_resource_by_target(target.clone(), window, cx);
                             })),
@@ -3045,6 +3009,8 @@ impl IceonApp {
                     .bg(cx.theme().secondary)
                     .child(
                         v_flex()
+                            .flex_1()
+                            .min_w_0()
                             .gap_0p5()
                             .child(
                                 h_flex()
@@ -3053,6 +3019,7 @@ impl IceonApp {
                                     .child(
                                         div()
                                             .text_sm()
+                                            .truncate()
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(item.name.clone()),
                                     )
@@ -3064,6 +3031,7 @@ impl IceonApp {
                             .child(
                                 div()
                                     .text_xs()
+                                    .truncate()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(
                                         item.description
@@ -3074,13 +3042,18 @@ impl IceonApp {
                     )
                     .child(
                         h_flex()
+                            .ml_auto()
+                            .flex_shrink_0()
+                            .justify_end()
                             .gap_1p5()
                             .when(view == HelmView::Charts, |el| {
                                 el.child(
                                     Button::new(SharedString::from(format!("helm-inst-{idx}")))
                                         .xsmall()
-                                        .primary()
-                                        .label("Install")
+                                        .ghost()
+                                        .icon(IconName::Plus)
+                                        .tooltip("Install Helm chart")
+                                        .accessibility_label("Install Helm chart")
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.helm_install_chart = Some(name_install.clone());
                                             this.helm_install_version = Some(ver_install.clone());
@@ -3092,8 +3065,10 @@ impl IceonApp {
                             .child(
                                 Button::new(SharedString::from(format!("helm-detail-{idx}")))
                                     .xsmall()
-                                    .outline()
-                                    .label("Details")
+                                    .ghost()
+                                    .icon(IconName::Eye)
+                                    .tooltip("Inspect Helm details")
+                                    .accessibility_label("Inspect Helm details")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_helm_inspector(
                                             view,
@@ -3140,50 +3115,77 @@ impl IceonApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(format!("Custom Resource Definitions ({})", defs.len())),
                     )
-                    .child(h_flex().gap_1p5().flex_wrap().children(
-                        defs.into_iter().enumerate().map(|(idx, def)| {
-                            let crd_name = def.name.clone();
-                            let crd_uid = def.uid.clone();
-                            let inspect_ref = ResourceReference {
-                                kind: ResourceKind::CustomResourceDefinitions,
-                                name: def.name.clone(),
-                                namespace: None,
-                                uid: def.uid.clone(),
-                            };
-                            h_flex()
-                                .gap_0p5()
-                                .items_center()
-                                .child(
-                                    Button::new(SharedString::from(format!("crd-select-{idx}")))
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .gap_1p5()
+                            .children(defs.into_iter().enumerate().map(|(idx, def)| {
+                                let crd_name = def.name.clone();
+                                let crd_uid = def.uid.clone();
+                                let inspect_ref = ResourceReference {
+                                    kind: ResourceKind::CustomResourceDefinitions,
+                                    name: def.name.clone(),
+                                    namespace: None,
+                                    uid: def.uid.clone(),
+                                };
+                                h_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .truncate()
+                                            .child(def.name),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "crd-select-{idx}"
+                                        )))
+                                        .ml_auto()
+                                        .flex_shrink_0()
                                         .xsmall()
-                                        .outline()
-                                        .label(def.name)
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            if let Some(uid) = crd_uid.clone() {
-                                                this.load_crd_instances_only(
-                                                    crd_name.clone(),
-                                                    uid,
+                                        .ghost()
+                                        .icon(IconName::GalleryVerticalEnd)
+                                        .tooltip("View custom resource instances")
+                                        .accessibility_label("View custom resource instances")
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                if let Some(uid) = crd_uid.clone() {
+                                                    this.load_crd_instances_only(
+                                                        crd_name.clone(),
+                                                        uid,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "crd-inspect-{idx}"
+                                        )))
+                                        .flex_shrink_0()
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(IconName::FileText)
+                                        .tooltip("Inspect custom resource definition")
+                                        .accessibility_label("Inspect custom resource definition")
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.open_resource_inspector(
+                                                    inspect_ref.clone(),
                                                     window,
                                                     cx,
                                                 );
-                                            }
-                                        })),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!("crd-inspect-{idx}")))
-                                        .xsmall()
-                                        .ghost()
-                                        .label("Spec")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_resource_inspector(
-                                                inspect_ref.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                )
-                        }),
-                    )),
+                                            }),
+                                        ),
+                                    )
+                            })),
+                    ),
             )
             .when_some(instances, |el, page: CustomResourcePage| {
                 el.child(
@@ -3434,6 +3436,8 @@ impl IceonApp {
                                                 .bg(cx.theme().background)
                                                 .child(
                                                     h_flex()
+                                                        .flex_1()
+                                                        .min_w_0()
                                                         .gap_2()
                                                         .items_center()
                                                         .child(
@@ -3457,6 +3461,9 @@ impl IceonApp {
                                                 )
                                                 .child(
                                                     h_flex()
+                                                        .ml_auto()
+                                                        .flex_shrink_0()
+                                                        .justify_end()
                                                         .gap_1()
                                                         .child(
                                                             Button::new(SharedString::from(
@@ -3464,7 +3471,9 @@ impl IceonApp {
                                                             ))
                                                             .xsmall()
                                                             .ghost()
-                                                            .label("Inspect SA")
+                                                            .icon(IconName::Eye)
+                                                            .tooltip("Inspect ServiceAccount")
+                                                            .accessibility_label("Inspect ServiceAccount")
                                                             .on_click(cx.listener(
                                                                 move |this, _, window, cx| {
                                                                     this.open_resource_inspector(
@@ -3480,8 +3489,10 @@ impl IceonApp {
                                                                 format!("managed-sa-del-{uidx}"),
                                                             ))
                                                             .xsmall()
-                                                            .danger()
-                                                            .label("Plan Delete")
+                                                            .ghost()
+                                                            .icon(IconName::Delete)
+                                                            .tooltip("Preview ServiceAccount deletion plan")
+                                                            .accessibility_label("Preview ServiceAccount deletion plan")
                                                             .on_click(cx.listener(
                                                                 move |this, _, window, cx| {
                                                                     this.plan_existing_rbac_user(

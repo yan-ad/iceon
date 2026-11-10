@@ -863,7 +863,7 @@ impl IceonApp {
         Sidebar::new(SharedString::from(format!(
             "cluster-navigation-{cluster_id}"
         )))
-        .w(px(252.0))
+        .w_full()
         .collapsible(false)
         .children(groups)
     }

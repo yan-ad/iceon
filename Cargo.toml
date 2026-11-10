@@ -26,6 +26,7 @@ opt-level = 2
 iceon-core = { path = "crates/iceon-core" }
 iceon-ui = { path = "crates/iceon-ui" }
 gpui-kit = { version = "0.9.0", features = ["tree-sitter-yaml"] }
+vt100 = "=0.18.1"
 axum = "0.8"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

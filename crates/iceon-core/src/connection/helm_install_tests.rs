@@ -13,6 +13,31 @@ fn request() -> HelmInstallRequest {
         dry_run: true,
     }
 }
+
+#[test]
+fn server_side_is_explicit_and_force_conflicts_implies_it() {
+    let mut args = vec!["install".into()];
+    let mut preferences = HelmPreferences::default();
+    preferences.server_side = true;
+    apply_preference_arguments(&mut args, b"v4.0.0", &preferences, false).unwrap();
+    assert!(args.contains(&"--server-side=true".into()));
+    let mut args = vec!["upgrade".into()];
+    apply_preference_arguments(&mut args, b"v4.0.0", &HelmPreferences::default(), true).unwrap();
+    assert!(args.contains(&"--server-side=true".into()));
+    assert!(args.contains(&"--force-conflicts".into()));
+    assert_eq!(
+        apply_preference_arguments(
+            &mut vec![],
+            b"v3.17.0",
+            &HelmPreferences {
+                server_side: true,
+                ..Default::default()
+            },
+            false
+        ),
+        Err(ConnectionError::HelmUnavailable)
+    );
+}
 #[test]
 fn input_boundary() {
     assert_eq!(validate(&request()), Ok(()));
@@ -194,5 +219,43 @@ async fn synthetic_install_cancel_timeout_and_output_limit() {
             })
         );
         assert!(!path.exists());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fake_install_and_upgrade_receive_ssa_and_dry_run_flags() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let binary = directory.path().join("helm-custom");
+    std::fs::write(&binary, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let preferences = HelmPreferences {
+        binary_path: Some(binary),
+        ..Default::default()
+    };
+    for command in ["install", "upgrade"] {
+        for dry_run in [true, false] {
+            let mut request = request();
+            request.dry_run = dry_run;
+            let mut args = install_arguments(&request, std::path::Path::new("/private/values"));
+            args[0] = command.into();
+            apply_preference_arguments(&mut args, b"v4.0.0", &preferences, true).unwrap();
+            let output = supervise_preferences(
+                executable_with_preferences(&preferences).unwrap(),
+                args,
+                tempfile::NamedTempFile::new().unwrap(),
+                CancellationToken::new(),
+                preferences.clone(),
+            )
+            .await
+            .unwrap();
+            let text = String::from_utf8(output).unwrap();
+            assert!(text.starts_with(command));
+            assert!(text.contains("--server-side=true\n--force-conflicts\n"));
+            assert_eq!(text.contains("--dry-run=server\n--hide-secret"), dry_run);
+            assert_eq!(text.contains("--wait\n"), !dry_run);
+            assert!(!text.contains("password"));
+        }
     }
 }

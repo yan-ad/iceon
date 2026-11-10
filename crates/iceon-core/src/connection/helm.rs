@@ -10,9 +10,70 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 const ITEM_LIMIT: usize = 500;
+
+/// Explicit Helm process preferences.  This is intentionally independent from
+/// the persistence schema so callers can pass a snapshot without making the
+/// command runner reach into global state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HelmPreferences {
+    pub binary_path: Option<PathBuf>,
+    pub server_side: bool,
+    pub proxy: Option<String>,
+    pub allow_untrusted_cas: bool,
+}
+
+impl From<&crate::preferences::Preferences> for HelmPreferences {
+    fn from(preferences: &crate::preferences::Preferences) -> Self {
+        Self {
+            binary_path: (!preferences.kubernetes.helm_binary_path.is_empty())
+                .then(|| preferences.kubernetes.helm_binary_path.clone().into()),
+            server_side: preferences.kubernetes.helm_server_side,
+            proxy: (!preferences.proxy.https_proxy.is_empty())
+                .then(|| preferences.proxy.https_proxy.clone()),
+            allow_untrusted_cas: preferences.proxy.allow_untrusted_cas,
+        }
+    }
+}
+
+pub use crate::preferences::HelmRepository;
+
+fn validate_repository(repo: &HelmRepository) -> Result<Url> {
+    if repo.name.len() > 128 || !safe_component(&repo.name, 128, b"_-.") {
+        return Err(ConnectionError::InvalidInput);
+    }
+    let url = Url::parse(&repo.url).map_err(|_| ConnectionError::InvalidInput)?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || repo.url.len() > 2048
+        || repo.url.bytes().any(|b| b.is_ascii_control())
+    {
+        return Err(ConnectionError::InvalidInput);
+    }
+    Ok(url)
+}
+
+fn validate_proxy(proxy: Option<&str>) -> Result<()> {
+    if let Some(value) = proxy {
+        let url = Url::parse(value).map_err(|_| ConnectionError::InvalidInput)?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || value.len() > 2048
+            || value.chars().any(char::is_control)
+            || url.fragment().is_some()
+        {
+            return Err(ConnectionError::InvalidInput);
+        }
+    }
+    Ok(())
+}
 
 #[path = "helm_install.rs"]
 pub mod install;
@@ -487,15 +548,133 @@ fn push_fact(result: &mut HelmDetail, label: &str, text: &str, budget: &mut usiz
 }
 
 impl ConnectionEngine {
+    /// Executes against Helm's real repository configuration/cache. A successful
+    /// add means Helm fetched and validated the remote index, not just saved UI metadata.
+    pub async fn helm_repository_add(
+        &self,
+        repository: HelmRepository,
+        preferences: HelmPreferences,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        validate_repository(&repository)?;
+        let mut args = vec![
+            "repo".into(),
+            "add".into(),
+            repository.name.into(),
+            repository.url.into(),
+        ];
+        if preferences.allow_untrusted_cas {
+            args.push("--insecure-skip-tls-verify".into());
+        }
+        self.helm_repository_command(args, preferences, cancel)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn helm_repository_remove(
+        &self,
+        name: String,
+        preferences: HelmPreferences,
+        cancel: CancellationToken,
+    ) -> Result<()> {
+        if !safe_component(&name, 128, b"_-.") {
+            return Err(ConnectionError::InvalidInput);
+        }
+        self.helm_repository_command(
+            vec!["repo".into(), "remove".into(), name.into()],
+            preferences,
+            cancel,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn helm_repository_list(
+        &self,
+        preferences: HelmPreferences,
+        cancel: CancellationToken,
+    ) -> Result<Vec<HelmRepository>> {
+        let output = self
+            .helm_repository_command(
+                vec![
+                    "repo".into(),
+                    "list".into(),
+                    "--output".into(),
+                    "json".into(),
+                ],
+                preferences,
+                cancel,
+            )
+            .await?;
+        let repositories: Vec<HelmRepository> =
+            serde_json::from_slice(&output).map_err(|_| ConnectionError::InvalidResponse)?;
+        if repositories.len() > ITEM_LIMIT {
+            return Err(ConnectionError::LimitExceeded);
+        }
+        let mut names = std::collections::HashSet::new();
+        for repository in &repositories {
+            validate_repository(repository).map_err(|_| ConnectionError::InvalidResponse)?;
+            if !names.insert(&repository.name) {
+                return Err(ConnectionError::InvalidResponse);
+            }
+        }
+        Ok(repositories)
+    }
+
+    async fn helm_repository_command(
+        &self,
+        args: Vec<OsString>,
+        preferences: HelmPreferences,
+        cancel: CancellationToken,
+    ) -> Result<Vec<u8>> {
+        let _permit = self
+            .workers
+            .try_acquire()
+            .map_err(|_| ConnectionError::Busy)?;
+        let cancel = cancel.child_token();
+        let _guard = CancelOnDrop(cancel.clone());
+        let executable = executable_with_preferences(&preferences)?;
+        let config =
+            tempfile::NamedTempFile::new().map_err(|_| ConnectionError::KubeconfigUnavailable)?;
+        self.auth_tasks
+            .spawn(supervise_preferences(
+                executable,
+                args,
+                config,
+                cancel,
+                preferences,
+            ))
+            .await
+            .map_err(|_| ConnectionError::ConnectionFailed)?
+    }
+
     pub async fn helm_table(&self, request: HelmRequest) -> Result<HelmPage> {
-        let output = self.helm_output(&request, None).await?;
+        self.helm_table_with_preferences(request, HelmPreferences::default())
+            .await
+    }
+
+    pub async fn helm_table_with_preferences(
+        &self,
+        request: HelmRequest,
+        preferences: HelmPreferences,
+    ) -> Result<HelmPage> {
+        let output = self.helm_output(&request, None, preferences).await?;
         project(&request, &output)
     }
 
     pub async fn helm_detail(&self, request: HelmDetailRequest) -> Result<HelmDetail> {
+        self.helm_detail_with_preferences(request, HelmPreferences::default())
+            .await
+    }
+
+    pub async fn helm_detail_with_preferences(
+        &self,
+        request: HelmDetailRequest,
+        preferences: HelmPreferences,
+    ) -> Result<HelmDetail> {
         validate_detail(&request)?;
         let output = self
-            .helm_output(&request.inventory(), Some(&request))
+            .helm_output(&request.inventory(), Some(&request), preferences)
             .await?;
         project_detail(&request, &output)
     }
@@ -504,6 +683,7 @@ impl ConnectionEngine {
         &self,
         request: &HelmRequest,
         detail: Option<&HelmDetailRequest>,
+        preferences: HelmPreferences,
     ) -> Result<Vec<u8>> {
         validate_read_id(request.read_id)?;
         validate_request(&request.session())?;
@@ -535,7 +715,7 @@ impl ConnectionEngine {
         let cancel = HelmRuntime::token_in(storage, request, &session_cancel)?;
         let _read_guard = CancelOnDrop(cancel.clone());
         let result = super::bounded(&cancel, async {
-            let executable = executable()?;
+            let executable = executable_with_preferences(&preferences)?;
             let catalog = self.catalog.clone();
             let id = request.cluster_id.clone();
             let expected = target.clone();
@@ -585,26 +765,33 @@ impl ConnectionEngine {
                 // Resolve only an exact configured-cache identity, never a renderer URL or path.
                 let cached = self
                     .auth_tasks
-                    .spawn(supervise(
+                    .spawn(supervise_preferences(
                         executable.clone(),
                         arguments(HelmView::Charts, None),
                         tempfile::NamedTempFile::new()
                             .map_err(|_| ConnectionError::KubeconfigUnavailable)?,
                         cancel.clone(),
+                        preferences.clone(),
                     ))
                     .await
                     .map_err(|_| ConnectionError::ConnectionFailed)??;
                 validate_cached_chart(detail, &cached)?;
             }
+            let mut args = detail
+                .map(detail_arguments)
+                .unwrap_or_else(|| arguments(request.view, request.namespace.as_deref()));
+            if preferences.allow_untrusted_cas && detail.is_some_and(|d| d.view == HelmView::Charts)
+            {
+                args.push("--insecure-skip-tls-verify".into());
+            }
             let output = self
                 .auth_tasks
-                .spawn(supervise(
+                .spawn(supervise_preferences(
                     executable,
-                    detail
-                        .map(detail_arguments)
-                        .unwrap_or_else(|| arguments(request.view, request.namespace.as_deref())),
+                    args,
                     file,
                     cancel.clone(),
+                    preferences.clone(),
                 ))
                 .await
                 .map_err(|_| ConnectionError::ConnectionFailed)??;
@@ -690,7 +877,28 @@ fn arguments(view: HelmView, namespace: Option<&str>) -> Vec<OsString> {
         }
     }
 }
-fn executable() -> Result<PathBuf> {
+fn executable_with_preferences(preferences: &HelmPreferences) -> Result<PathBuf> {
+    validate_proxy(preferences.proxy.as_deref())?;
+    if let Some(path) = &preferences.binary_path {
+        if !path.is_absolute() {
+            return Err(ConnectionError::InvalidInput);
+        }
+        let path = std::fs::canonicalize(path).map_err(|_| ConnectionError::HelmUnavailable)?;
+        let metadata = path
+            .metadata()
+            .map_err(|_| ConnectionError::HelmUnavailable)?;
+        if !metadata.is_file() {
+            return Err(ConnectionError::HelmUnavailable);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err(ConnectionError::HelmUnavailable);
+            }
+        }
+        return Ok(path);
+    }
     let path = std::env::var_os("PATH").ok_or(ConnectionError::HelmUnavailable)?;
     lookup_executable(&path)
 }
@@ -727,6 +935,26 @@ impl Drop for CancelOnDrop {
     }
 }
 
+async fn supervise_preferences(
+    executable: PathBuf,
+    args: Vec<OsString>,
+    file: tempfile::NamedTempFile,
+    cancel: CancellationToken,
+    preferences: HelmPreferences,
+) -> Result<Vec<u8>> {
+    supervise_configured(
+        executable,
+        args,
+        file,
+        cancel,
+        super::DEADLINE,
+        None,
+        preferences,
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn supervise(
     executable: PathBuf,
     args: Vec<OsString>,
@@ -736,6 +964,7 @@ async fn supervise(
     supervise_with_deadline(executable, args, file, cancel, super::DEADLINE).await
 }
 
+#[cfg(test)]
 async fn supervise_with_deadline(
     executable: PathBuf,
     args: Vec<OsString>,
@@ -746,6 +975,7 @@ async fn supervise_with_deadline(
     supervise_owned(executable, args, file, cancel, deadline, None).await
 }
 
+#[cfg(test)]
 async fn supervise_owned(
     executable: PathBuf,
     args: Vec<OsString>,
@@ -754,9 +984,44 @@ async fn supervise_owned(
     deadline: std::time::Duration,
     directory: Option<tempfile::TempDir>,
 ) -> Result<Vec<u8>> {
+    supervise_configured(
+        executable,
+        args,
+        file,
+        cancel,
+        deadline,
+        directory,
+        HelmPreferences::default(),
+    )
+    .await
+}
+
+async fn supervise_configured(
+    executable: PathBuf,
+    args: Vec<OsString>,
+    file: tempfile::NamedTempFile,
+    cancel: CancellationToken,
+    deadline: std::time::Duration,
+    directory: Option<tempfile::TempDir>,
+    preferences: HelmPreferences,
+) -> Result<Vec<u8>> {
     if cancel.is_cancelled() {
         return Err(ConnectionError::StaleSession);
     }
+    validate_proxy(preferences.proxy.as_deref())?;
+    // Proxy preferences are for HTTP downloads, never Kubernetes transport.
+    let config = std::fs::read(file.path()).map_err(|_| ConnectionError::KubeconfigUnavailable)?;
+    let config: Value = serde_yaml_ng::from_slice(&config).unwrap_or(Value::Null);
+    let bypass = config
+        .get("clusters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.pointer("/cluster/server").and_then(Value::as_str))
+        .filter_map(|server| Url::parse(server).ok())
+        .filter_map(|url| url.host_str().map(str::to_owned))
+        .collect::<Vec<_>>()
+        .join(",");
     let retain = directory.is_none();
     let mut command = CommandWrap::with_new(executable, |command| {
         if let Some(directory) = &directory {
@@ -781,9 +1046,20 @@ async fn supervise_owned(
             .env_remove("http_proxy")
             .env_remove("https_proxy")
             .env_remove("all_proxy")
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(proxy) = &preferences.proxy {
+            command
+                .env("HTTP_PROXY", proxy)
+                .env("HTTPS_PROXY", proxy)
+                .env("http_proxy", proxy)
+                .env("https_proxy", proxy)
+                .env("NO_PROXY", &bypass)
+                .env("no_proxy", &bypass);
+        }
     });
     command.wrap(KillOnDrop);
     #[cfg(unix)]

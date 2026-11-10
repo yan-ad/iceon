@@ -276,3 +276,133 @@ fn project_rejects_malformed_release() {
         Err(ConnectionError::InvalidResponse)
     );
 }
+
+#[test]
+fn repository_validation_rejects_flags_credentials_and_non_http_urls() {
+    for (name, url) in [
+        ("--flag", "https://example.com"),
+        ("bad/name", "https://example.com"),
+        ("ok", "file:///tmp/index.yaml"),
+        ("ok", "https://user:password@example.com"),
+        ("ok", "https://example.com?token=secret"),
+        ("ok", "https://example.com/#fragment"),
+    ] {
+        assert!(
+            validate_repository(&HelmRepository {
+                name: name.into(),
+                url: url.into()
+            })
+            .is_err()
+        );
+    }
+    assert!(
+        validate_repository(&HelmRepository {
+            name: "stable".into(),
+            url: "https://charts.example.com/releases".into()
+        })
+        .is_ok()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fake_binary_repository_commands_receive_preferences_without_global_env_changes() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let binary = directory.path().join("custom-helm");
+    let log = directory.path().join("commands");
+    std::fs::write(
+        &binary,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$@" >> '{}'
+printf 'proxy=%s\ninsecure-kube=%s\n' "$HTTPS_PROXY" "$HELM_KUBEINSECURE_SKIP_TLS_VERIFY" >> '{}'
+case "$2" in list) printf '[{{"name":"stable","url":"https://charts.example.com"}}]';; esac
+"#,
+            log.display(),
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let preferences = HelmPreferences {
+        binary_path: Some(binary.clone()),
+        proxy: Some("http://proxy.example.com:8080".into()),
+        allow_untrusted_cas: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        executable_with_preferences(&preferences).unwrap(),
+        std::fs::canonicalize(&binary).unwrap()
+    );
+    let engine = ConnectionEngine::new(std::sync::Arc::new(crate::catalog::CatalogEngine::new(
+        directory.path().join("catalog"),
+    )));
+    let repository = HelmRepository {
+        name: "stable".into(),
+        url: "https://charts.example.com".into(),
+    };
+    let cancel = CancellationToken::new();
+    engine
+        .helm_repository_add(repository.clone(), preferences.clone(), cancel.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .helm_repository_list(preferences.clone(), cancel.clone())
+            .await
+            .unwrap(),
+        vec![repository]
+    );
+    engine
+        .helm_repository_remove("stable".into(), preferences, cancel)
+        .await
+        .unwrap();
+    let text = std::fs::read_to_string(log).unwrap();
+    assert!(
+        text.contains(
+            "repo\nadd\nstable\nhttps://charts.example.com\n--insecure-skip-tls-verify\n"
+        )
+    );
+    assert!(text.contains("repo\nlist\n--output\njson\n"));
+    assert!(text.contains("repo\nremove\nstable\n"));
+    assert!(text.contains("proxy=http://proxy.example.com:8080\ninsecure-kube=\n"));
+    assert!(!text.contains("--kube-insecure"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn process_proxy_bypasses_the_exact_kubernetes_host() {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(b"clusters:\n- cluster:\n    server: https://kubernetes.example.com:6443\n")
+        .unwrap();
+    let result = supervise_configured("/bin/sh".into(), vec!["-c".into(), "printf '%s|%s|%s' \"$HTTPS_PROXY\" \"$NO_PROXY\" \"$HELM_KUBEINSECURE_SKIP_TLS_VERIFY\"".into()], file, CancellationToken::new(), std::time::Duration::from_secs(2), None, HelmPreferences { proxy: Some("http://proxy.example.com:8080".into()), ..Default::default() }).await.unwrap();
+    assert_eq!(
+        result,
+        b"http://proxy.example.com:8080|kubernetes.example.com|"
+    );
+}
+
+#[test]
+fn persistent_preferences_are_converted_without_losing_runtime_options() {
+    let mut stored = crate::preferences::Preferences::default();
+    stored.kubernetes.helm_binary_path = "/opt/helm custom".into();
+    stored.kubernetes.helm_server_side = true;
+    stored.proxy.https_proxy = "https://proxy.example.com:443".into();
+    stored.proxy.allow_untrusted_cas = true;
+    let options = HelmPreferences::from(&stored);
+    assert_eq!(options.binary_path, Some("/opt/helm custom".into()));
+    assert!(options.server_side && options.allow_untrusted_cas);
+    assert_eq!(
+        options.proxy.as_deref(),
+        Some("https://proxy.example.com:443")
+    );
+    assert!(validate_proxy(options.proxy.as_deref()).is_ok());
+    assert_eq!(
+        executable_with_preferences(&HelmPreferences {
+            binary_path: Some("relative/helm".into()),
+            ..Default::default()
+        }),
+        Err(ConnectionError::InvalidInput)
+    );
+}

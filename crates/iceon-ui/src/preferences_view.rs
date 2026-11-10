@@ -4,9 +4,10 @@
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, StyledExt as _, TitleBar,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, TitleBar,
     group_box::GroupBoxVariant,
     h_flex,
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     theme::ThemeMode,
     v_flex,
@@ -29,6 +30,103 @@ pub enum PreferencesSection {
     Editor,
     Terminal,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{SelectItem as _, TimezoneChoice, timezone_choices};
+
+    #[test]
+    fn timezone_choices_pin_system_and_utc_before_sorted_unique_names() {
+        let choices = timezone_choices("Asia/Jakarta");
+        assert_eq!(choices[0].value(), "system");
+        assert_eq!(choices[0].title().as_ref(), "System");
+        assert_eq!(choices[1].value(), "UTC");
+        assert!(choices[2..].windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for name in ["system", "UTC", "Asia/Jakarta"] {
+            assert_eq!(choices.iter().filter(|choice| choice.0 == name).count(), 1);
+        }
+    }
+
+    #[test]
+    fn timezone_choices_include_the_available_iana_database() {
+        let choices = timezone_choices("system");
+        for name in [
+            "Africa/Abidjan",
+            "America/New_York",
+            "Europe/London",
+            "Asia/Tokyo",
+        ] {
+            assert!(
+                choices.iter().any(|choice| choice.0 == name),
+                "missing {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn timezone_choices_preserve_saved_values_not_in_the_database() {
+        let choices = timezone_choices("Legacy/Timezone");
+        assert!(choices.iter().any(|choice| choice.0 == "Legacy/Timezone"));
+        assert!(
+            !timezone_choices("")
+                .iter()
+                .any(|choice| choice.0.is_empty())
+        );
+    }
+
+    #[test]
+    fn timezone_search_matches_regions_and_cities_case_insensitively() {
+        let jakarta = TimezoneChoice("Asia/Jakarta".into());
+        assert!(jakarta.matches("jakarta"));
+        assert!(jakarta.matches(" ASIA/ "));
+        assert!(!jakarta.matches("London"));
+        assert!(TimezoneChoice("system".into()).matches("System"));
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TimezoneChoice(String);
+
+impl SelectItem for TimezoneChoice {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        if self.0 == "system" {
+            "System".into()
+        } else {
+            self.0.clone().into()
+        }
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.0
+    }
+
+    fn matches(&self, query: &str) -> bool {
+        self.0.to_lowercase().contains(&query.trim().to_lowercase())
+    }
+}
+
+fn timezone_choices(current: &str) -> Vec<TimezoneChoice> {
+    let mut names: Vec<String> = jiff::tz::db()
+        .available()
+        .map(|name| name.to_string())
+        .collect();
+    // Keep existing preferences visible even if this host's database lacks the name.
+    names.push(current.to_string());
+    names.retain(|name| !name.is_empty() && name != "system" && name != "UTC");
+    names.sort_unstable();
+    names.dedup();
+
+    ["system", "UTC"]
+        .into_iter()
+        .map(String::from)
+        .chain(names)
+        .map(TimezoneChoice)
+        .collect()
+}
+
+type TimezoneSelectState = SelectState<SearchableVec<TimezoneChoice>>;
 
 pub(crate) struct GlobalPreferencesState {
     pub engine: Arc<PreferencesEngine>,
@@ -102,17 +200,45 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
 
 pub struct PreferencesWindow {
     focus_handle: FocusHandle,
+    timezone_select: Entity<TimezoneSelectState>,
 }
 
 impl PreferencesWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
-        Self { focus_handle }
+        let timezone = current_prefs(cx).app.timezone;
+        let timezone_select = cx.new(|cx| {
+            let mut state = SelectState::new(
+                SearchableVec::new(timezone_choices(&timezone)),
+                None,
+                window,
+                cx,
+            )
+            .searchable(true);
+            state.set_selected_value(&timezone, window, cx);
+            state
+        });
+        cx.subscribe(
+            &timezone_select,
+            |_, _, event: &SelectEvent<SearchableVec<TimezoneChoice>>, cx| {
+                if let SelectEvent::Confirm(Some(timezone)) = event {
+                    mutate_preferences(cx, |prefs| {
+                        prefs.app.timezone = timezone.clone();
+                    });
+                }
+            },
+        )
+        .detach();
+        Self {
+            focus_handle,
+            timezone_select,
+        }
     }
 
-    fn build_pages() -> Vec<SettingPage> {
+    fn build_pages(&self) -> Vec<SettingPage> {
         let defaults = Preferences::default();
+        let timezone_select = self.timezone_select.clone();
 
         let app_page = SettingPage::new("App")
             .icon(IconName::Settings2)
@@ -151,23 +277,30 @@ impl PreferencesWindow {
                         .description("Select the application color scheme across all windows."),
                         SettingItem::new(
                             "Timezone",
-                            SettingField::input(
-                                |cx: &App| SharedString::from(current_prefs(cx).app.timezone),
-                                |val: SharedString, cx: &mut App| {
+                            SettingField::render(move |options, _, _| {
+                                Select::new(&timezone_select)
+                                    .accessibility_label("Timezone")
+                                    .search_placeholder("Search timezones...")
+                                    .menu_max_h(px(320.0))
+                                    .with_size(options.size())
+                                    .disabled(options.is_disabled())
+                                    .w(px(240.0))
+                                    .when(options.layout() == Axis::Vertical, |el| el.w_full())
+                            })
+                            .on_reset(
+                                |cx| {
+                                    current_prefs(cx).app.timezone
+                                        != Preferences::default().app.timezone
+                                },
+                                |_, cx| {
                                     mutate_preferences(cx, |prefs| {
-                                        let trimmed = val.trim();
-                                        prefs.app.timezone = if trimmed.is_empty() {
-                                            "system".to_string()
-                                        } else {
-                                            trimmed.to_string()
-                                        };
+                                        prefs.app.timezone = Preferences::default().app.timezone;
                                     });
                                 },
-                            )
-                            .default_value(SharedString::from(defaults.app.timezone)),
+                            ),
                         )
                         .description(
-                            "IANA timezone identifier (such as UTC or Asia/Jakarta) or system.",
+                            "Choose a timezone for timestamps, or System to use your device's timezone.",
                         ),
                     ]),
                 SettingGroup::new()
@@ -554,7 +687,14 @@ impl PreferencesWindow {
 }
 
 impl Render for PreferencesWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let timezone = current_prefs(cx).app.timezone;
+        if self.timezone_select.read(cx).selected_value() != Some(&timezone) {
+            self.timezone_select.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(timezone_choices(&timezone)), window, cx);
+                state.set_selected_value(&timezone, window, cx);
+            });
+        }
         let error = cx
             .try_global::<GlobalPreferencesState>()
             .and_then(|s| s.error.clone());
@@ -610,7 +750,7 @@ impl Render for PreferencesWindow {
                         Settings::new("iceon-settings")
                             .sidebar_width(px(210.0))
                             .with_group_variant(GroupBoxVariant::Outline)
-                            .pages(Self::build_pages()),
+                            .pages(self.build_pages()),
                     ),
             )
     }

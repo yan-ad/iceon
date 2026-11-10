@@ -74,6 +74,20 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
 /// `window_background: background_appearance()` as well. Defaults/native font
 /// resolution remain under gpui-kit ownership; this never installs a web font.
 pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
+    // The settings window's legacy caller maps System to Dark. Resolve from
+    // persisted policy here so every write path follows the native appearance.
+    let mode = cx
+        .try_global::<crate::preferences_view::GlobalPreferencesState>()
+        .map(|state| {
+            crate::preference_runtime::theme_mode(
+                &state.preferences,
+                matches!(
+                    cx.window_appearance(),
+                    gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+                ),
+            )
+        })
+        .unwrap_or(mode);
     Theme::change(mode, None, cx);
     Theme::update(cx, |theme| brand_colors(&mut theme.colors, mode));
     if let Some(window) = window {

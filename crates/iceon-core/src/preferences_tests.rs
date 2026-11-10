@@ -1,6 +1,86 @@
 use super::*;
 use tempfile::tempdir;
 
+// Compile resolver tests before its public module is wired by the application.
+#[path = "kubernetes_tools.rs"]
+mod kubernetes_tools;
+
+#[test]
+fn legacy_kubernetes_preferences_migrate_with_safe_defaults() {
+    let dir = tempdir().unwrap();
+    let engine = PreferencesEngine::new(dir.path().to_path_buf()).unwrap();
+    let mut payload = serde_json::to_value(Preferences::default()).unwrap();
+    payload["kubernetes"] = serde_json::json!({
+        "helmBinaryPath": "", "helmServerSide": false, "discoverDefaultKubeconfig": true
+    });
+    engine
+        .connection
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE preferences_store SET payload = ?",
+            params![payload.to_string()],
+        )
+        .unwrap();
+    let mut snapshot = engine.snapshot().unwrap();
+    assert!(!snapshot.preferences.kubernetes.kubectl_auto_download);
+    assert_eq!(
+        snapshot.preferences.kubernetes.kubectl_download_mirror,
+        DownloadMirror::Default
+    );
+    assert!(snapshot.preferences.kubernetes.helm_repositories.is_empty());
+    snapshot
+        .preferences
+        .kubernetes
+        .kubeconfig_sync_paths
+        .push("/tmp/config".into());
+    snapshot
+        .preferences
+        .kubernetes
+        .helm_repositories
+        .push(HelmRepository {
+            name: "stable".into(),
+            url: "https://charts.example.com".into(),
+        });
+    let saved = engine
+        .save(SavePreferencesRequest {
+            revision: snapshot.revision,
+            preferences: snapshot.preferences,
+        })
+        .unwrap();
+    drop(engine);
+    assert_eq!(
+        PreferencesEngine::new(dir.path().into())
+            .unwrap()
+            .snapshot()
+            .unwrap(),
+        saved
+    );
+}
+
+#[test]
+fn validates_kubernetes_options_before_persistence() {
+    let mut prefs = Preferences::default();
+    prefs.kubernetes.kubectl_download_mirror = DownloadMirror::Custom;
+    for invalid in [
+        "",
+        "http://example.com",
+        "file:///etc/passwd",
+        "https://user:pass@example.com",
+        "https://example.com?q=x",
+    ] {
+        prefs.kubernetes.kubectl_mirror_url = invalid.into();
+        assert_eq!(validate(&prefs), Err(PreferencesError::InvalidInput));
+    }
+    prefs.kubernetes.kubectl_mirror_url = "http://127.0.0.1:1234/tools".into();
+    assert_eq!(validate(&prefs), Ok(()));
+    prefs
+        .kubernetes
+        .kubeconfig_sync_paths
+        .push("bad\0path".into());
+    assert_eq!(validate(&prefs), Err(PreferencesError::InvalidInput));
+}
+
 #[test]
 fn default_preferences_match_specification() {
     let dir = tempdir().unwrap();
