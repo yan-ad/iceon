@@ -452,50 +452,6 @@ impl IceonApp {
         cx.notify();
     }
 
-    pub(crate) fn reorder_favorite_pin(
-        &mut self,
-        cluster_id: &str,
-        from_section: &str,
-        to_section: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if from_section == to_section {
-            return;
-        }
-        let from_target = iceon_core::catalog::PinTarget {
-            id: cluster_id.to_string(),
-            section: if from_section == "overview" {
-                None
-            } else {
-                Some(from_section.to_string())
-            },
-        };
-        let to_target = iceon_core::catalog::PinTarget {
-            id: cluster_id.to_string(),
-            section: if to_section == "overview" {
-                None
-            } else {
-                Some(to_section.to_string())
-            },
-        };
-        let pinned = &self.catalog_snapshot.pinned_items;
-        let p_from = pinned.iter().position(|p| p == &from_target);
-        let p_to = pinned.iter().position(|p| p == &to_target);
-        if let (Some(from), Some(to)) = (p_from, p_to) {
-            let mut next_pins = pinned.clone();
-            let moved = next_pins.remove(from);
-            next_pins.insert(to, moved);
-            if let Ok(snapshot) = self
-                .catalog
-                .reorder_pins(iceon_core::catalog::ReorderPinsRequest { items: next_pins })
-            {
-                self.catalog_snapshot = snapshot;
-            }
-        }
-        cx.notify();
-    }
-
     pub(crate) fn next_operation_id(&mut self) -> u64 {
         self.operation_counter = self.operation_counter.saturating_add(1).max(1);
         self.operation_counter

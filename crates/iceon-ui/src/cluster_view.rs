@@ -7,7 +7,6 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Editor, Input},
-    scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
     v_flex, v_virtual_list,
@@ -1574,19 +1573,9 @@ impl IceonApp {
                             .min_w_0()
                             .h_full()
                             .overflow_hidden()
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .w_full()
-                                    .overflow_y_scrollbar()
-                                    .child(self.render_cluster_section_body(
-                                        &section,
-                                        active_kind,
-                                        window,
-                                        cx,
-                                    )),
-                            )
+                            .child(v_flex().flex_1().min_h_0().w_full().child(
+                                self.render_cluster_section_body(&section, active_kind, window, cx),
+                            ))
                             .when(has_pod_dock, |el| {
                                 el.child(self.render_pod_dock_panel(window, cx))
                             }),
@@ -1936,6 +1925,8 @@ impl IceonApp {
 
         v_flex()
             .w_full()
+            .h_full()
+            .min_h_0()
             .p_4()
             .gap_4()
             .child(
@@ -2265,6 +2256,7 @@ impl IceonApp {
                     },
                 )
                 .flex_1()
+                .h_full()
                 .min_h_0(),
             )
     }
