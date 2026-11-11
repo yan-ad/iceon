@@ -26,6 +26,7 @@ pub mod detail_facts;
 pub mod detail_metadata;
 pub mod details;
 pub mod event_diagnostic;
+pub mod health;
 pub mod helm;
 pub mod kubectl_tools;
 #[cfg(test)]
@@ -159,26 +160,17 @@ fn validate_credentials(client: &Client) -> Result<()> {
 }
 
 impl ConnectionEngine {
-    /// Overlay the current, single-workspace lease onto a catalog snapshot.
-    /// Catalog rows remain disconnected when there is no matching live lease.
+    /// Project ephemeral reachability without granting another workspace lease.
     pub fn project_catalog_statuses(
         &self,
         snapshot: &mut crate::catalog::CatalogSnapshot,
     ) -> Result<()> {
-        let state = self
-            .session
-            .lock()
-            .map_err(|_| ConnectionError::StoreUnavailable)?;
+        let states = self.catalog_connection_states()?;
         for cluster in &mut snapshot.clusters {
-            cluster.status = "disconnected";
-        }
-        if let Some(session) = state.as_ref()
-            && let Some(cluster) = snapshot
-                .clusters
-                .iter_mut()
-                .find(|cluster| cluster.id == session.snapshot.cluster_id)
-        {
-            cluster.status = session.catalog_status();
+            cluster.status = states
+                .iter()
+                .find(|s| s.cluster_id == cluster.id)
+                .map_or("disconnected", |s| s.status);
         }
         Ok(())
     }
@@ -188,13 +180,28 @@ impl ConnectionEngine {
             .session
             .lock()
             .map_err(|_| ConnectionError::StoreUnavailable)?;
-        let Some(session) = state.as_ref() else {
-            return Ok(Vec::new());
-        };
-        Ok(vec![crate::catalog::ClusterConnectionState {
-            cluster_id: session.snapshot.cluster_id.clone(),
-            status: session.catalog_status(),
-        }])
+        let mut states: Vec<_> = self
+            .cluster_health_snapshot()?
+            .into_iter()
+            .map(|health| crate::catalog::ClusterConnectionState {
+                cluster_id: health.cluster_id,
+                status: health.status,
+            })
+            .collect();
+        if let Some(session) = state.as_ref() {
+            // Connecting/error are lease-specific. A connected lease must not hide a newer
+            // failed health check. Merely opening a workspace does not disconnect a cluster.
+            let status = session.catalog_status();
+            if matches!(status, "connecting" | "error") {
+                states.retain(|s| s.cluster_id != session.snapshot.cluster_id);
+                states.push(crate::catalog::ClusterConnectionState {
+                    cluster_id: session.snapshot.cluster_id.clone(),
+                    status,
+                });
+            }
+        }
+        states.sort_by(|a, b| a.cluster_id.cmp(&b.cluster_id));
+        Ok(states)
     }
 }
 fn validate_read_id(id: u64) -> Result<()> {
@@ -400,6 +407,7 @@ impl Drop for Session {
 
 // A single main-window workspace owns the lease. Replacing or dropping it cancels all work.
 pub struct ConnectionEngine {
+    health: health::HealthRuntime,
     update_closing: AtomicBool,
     catalog: Arc<CatalogEngine>,
     session: Mutex<Option<Session>>,
@@ -415,6 +423,7 @@ pub struct ConnectionEngine {
 impl ConnectionEngine {
     pub fn new(catalog: Arc<CatalogEngine>) -> Self {
         Self {
+            health: health::HealthRuntime::default(),
             update_closing: AtomicBool::new(false),
             catalog,
             session: Mutex::new(None),
@@ -503,6 +512,7 @@ impl ConnectionEngine {
         if state.as_ref().is_some_and(|s| matches_session(s, &request)) {
             permissions::invalidate_authentication(&self.authentication_generation);
             state.take();
+            self.clear_cluster_health(&request.cluster_id)?;
         }
         Ok(())
     }
@@ -538,6 +548,7 @@ impl ConnectionEngine {
         {
             return false;
         }
+        self.health.clear();
         self.update_closing.store(true, Ordering::SeqCst);
         permissions::invalidate_authentication(&self.authentication_generation);
         self.open_generation.fetch_add(1, Ordering::SeqCst);
@@ -554,6 +565,7 @@ impl ConnectionEngine {
         self.open_generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut state) = self.session.lock() {
             state.take();
+            self.health.clear();
         }
     }
     pub async fn drain(&self) {
@@ -672,12 +684,14 @@ impl ConnectionEngine {
                 "connected" => return Ok(session.snapshot.clone()),
                 _ => {}
             }
+            self.clear_cluster_health(&request.cluster_id)?;
             permissions::invalidate_authentication(&self.authentication_generation);
             session.snapshot.status = "connecting";
             session.snapshot.error = None;
             (session.target.clone(), session.cancel.child_token())
         };
         let result = bounded(&cancel, async {
+            let source = health::source_identity(target.clone()).await?;
             let client = build(target.clone()).await?;
             // Saved metadata may have been removed/reimported during configuration preparation.
             let catalog = self.catalog.clone();
@@ -691,7 +705,19 @@ impl ConnectionEngine {
             }
             let version = transport::version(&client, &cancel).await?;
             validate_credentials(&client)?;
-            Ok((client, version))
+            if health::source_identity(target.clone()).await? != source {
+                return Err(ConnectionError::SourceChanged);
+            }
+            let catalog = self.catalog.clone();
+            let id = request.cluster_id.clone();
+            let latest = crate::runtime::spawn_blocking(move || catalog.connection_target(&id))
+                .await
+                .map_err(|_| ConnectionError::StoreUnavailable)?
+                .map_err(map_catalog_error)?;
+            if latest != target {
+                return Err(ConnectionError::SourceChanged);
+            }
+            Ok((client, version, source))
         })
         .await;
         let mut state = self
@@ -700,7 +726,14 @@ impl ConnectionEngine {
             .map_err(|_| ConnectionError::StoreUnavailable)?;
         let session = current_mut(&mut state, &request)?;
         match result {
-            Ok((client, version)) => {
+            Ok((client, version, source)) => {
+                self.health.register(
+                    request.cluster_id.clone(),
+                    target.clone(),
+                    source,
+                    client.clone(),
+                    version.clone(),
+                )?;
                 session.client = Some(client);
                 session.snapshot.status = "connected";
                 session.snapshot.api_version = Some(version);

@@ -112,7 +112,7 @@ async fn connecting_is_observed_and_late_completion_cannot_replace_a_new_lease()
             .find(|c| c.id == id)
             .unwrap()
             .status,
-        "disconnected"
+        "connected"
     );
     assert_eq!(
         snapshot
@@ -123,7 +123,7 @@ async fn connecting_is_observed_and_late_completion_cannot_replace_a_new_lease()
             .status,
         "connected"
     );
-    assert_eq!(engine.catalog_connection_states().unwrap().len(), 1);
+    assert_eq!(engine.catalog_connection_states().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -154,17 +154,14 @@ async fn projection_is_ephemeral_preserves_metadata_and_does_not_invent_removed_
 }
 
 #[tokio::test]
-async fn cancelled_or_clientless_sessions_never_report_connected() {
+async fn health_does_not_depend_on_workspace_client_or_stream_token() {
     let (_root, catalog, engine, id, _) = fixture();
     connected(&engine, id, fake(normal)).await;
     engine.session.lock().unwrap().as_mut().unwrap().client = None;
-    assert_eq!(
-        projected(&engine, &catalog).clusters[0].status,
-        "disconnected"
-    );
+    assert_eq!(projected(&engine, &catalog).clusters[0].status, "connected");
     assert_eq!(
         engine.catalog_connection_states().unwrap()[0].status,
-        "disconnected"
+        "connected"
     );
     {
         let mut state = engine.session.lock().unwrap();
@@ -172,13 +169,10 @@ async fn cancelled_or_clientless_sessions_never_report_connected() {
         session.client = Some(fake(normal));
         session.cancel.cancel();
     }
-    assert_eq!(
-        projected(&engine, &catalog).clusters[0].status,
-        "disconnected"
-    );
+    assert_eq!(projected(&engine, &catalog).clusters[0].status, "connected");
     assert_eq!(
         engine.catalog_connection_states().unwrap()[0].status,
-        "disconnected"
+        "connected"
     );
 }
 
