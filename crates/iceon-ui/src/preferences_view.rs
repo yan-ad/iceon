@@ -33,6 +33,10 @@ pub enum PreferencesSection {
     Terminal,
 }
 
+pub(crate) fn set_theme(cx: &mut App, theme: AppTheme) {
+    mutate_preferences(cx, |preferences| preferences.app.theme = theme);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PREFERENCE_SECTIONS, SelectItem as _, TimezoneChoice, timezone_choices};

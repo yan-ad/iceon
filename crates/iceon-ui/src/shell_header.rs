@@ -5,6 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::prelude::*;
@@ -425,9 +426,17 @@ impl IceonApp {
                                     .icon(IconName::Settings)
                                     .accessibility_label("Settings")
                                     .tooltip("Settings")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_preferences(window, cx);
-                                    })),
+                                    .dropdown_menu(|menu, _, _| {
+                                        menu.item(PopupMenuItem::new("System").on_click(|_, _, cx| {
+                                            crate::preferences_view::set_theme(cx, iceon_core::preferences::AppTheme::System);
+                                        }))
+                                        .item(PopupMenuItem::new("Light").on_click(|_, _, cx| {
+                                            crate::preferences_view::set_theme(cx, iceon_core::preferences::AppTheme::Light);
+                                        }))
+                                        .item(PopupMenuItem::new("Dark").on_click(|_, _, cx| {
+                                            crate::preferences_view::set_theme(cx, iceon_core::preferences::AppTheme::Dark);
+                                        }))
+                                    }),
                             )
                             .child(
                                 Button::new("titlebar-theme-btn")
