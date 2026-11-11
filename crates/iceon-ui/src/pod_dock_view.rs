@@ -346,7 +346,11 @@ impl IceonApp {
             cols: 120,
             rows: 36,
             command_history: vec![],
-            terminal: Some(cx.new(|cx| TerminalSurface::new(window, cx))),
+            // Match the transport's requested initial PTY size.  The surface
+            // must not start at its fallback 80x24 grid: the first prompt can
+            // arrive before the first layout callback and otherwise gets
+            // rendered using a stale grid until the deferred resize runs.
+            terminal: Some(cx.new(|cx| TerminalSurface::with_size(120, 36, cx))),
             log_scroll: UniformListScrollHandle::new(),
             follow: true,
             word_wrap: false,

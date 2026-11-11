@@ -93,7 +93,9 @@ impl IceonApp {
         let title = local_terminal_title(cwd.as_deref(), home.as_deref(), shell);
         let key = self.next_operation_id();
         let terminal = cx.new(|cx| {
-            let mut terminal = TerminalSurface::new(window, cx);
+            // Keep the local PTY and vt parser in the same initial grid. This
+            // also makes a prompt received before the first layout pass visible.
+            let mut terminal = TerminalSurface::with_size(80, 24, cx);
             terminal.enable_device_replies();
             terminal
         });

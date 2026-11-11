@@ -1020,7 +1020,15 @@ impl IceonApp {
                 cluster_id: opened.cluster_id.clone(),
                 session_id: opened.session_id.clone(),
             };
-            let connected = connection.connect(scope.clone()).await;
+            // A workspace owns one lease, but transient kubeconfig/network failures
+            // should not require the user to leave and re-enter the cluster. Retry
+            // only the connect phase; opening a different cluster still replaces
+            // and cancels this lease through ConnectionEngine::open.
+            let mut connected = connection.connect(scope.clone()).await;
+            if connected.is_err() {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                connected = connection.connect(scope.clone()).await;
+            }
 
             let ns_list = match connection.namespace_cache_get(scope).await {
                 Ok(Some(cached)) => cached.names,

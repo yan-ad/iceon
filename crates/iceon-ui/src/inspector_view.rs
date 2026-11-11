@@ -312,16 +312,36 @@ impl IceonApp {
     }
 
     pub(crate) fn load_inspector_yaml(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.inspector.edit_load = None;
+        self.inspector.action_message = Some("Loading YAML…".into());
+        cx.notify();
+        // Detail requests made from tables can contain only kind/name.  The
+        // detail response also carries the UID on the item, so always build
+        // the edit reference from the freshest identity we have.  The edit
+        // endpoint deliberately rejects a missing UID (it is part of the
+        // optimistic-concurrency guard).
         let reference = self
             .inspector
             .detail
             .as_ref()
-            .map(|d| d.reference.clone())
+            .and_then(|d| {
+                let mut reference = d.reference.clone();
+                if reference.uid.is_none() {
+                    reference.uid = d.item.uid.clone();
+                }
+                reference.uid.as_deref().filter(|uid| !uid.is_empty())?;
+                Some(reference)
+            })
             .or_else(|| match self.inspector.target.clone() {
-                Some(InspectorTarget::Resource(r)) => Some(r),
+                Some(InspectorTarget::Resource(r)) if r.uid.is_some() => Some(r),
                 _ => None,
             });
         let Some(reference) = reference else {
+            self.inspector.action_message = Some(
+                "YAML unavailable: inspector detail has no UID. Refresh the resource and try again."
+                    .into(),
+            );
+            cx.notify();
             return;
         };
         let Some(session) = self.cluster_session.clone() else {
@@ -329,6 +349,7 @@ impl IceonApp {
         };
         let op_id = self.next_operation_id();
         let connection = self.connection.clone();
+        let target = self.inspector.target.clone();
         let req = EditRequest {
             cluster_id: session.cluster_id,
             session_id: session.session_id,
@@ -341,6 +362,11 @@ impl IceonApp {
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.resource_edit(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                // A slow edit read must not populate the editor for a
+                // resource selected after the request was started.
+                if this.inspector.target != target {
+                    return;
+                }
                 match result {
                     Ok(loaded) => {
                         let yaml = loaded.yaml.clone().unwrap_or_default();
@@ -351,7 +377,11 @@ impl IceonApp {
                     }
                     Err(err) => {
                         this.inspector.action_message =
-                            Some(format!("YAML load unavailable: {err:?}"));
+                            Some(match err {
+                                iceon_core::connection::ConnectionError::InvalidInput =>
+                                    "YAML load unavailable: inspector reference is missing a UID or is stale. Refresh the resource and try again.".into(),
+                                other => format!("YAML load unavailable: {other:?}"),
+                            });
                     }
                 }
                 cx.notify();
@@ -368,8 +398,25 @@ impl IceonApp {
             return;
         };
         let yaml = self.inspector_yaml_editor.read(cx).value().to_string();
+        if loaded.reference.uid.as_deref().is_none_or(str::is_empty) {
+            self.inspector.action_message = Some(
+                "Cannot apply YAML: loaded inspector reference has no UID. Reload the resource."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
+        if loaded.resource_version.is_empty() {
+            self.inspector.action_message = Some(
+                "Cannot apply YAML: loaded resource has no resourceVersion. Reload the resource."
+                    .into(),
+            );
+            cx.notify();
+            return;
+        }
         let op_id = self.next_operation_id();
         let connection = self.connection.clone();
+        let target = self.inspector.target.clone();
         let req = EditRequest {
             cluster_id: session.cluster_id,
             session_id: session.session_id,
@@ -386,6 +433,9 @@ impl IceonApp {
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.resource_edit(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.inspector.target != target {
+                    return;
+                }
                 match result {
                     Ok(applied) => {
                         let was_dry_run = applied.mode == EditMode::DryRun;
@@ -3002,7 +3052,9 @@ impl IceonApp {
 
         v_flex()
             .w_full()
-            .h(px(520.0))
+            .flex_1()
+            .min_h(px(420.0))
+            .min_w_0()
             .gap_2()
             .child(
                 h_flex()
@@ -3062,6 +3114,8 @@ impl IceonApp {
             .child(
                 div()
                     .flex_1()
+                    .min_h_0()
+                    .min_w_0()
                     .w_full()
                     .border_1()
                     .border_color(cx.theme().border)

@@ -307,8 +307,28 @@ fn menu_item_with_pin(
         let label = label.clone();
         h_flex()
             .items_center()
-            .gap_0p5()
-            .when(action_icon.is_none(), |row| row.w_full().flex_row_reverse())
+            .w_full()
+            .justify_between()
+            .child(
+                Button::new(SharedString::from(format!("activate-{id_key}")))
+                    .ghost()
+                    .text_color(foreground)
+                    .xsmall()
+                    .when_some(action_icon.clone(), |button, icon| button.icon(icon))
+                    .when(action_icon.is_none(), |button| {
+                        button
+                            .label(label.clone())
+                            .flex_1()
+                            .justify_start()
+                            .text_left()
+                    })
+                    .accessibility_label(label.clone())
+                    .tooltip(label.clone())
+                    .on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    }),
+            )
             .when_some(pin_state, |row, (pinned, pin_handler)| {
                 let pin_tooltip: SharedString = if pinned {
                     format!("Unpin {label} from Favorites").into()
@@ -330,22 +350,6 @@ fn menu_item_with_pin(
                         }),
                 )
             })
-            .child(
-                Button::new(SharedString::from(format!("activate-{id_key}")))
-                    .ghost()
-                    .text_color(foreground)
-                    .xsmall()
-                    .when_some(action_icon.clone(), |button, icon| button.icon(icon))
-                    .when(action_icon.is_none(), |button| {
-                        button.label(label.clone()).flex_1().justify_start()
-                    })
-                    .accessibility_label(label.clone())
-                    .tooltip(label)
-                    .on_click(move |event, window, cx| {
-                        cx.stop_propagation();
-                        handler(event, window, cx);
-                    }),
-            )
     })
 }
 
@@ -397,7 +401,8 @@ impl IceonApp {
             .h_full()
             .bg(cx.theme().tokens.sidebar)
             .text_color(cx.theme().sidebar_foreground)
-            .border_color(gpui_kit::transparent_black())
+            .border_r_1()
+            .border_color(cx.theme().sidebar_border)
             .py_2()
             .gap_2()
             .items_center()
@@ -818,7 +823,8 @@ impl IceonApp {
             "cluster-navigation-{cluster_id}"
         )))
         .w_full()
-        .border_0()
+        .border_r_1()
+        .border_color(cx.theme().sidebar_border)
         .collapsible(false)
         .children(groups)
     }

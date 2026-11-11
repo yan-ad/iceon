@@ -220,8 +220,15 @@ impl TerminalSurface {
     }
 
     pub(crate) fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_size(80, 24, cx)
+    }
+
+    /// Construct with the size used by the owning transport.  Keeping the
+    /// parser at the transport's initial size avoids the first exec snapshot
+    /// being laid out in the fallback 80x24 grid before the first paint.
+    pub(crate) fn with_size(cols: u16, rows: u16, cx: &mut Context<Self>) -> Self {
         Self {
-            parser: surface_parser(80, 24, false),
+            parser: surface_parser(cols, rows, false),
             focus_handle: cx.focus_handle(),
             bounds: Bounds::default(),
             selection: None,
