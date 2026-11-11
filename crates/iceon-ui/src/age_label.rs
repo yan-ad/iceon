@@ -86,7 +86,19 @@ impl Render for AgeView {
 // Only this non-notifying wrapper uses keyed state. Using AgeView directly as
 // keyed state would install GPUI's automatic parent observer and invalidate the
 // whole resource table every second.
-struct AgeMount(Entity<AgeView>);
+struct AgeMount(Entity<AgeHost>);
+
+struct AgeHost {
+    view: Entity<AgeView>,
+}
+
+impl Render for AgeHost {
+    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.view
+            .clone()
+            .cached(StyleRefinement::default().w_full().h(px(20.)))
+    }
+}
 
 #[derive(IntoElement)]
 pub struct AgeLabel {
@@ -116,11 +128,15 @@ impl RenderOnce for AgeLabel {
                     created_at: created_at.clone(),
                     timezone: timezone.clone(),
                 };
-                AgeClock::register(cx.entity(), cx);
-                label
+                let view = cx.new(|cx| {
+                    AgeClock::register(cx.entity(), cx);
+                    label
+                });
+                AgeHost { view }
             }))
         });
-        let view = mount.read(cx).0.clone();
+        let host = mount.read(cx).0.clone();
+        let view = host.read(cx).view.clone();
         view.update(cx, |label, cx| {
             if label.created_at != created_at || label.timezone != timezone {
                 label.text = format_age_at(created_at.as_deref(), jiff::Timestamp::now());
@@ -129,6 +145,6 @@ impl RenderOnce for AgeLabel {
                 cx.notify();
             }
         });
-        view.cached(StyleRefinement::default().w_full().h(px(20.)))
+        host.cached(StyleRefinement::default().w_full().h(px(20.)))
     }
 }
