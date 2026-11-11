@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.3
+
+### Native installers and signed migration feed
+
+- Replace the Windows portable ZIP with a per-user x86 NSIS setup EXE, a Start
+  menu shortcut, registered uninstaller and preservation of the legacy custom
+  installation path. Gate packaging with synthetic upgrade/reinstall/uninstall tests.
+- Publish signed macOS application archives and Windows setup EXEs, matching
+  `.sig` files, `latest.json` and SHA-256 checksums. Use a standalone Rust signer
+  and independent verifier with the existing public trust key and authenticated
+  release-version comments; no frontend or old application runtime is required.
+- Restore the download/feed format expected by compatible older updater-enabled
+  clients. Pre-updater installs still require manual installation; end-to-end
+  migration remains subject to installed-client testing. The native GPUI app
+  does not yet update itself after migration.
+- Run release jobs only on macOS and Windows. Preserve same-commit CI, immutable
+  tags, fresh-release publication and uploaded/downloaded-byte integrity gates.
+- macOS remains ad-hoc signed, not notarized; Windows setup is not Authenticode
+  signed. Updater signatures do not replace platform signing.
+
+### Project documentation and license
+
+- Align the project LICENSE, Cargo workspace/crate metadata and README on MIT,
+  retaining third-party licenses and notices.
+- Refresh native architecture, feature/OS roadmaps and icon ownership documentation;
+  remove obsolete web-frontend documentation, workflows and updater tooling.
+
 ## 0.1.2
 
 ### Native Rust desktop

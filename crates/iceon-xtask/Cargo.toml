@@ -6,8 +6,10 @@ license.workspace = true
 publish = false
 
 [dependencies]
+base64 = "0.22"
+minisign = "=0.9.1"
+minisign-verify = "=0.3.0"
+same-file = "1"
 semver = "1"
-toml_edit = "0.22"
-
-[dev-dependencies]
 tempfile = "3"
+toml_edit = "0.22"

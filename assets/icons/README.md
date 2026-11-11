@@ -8,7 +8,7 @@ These are native branding assets, not a generated frontend asset bundle.
 | `128x128.png` | Repository README logo |
 | `32x32.png` | Embedded macOS status/tray icon in `crates/iceon-ui/src/tray.rs` |
 | `icon.icns` | macOS `Iceon.app` bundle icon, copied by the native packager |
-| `icon.ico` | Windows branding source; not currently embedded by portable ZIP packaging |
+| `icon.ico` | Windows setup/uninstaller and installed shortcut branding; not embedded in the app EXE |
 
 GPUI component/Lucide icons are embedded separately through Rust asset sources.
 Changing a source icon requires rebuilding the application or package; no external

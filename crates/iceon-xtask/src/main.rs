@@ -1,3 +1,5 @@
+mod update_signing;
+
 use semver::Version;
 use std::{
     env, fs,
@@ -10,7 +12,7 @@ use std::{
 use toml_edit::{DocumentMut, value};
 
 type Result<T> = std::result::Result<T, String>;
-const HELP: &str = "Usage: cargo xtask release <X.Y.Z|patch|minor|major> [--dry-run] [--branch main] [--remote origin]\n       cargo xtask verify-release <vX.Y.Z>\nDry run performs local validation only, never fetches, writes, commits, tags or pushes.";
+const HELP: &str = "Usage: cargo xtask release <X.Y.Z|patch|minor|major> [--dry-run] [--branch main] [--remote origin]\n       cargo xtask verify-release <vX.Y.Z>\n       cargo xtask sign-update <FILE> <X.Y.Z>\n       cargo xtask verify-update <FILE.sig> <FILE> <X.Y.Z>\nDry run performs local validation only, never fetches, writes, commits, tags or pushes.";
 
 #[derive(Debug)]
 struct Options {
@@ -30,7 +32,29 @@ fn main() {
 }
 
 fn entry() -> Result<()> {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let args: Vec<String> = env::args_os()
+        .skip(1)
+        .map(|s| {
+            s.into_string()
+                .map_err(|_| "invalid command arguments".to_string())
+        })
+        .collect::<Result<_>>()?;
+    match args.first().map(String::as_str) {
+        Some("sign-update") if args.len() == 3 => {
+            update_signing::sign_update(Path::new(&args[1]), &args[2])
+                .map_err(|e| e.to_string())?;
+            println!("Update signature created and verified.");
+            return Ok(());
+        }
+        Some("verify-update") if args.len() == 4 => {
+            update_signing::verify_update(Path::new(&args[1]), Path::new(&args[2]), &args[3])
+                .map_err(|e| e.to_string())?;
+            println!("Update signature verified.");
+            return Ok(());
+        }
+        Some("sign-update" | "verify-update") => return Err(HELP.into()),
+        _ => {}
+    }
     if args.is_empty() || args == ["--help"] || args == ["-h"] {
         println!("{HELP}");
         return Ok(());

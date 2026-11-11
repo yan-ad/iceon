@@ -228,8 +228,8 @@ operations should be advertised as implemented.
 `assets/icons/icon.png` is embedded by `app_assets.rs` for native UI branding;
 `assets/icons/128x128.png` is used by the README, and `32x32.png` is embedded
 by the macOS tray implementation. The macOS package copies
-`assets/icons/icon.icns` as its bundle icon. `icon.ico` is available for Windows
-branding but the current portable packager does not embed it in the executable.
+`assets/icons/icon.icns` as its bundle icon. `icon.ico` brands the Windows setup/uninstaller and installed shortcut; the app
+executable itself does not yet embed that icon.
 See [icon inventory](assets/icons/README.md).
 
 Component/extra Lucide icons and console fonts are embedded by Rust asset sources.
@@ -245,13 +245,17 @@ settings. Window controls, menus and accelerators use GPUI/platform APIs.
 
 The authoritative native shipping contract is [docs/releases.md](docs/releases.md).
 `release.yml` gates packaging on same-commit macOS/Windows CI, produces Apple
-Silicon DMG/app archives and a Windows x86 portable ZIP, verifies checksums and
-uploaded/downloaded bytes, then publishes only a new verified release.
+Silicon DMG/app archives and a Windows x86 NSIS setup EXE. A standalone Rust signer
+produces authenticated payload/version signatures and a migration feed for compatible
+older clients. Publication verifies signatures, manifest, checksums and downloaded
+bytes before publishing only a new release. Published `0.1.2` retains its earlier ZIP
+asset set; pipeline edits never overwrite it.
 
-macOS packages are ad-hoc signed, not notarized. Windows packages are unsigned.
-There is no integrated automatic updater or update feed. Downloads/checksums do
+macOS packages are ad-hoc signed, not notarized. Windows packages lack Authenticode signing.
+There is no integrated native automatic updater; a signed migration feed alone does
+not add one. Downloads/checksums do
 not replace publisher signing or native smoke tests. Linux Rust CI/packaging is
-currently deferred; Intel macOS and Windows x64/ARM64 have no release targets.
+currently deferred; release jobs use only macOS/Windows runners; Intel macOS and Windows x64/ARM64 have no release targets.
 Do not equate compilation or packaging with verified installation/runtime support.
 
 ## Verification

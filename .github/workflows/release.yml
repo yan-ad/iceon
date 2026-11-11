@@ -2,20 +2,20 @@ name: Native stable release
 
 on:
   push:
-    tags: ['0.1.2']
+    tags: ['0.1.3']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing immutable tag at this workflow commit (exactly 0.1.2)'
+        description: 'Existing immutable tag at this workflow commit (exactly 0.1.3)'
         required: true
         type: string
-        default: '0.1.2'
+        default: '0.1.3'
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-release-0.1.2
+  group: native-release-0.1.3
   cancel-in-progress: false
 
 env:
@@ -24,7 +24,7 @@ env:
 
 jobs:
   validate:
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 10
     outputs:
       tag_object: ${{ steps.guard.outputs.tag_object }}
@@ -91,8 +91,21 @@ jobs:
           key: native-release-${{ matrix.target }}
       - name: Build native app (embedded GPUI icons and fonts)
         run: cargo build --release --locked -p iceon-app --target ${{ matrix.target }}
+      - name: Install native Windows installer compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --version=3.11 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          if (!(Test-Path $compiler)) { throw 'NSIS compiler missing' }
+          "MAKENSIS=$compiler" >> $env:GITHUB_ENV
       - name: Package and validate native app
         run: python .github/scripts/native_release.py package-${{ matrix.package }}
+      - name: Test Windows installer upgrade and uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/test_windows_installer.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
@@ -102,7 +115,7 @@ jobs:
 
   publish:
     needs: [validate, ci, build]
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 20
     permissions:
       contents: write
@@ -119,6 +132,19 @@ jobs:
           pattern: native-*
           path: dist
           merge-multiple: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          key: native-update-signing
+      - name: Test standalone update signer and verifier
+        run: cargo test --locked -p iceon-xtask
+      - name: Sign migration artifacts and create verified updater feed
+        env:
+          # Preserve the original trust key; the environment name is only a secret alias.
+          ICEON_UPDATE_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          ICEON_UPDATE_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: python .github/scripts/native_release.py sign-updates
       - name: Verify transferred artifacts and create checksum manifest
         run: python .github/scripts/native_release.py checksums
       - name: Create fresh draft, verify uploaded bytes, publish stable/latest

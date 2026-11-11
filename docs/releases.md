@@ -1,103 +1,130 @@
-# Native Iceon 0.1.2 release
+# Native Iceon release packaging and signed migration feed
 
-`.github/workflows/release.yml` packages the pure-Rust GPUI application in
-[yan-ad/iceon](https://github.com/yan-ad/iceon).
-It accepts only the exact tag `0.1.2` (no `v`). Manual dispatch requires that
-existing remote tag to point to the dispatch's Actions commit. The workflow
-never creates, moves or pushes a tag and never resumes/overwrites a release.
-The raw remote tag object is recorded and rechecked before builds and publication,
-including annotated-tag identity, not just the peeled commit.
+`.github/workflows/release.yml` builds the pure-Rust GPUI app for Apple Silicon
+macOS and Windows x86. There are **no Linux jobs or Linux assets** in this workflow.
+Same-commit reusable CI still gates both platform builds and publication.
 
-## Prerequisites and gates
+## Asset contract
 
-Before tagging, maintainers must set `[workspace.package].version`, any explicit
-local package versions, and all four local Cargo.lock packages to `0.1.2`, and
-add a nonempty `## 0.1.2` changelog section (optionally ` (pending CI)`). The
-helper fails closed on any mismatch. The workspace and local packages are aligned
-to `0.1.2`, following the latest published release, `0.1.1`; the previously
-unpublished workspace version `0.1.8` was corrected during release preparation.
+The configured version is currently `0.1.3`. Expected uploaded assets are:
 
-The reusable `ci.yml` runs macOS checks and Windows x86 compilation at the workflow
-commit before packaging; Linux Rust builds are deferred. Fast validation/publication
-helpers still use Ubuntu runners. Both platform builds and publication depend
-on CI success. Only publication has
-`contents: write`. Checkout is the Actions commit, not a separately resolved tag.
+```text
+Iceon_0.1.3_aarch64.app.tar.gz
+Iceon_0.1.3_aarch64.app.tar.gz.sig
+Iceon_0.1.3_aarch64.dmg
+Iceon_0.1.3_x86-setup.exe
+Iceon_0.1.3_x86-setup.exe.sig
+latest.json
+SHASUMS256.txt
+```
 
-Native build commands use `cargo build --release --locked -p iceon-app --target`:
+GitHub adds source ZIP/tar archives and displays sizes, download counts and SHA-256
+digests. Those values are computed for the new bytes, not copied from older releases.
+`SHASUMS256.txt` covers every other uploaded asset; it cannot hash itself.
 
-- `aarch64-apple-darwin` on ARM64 `macos-15`: creates `Iceon.app`, sets bundle
-  identifier `ad.yan.iceon`, executable `iceon`, and both bundle versions to
-  `0.1.2`. Copies `assets/icons/icon.icns` if available, ad-hoc signs the bundle,
-  verifies signature/ARM64 metadata and executable permissions, creates a tarball
-  and compressed DMG. The DMG is verified and mounted read-only to inspect the
-  signed app, binary identity and `/Applications` link.
-- `i686-pc-windows-msvc` on `windows-2022`: initializes ilammy's x86 MSVC environment
-  and the existing absolute x86 linker action. Packages `Iceon/iceon.exe` in a
-  standalone ZIP and validates its PE32/i386 headers and ZIP integrity. There is
-  no NSIS, installer, WebView2 or external installer-tool dependency. Windows
-  system/runtime DLL availability and real launch behavior need native smoke tests.
+**Published `0.1.2` already has the earlier portable ZIP asset set.** Editing this
+workflow does not change that release. The publisher intentionally rejects an
+existing draft/published release and never overwrites its assets. Before another
+publication, choose a new release version and update the workspace/lock versions,
+changelog, exact workflow tag/input/concurrency defaults, helper `VERSION` and
+corresponding test fixtures together. Do not move an existing published tag.
 
-### Embedded assets
+## Packages and installation
 
-No source-tree asset directory is required beside the executable. Existing
-`crates/iceon-ui/src/app_assets.rs` embeds the welcome PNG with `include_bytes!`,
-embeds the additional Lucide icons with `gpui_kit_assets::icon_assets!`, and falls
-back to `gpui_kit::assets::Assets`. `lib.rs` installs this asset source at startup.
-The workspace enables gpui-kit 0.9.0's default `assets` feature. Console fonts are
-embedded by `console_font.rs`; GPUI kit supplies its own bundled component assets.
-The locked GPUI Apple renderer also embeds `shaders.metallib` via `include_bytes!`
-in gpui-pre-apple 0.3.11, rather than loading a sidecar Metal library.
-The normal existing app build includes these assets: no Rust/manifest changes or
-frontend resource-copy step are necessary. Existing Rust asset tests run in reusable
-CI. The optional `.icns` is the native bundle icon, separate from embedded UI assets.
+- **macOS:** ARM64 `Iceon.app`, bundle ID `ad.yan.iceon`, executable `iceon`, matching
+  bundle versions, embedded resources and copied `.icns`. The bundle is ad-hoc
+  signed, checked, archived and placed in a compressed DMG. The DMG is verified
+  and mounted read-only to validate the bundle and Applications link.
+- **Windows:** i686 PE32 `iceon.exe` inside a Unicode NSIS setup EXE, compiled with
+  pinned NSIS 3.11. A normal Setup wizard includes the MIT license, directory
+  selection, Start menu shortcut and registered uninstaller. It installs for the
+  current user without elevation, defaulting to `%LOCALAPPDATA%\Iceon`.
+  No WebView2/bootstrapper or JavaScript runtime is installed.
 
-## Publication and installation
+The Windows installer preserves the previous `Software\Yanuar\Iceon` path and
+`Software\Microsoft\Windows\CurrentVersion\Uninstall\Iceon` identity in the
+32-bit HKCU registry view, including custom paths. `/S /UPDATE` supports the older
+updater; `/R /ARGS` supports requested restart. A bounded overwrite retry allows
+an exiting old process to release its executable; it never kills arbitrary processes.
+The uninstaller removes owned files/registration, not app data or unknown files.
 
-Exactly four public assets (GitHub-generated source archives are separate):
+The Windows runner gates artifact upload on a synthetic old-install upgrade,
+reinstall and uninstall test with installed-payload hash/registry checks. This is
+not a full installed legacy-client update test or a graphical launch test.
 
-| Asset | Purpose |
-| --- | --- |
-| `Iceon_0.1.2_aarch64.dmg` | Apple Silicon manual install; drag app to Applications |
-| `Iceon_0.1.2_aarch64.app.tar.gz` | Same signed app bundle, manual extraction/install |
-| `Iceon_0.1.2_i686.zip` | Windows x86 standalone executable; extract before running |
-| `SHASUMS256.txt` | SHA-256 of the three packages |
+## Trust and older-client updates
 
-The publisher validates transferred archives, exact asset inventory and checksums
-before creating a fresh draft. It uploads without `--clobber`, checks remote
-names/sizes/states and digests when provided, downloads all four assets and compares
-their bytes, revalidates checksums/archives, and rechecks source/tag guards before
-publishing stable/latest. It confirms the published and latest release identity.
-An API error is not treated as release absence. A failed upload/verification leaves
-a draft for manual inspection; reruns refuse it, rather than replacing assets.
-GitHub repository release immutability, if enabled, takes effect on publication;
-workflow checks also protect the existing tag throughout this run. Administrators
-must still prevent concurrent external tag/release edits; API operations are not
-an atomic transaction or a repository tag-protection rule.
+`latest.json` contains `version`, UTC `pub_date`, notes and exactly four platform
+entries: `darwin-aarch64`, `darwin-aarch64-app`, `windows-i686`, `windows-i686-nsis`.
+Aliases share the exact payload URL/signature. URLs point to the canonical repo,
+release tag and matching archive/installer. There is no Linux entry.
 
-The macOS app is **ad-hoc signed, not Developer ID signed or notarized**. Windows
-is **unsigned** and may trigger SmartScreen. Checksums verify integrity, not
-publisher identity. Do not disable OS security protections globally. Native
-installation, Gatekeeper/SmartScreen, graphical startup and credential/cluster
-integration require manual smoke tests on the supported platforms.
+The `.sig` files are base64-encoded complete Minisign documents. They authenticate
+the **final archive/EXE bytes** and the trusted-comment `version:X.Y.Z` field.
+The independent verifier checks both payload and trusted-comment signatures before
+accepting the exact stable version. A JSON version alone is insufficient.
 
-There is **no native updater integration**, no `latest.json`, no updater signatures,
-and **no automatic-update compatibility claim**. Install these packages manually.
-This document and the native workflow are the distribution contract.
+The standalone Rust signer/verifier lives in `crates/iceon-xtask/src/update_signing.rs`.
+Its pinned public key is the one embedded in the updater-enabled older Iceon builds.
+No old frontend/runtime or signing CLI is required. The publication step maps the
+existing GitHub secret `TAURI_SIGNING_PRIVATE_KEY` into `ICEON_UPDATE_PRIVATE_KEY`
+and its password secret into `ICEON_UPDATE_PRIVATE_KEY_PASSWORD`. An explicitly
+empty password is supported. These legacy GitHub secret names preserve the trust
+anchor; do not generate a replacement key to make a failure pass. Secrets are used
+only for signing, never passed in argv or published as assets.
 
-## Helper tests and API references
+```sh
+# Secret values supplied through environment, never command arguments:
+cargo xtask sign-update dist/Iceon_0.1.3_aarch64.app.tar.gz 0.1.3
+cargo xtask verify-update dist/Iceon_0.1.3_aarch64.app.tar.gz.sig dist/Iceon_0.1.3_aarch64.app.tar.gz 0.1.3
+```
 
-Run without third-party Python packages (Python 3.11+):
+Updater-enabled old clients use the existing endpoint:
+`https://github.com/yan-ad/iceon/releases/latest/download/latest.json`.
+The new feed/installer are designed for that protocol. Releases without embedded
+updater trust (notably 0.0.1/0.0.2) still require manual installation; `<0.1.1` is not
+a uniform compatibility group. Validate migration from a real old install on each
+OS before claiming end-to-end compatibility or preserved application data.
+
+**The new GPUI app still has no native automatic updater.** Migrating into it does
+not promise subsequent self-updates. Catalog/preferences migration across storage
+formats is also not provided by installer format or download signatures.
+
+Minisign updater authentication is distinct from platform signing: macOS remains
+**ad-hoc signed, not Developer ID signed/notarized**; Windows remains **without
+Authenticode signing** and may trigger SmartScreen. Do not disable OS protections
+globally. Installation/launch and credential/cluster behavior need native smoke tests.
+
+## Publication guards
+
+The workflow currently accepts only exact tag `0.1.3`, without `v`. Manual dispatch
+requires its immutable remote tag to point to the workflow commit. The helper
+checks all four package versions/lock entries and a nonempty changelog section,
+records the raw annotated-tag object, and rechecks it before build/publication.
+It never creates/moves tags or resumes existing releases.
+
+Final payloads are transferred from macOS/Windows build jobs. The macOS publication
+job tests the Rust signer, signs and independently verifies both payloads, generates
+and verifies the feed, then computes checksums. It creates a fresh draft, uploads
+exactly seven assets without clobbering, checks metadata/digests, downloads and
+compares every byte, rechecks signatures/feed/checksums/tag identity, then publishes
+stable/latest. Any mismatch fails closed; a failed draft requires manual inspection.
+Only publication has `contents: write`.
+
+## Verification
 
 ```sh
 python3 -m unittest discover -s .github/scripts -p 'test_native_release.py' -v
+cargo test --locked -p iceon-xtask
+cargo clippy --locked -p iceon-xtask --all-targets -- -D warnings
 ```
 
-References checked for this workflow:
+NSIS is compiled with warnings as errors. Windows-only install/upgrade/uninstall
+smoke tests are in `.github/scripts/test_windows_installer.ps1`; they must run only
+on disposable runners. Unit fixtures are not production signatures or live migration proof.
 
-- [Reusable workflows](https://docs.github.com/en/actions/sharing-automations/reusing-workflows)
-- [Upload artifact](https://github.com/actions/upload-artifact) and
-  [download artifact](https://github.com/actions/download-artifact) (`pattern`, `merge-multiple`)
-- [MSVC environment](https://github.com/ilammy/msvc-dev-cmd) (`arch: x86`)
-- [gh release create](https://cli.github.com/manual/gh_release_create) (`--draft`, `--verify-tag`)
-- [gh release upload](https://cli.github.com/manual/gh_release_upload) (no `--clobber`)
-- [gh release edit](https://cli.github.com/manual/gh_release_edit) (`--draft=false`, `--latest`)
+Protocol references:
+- [Updater protocol](https://v2.tauri.app/plugin/updater/)
+- [Exact older verifier implementation](https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.14.0/plugins/updater/src/updater.rs)
+- [Minisign Rust implementation](https://github.com/jedisct1/rust-minisign/tree/0.9.1)
+- [NSIS](https://nsis.sourceforge.io/Docs/)

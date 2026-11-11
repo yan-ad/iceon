@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Native 0.1.2 packaging and fail-closed publication (Python 3.11+, stdlib)."""
+"""Native 0.1.3 packaging and fail-closed publication (Python 3.11+, stdlib)."""
 import argparse
+import base64
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -14,16 +16,18 @@ import subprocess
 import tarfile
 import tempfile
 import tomllib
-import zipfile
 
 REPOSITORY = "yan-ad/iceon"
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 PACKAGES = ("iceon-app", "iceon-core", "iceon-ui", "iceon-xtask")
 MAC = f"Iceon_{VERSION}_aarch64.app.tar.gz"
 DMG = f"Iceon_{VERSION}_aarch64.dmg"
-WIN = f"Iceon_{VERSION}_i686.zip"
+WIN = f"Iceon_{VERSION}_x86-setup.exe"
+FEED = "latest.json"
 SUMS = "SHASUMS256.txt"
-NAMES = {MAC, DMG, WIN, SUMS}
+NAMES = {MAC, DMG, WIN, MAC + ".sig", WIN + ".sig", FEED, SUMS}
+PLATFORMS = {"darwin-aarch64": MAC, "darwin-aarch64-app": MAC,
+             "windows-i686": WIN, "windows-i686-nsis": WIN}
 
 
 def require(ok, message):
@@ -38,7 +42,7 @@ def run(*args):
 def changelog(root):
     text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     matches = list(re.finditer(r"^## " + re.escape(VERSION) + r"(?: \(pending CI\))?\s*$", text, re.M))
-    require(len(matches) == 1, "Need exactly one canonical 0.1.2 changelog section")
+    require(len(matches) == 1, "Need exactly one canonical 0.1.3 changelog section")
     body = re.split(r"^## ", text[matches[0].end():], maxsplit=1, flags=re.M)[0].strip()
     require(bool(body), "Empty release changelog")
     return body
@@ -46,7 +50,7 @@ def changelog(root):
 
 def versions(root):
     workspace = tomllib.loads((root / "Cargo.toml").read_text())
-    require(workspace["workspace"]["package"]["version"] == VERSION, "Workspace version must be 0.1.2")
+    require(workspace["workspace"]["package"]["version"] == VERSION, "Workspace version must be 0.1.3")
     lock = tomllib.loads((root / "Cargo.lock").read_text())
     for name in PACKAGES:
         manifest = tomllib.loads((root / "crates" / name / "Cargo.toml").read_text())["package"]
@@ -69,7 +73,7 @@ def remote_tag(root, sha, expected=None):
 
 def guard(root, expected=None):
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "Canonical repository required")
-    require(os.environ.get("RELEASE_TAG") == VERSION, "Only exact tag 0.1.2 is accepted")
+    require(os.environ.get("RELEASE_TAG") == VERSION, "Only exact tag 0.1.3 is accepted")
     event = os.environ.get("GITHUB_EVENT_NAME")
     require(event in ("push", "workflow_dispatch"), "Unsupported release event")
     if event == "push":
@@ -122,9 +126,14 @@ def package(root, out, platform):
     if platform == "windows":
         exe = root / "target/i686-pc-windows-msvc/release/iceon.exe"
         binary(exe.read_bytes(), "windows")
-        with zipfile.ZipFile(out / WIN, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(exe, "Iceon/iceon.exe")
-        verify_zip(out / WIN)
+        compiler = os.environ.get("MAKENSIS", "makensis")
+        prefix = "/" if os.name == "nt" else "-"
+        run(compiler, prefix + "WX", prefix + "V3", prefix + "DVERSION=" + VERSION,
+            prefix + "DPAYLOAD=" + str(exe), prefix + "DOUTPUT=" + str(out / WIN),
+            prefix + "DLICENSE_FILE=" + str(root / "LICENSE"),
+            prefix + "DICON_FILE=" + str(root / "assets/icons/icon.ico"),
+            str(root / ".github/installer/iceon.nsi"))
+        verify_installer(out / WIN)
         return
     require(run("uname", "-m") == "arm64", "Native ARM64 macOS runner required")
     with tempfile.TemporaryDirectory() as temporary:
@@ -158,14 +167,69 @@ def package(root, out, platform):
     verify_tar(out / MAC)
 
 
-def verify_zip(path):
-    with zipfile.ZipFile(path) as archive:
-        require(archive.namelist() == ["Iceon/iceon.exe"], "Unexpected ZIP entries")
-        info = archive.infolist()[0]
-        require(0 < info.file_size <= 1024 ** 3, "Invalid ZIP member size")
-        require(not stat.S_ISLNK(info.external_attr >> 16) and not info.flag_bits & 1, "Linked/encrypted ZIP member")
-        require(not archive.testzip(), "ZIP integrity failed")
-        binary(archive.read(info), "windows")
+def verify_installer(path):
+    # The Windows runner separately installs it and checks the installed payload hash.
+    binary(path.read_bytes(), "windows")
+
+
+def update_signature(path):
+    fingerprint(path)
+    require(path.stat().st_size <= 16 * 1024, "Signature too large")
+    encoded = path.read_text(encoding="ascii").strip()
+    try:
+        lines = base64.b64decode(encoded, validate=True).decode("utf-8").splitlines()
+    except (ValueError, UnicodeError) as error:
+        raise ValueError("Invalid updater signature encoding") from error
+    require(len(lines) == 4 and lines[0].startswith("untrusted comment: ")
+            and lines[2].startswith("trusted comment: "), "Invalid signature document")
+    fields = lines[2].removeprefix("trusted comment: ").split("\t")
+    require([f for f in fields if f.startswith("version:")] == ["version:" + VERSION],
+            "Signature must authenticate the exact release version")
+    return encoded
+
+
+def verify_updates(directory):
+    for name in (MAC, WIN):
+        update_signature(directory / (name + ".sig"))
+        run("cargo", "xtask", "verify-update", str(directory / (name + ".sig")),
+            str(directory / name), VERSION)
+
+
+def updater_manifest(directory, create=False):
+    verify_updates(directory)
+    platforms = {key: {"url": f"https://github.com/{REPOSITORY}/releases/download/{VERSION}/{name}",
+                       "signature": update_signature(directory / (name + ".sig"))}
+                 for key, name in PLATFORMS.items()}
+    path = directory / FEED
+    if create:
+        require(not path.exists(), "Never overwrite updater manifest")
+        manifest = {"version": VERSION, "notes": "Native GPUI migration; future native updates require manual installation until a native updater is integrated.",
+                    "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "platforms": platforms}
+        with path.open("x", encoding="utf-8") as output:
+            output.write(json.dumps(manifest, indent=2) + "\n")
+    fingerprint(path)
+    require(path.stat().st_size <= 64 * 1024, "Updater manifest too large")
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, "Duplicate manifest key")
+            result[key] = value
+        return result
+    manifest = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_pairs)
+    require(set(manifest) == {"version", "notes", "pub_date", "platforms"}
+            and manifest["version"] == VERSION and manifest["platforms"] == platforms,
+            "Updater version, platforms, URLs or signatures differ")
+    require(isinstance(manifest["notes"], str) and bool(manifest["notes"]), "Missing updater notes")
+    require(isinstance(manifest["pub_date"], str)
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", manifest["pub_date"]), "Invalid publication date")
+    datetime.strptime(manifest["pub_date"], "%Y-%m-%dT%H:%M:%SZ")
+
+
+def sign_updates(directory):
+    require({p.name for p in directory.iterdir()} == {MAC, DMG, WIN}, "Expected only final unsigned update payloads")
+    for name in (MAC, WIN):
+        run("cargo", "xtask", "sign-update", str(directory / name), VERSION)
+    updater_manifest(directory, create=True)
 
 
 def verify_tar(path):
@@ -193,7 +257,8 @@ def checksums(directory, create=False):
     else:
         require((directory / SUMS).read_text(encoding="ascii") == text, "Checksum mismatch")
     verify_tar(directory / MAC)
-    verify_zip(directory / WIN)
+    verify_installer(directory / WIN)
+    updater_manifest(directory)
     require((directory / DMG).stat().st_size >= 512, "DMG too small")
     with (directory / DMG).open("rb") as source:
         source.seek(-512, 2)
@@ -222,7 +287,7 @@ def publish(root, directory, tag_object):
     no_release()
     with tempfile.TemporaryDirectory() as temporary:
         notes = Path(temporary) / "notes.md"
-        notes.write_text(changelog(root) + "\n\nNative GPUI manual-install packages. macOS is ad-hoc signed, not notarized. Windows ZIP is unsigned. No updater feed or automatic update support.\n", encoding="utf-8")
+        notes.write_text(changelog(root) + "\n\nNative GPUI packages with a Windows per-user setup EXE and signed migration feed for compatible older clients. macOS is ad-hoc signed, not notarized; Windows has no Authenticode signature. The native app does not yet update itself. Pre-updater installations require manual installation; installed-client migration smoke testing remains necessary.\n", encoding="utf-8")
         # The tag endpoint does not reliably expose unpublished drafts. Keep the
         # ID from creation, and pin provenance to the same commit as reusable CI.
         draft = api("releases", "--method", "POST", "-f", "tag_name=" + VERSION,
@@ -238,7 +303,9 @@ def publish(root, directory, tag_object):
         require(release["tag_name"] == VERSION and release["draft"] and not release["prerelease"], "Draft changed")
         assets = release["assets"]
         require(len(assets) == len(NAMES) and {a["name"] for a in assets} == NAMES, "Uploaded asset set mismatch")
-        downloaded = Path(temporary) / "downloaded"
+        # macOS temp directories may start with the /var -> /private/var symlink;
+        # the signing verifier intentionally rejects symlink path ancestors.
+        downloaded = Path(temporary).resolve() / "downloaded"
         downloaded.mkdir()
         for asset in assets:
             size, digest = fingerprint(directory / asset["name"])
@@ -262,7 +329,7 @@ def publish(root, directory, tag_object):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["guard", "package-mac", "package-windows", "checksums", "publish"])
+    parser.add_argument("command", choices=["guard", "package-mac", "package-windows", "sign-updates", "checksums", "publish"])
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--directory", type=Path, default=Path("dist"))
     parser.add_argument("--tag-object")
@@ -275,6 +342,8 @@ def main():
                 output.write("tag_object=" + raw + "\n")
     elif args.command.startswith("package-"):
         package(args.root.resolve(), args.directory.resolve(), "mac" if args.command == "package-mac" else "windows")
+    elif args.command == "sign-updates":
+        sign_updates(args.directory)
     elif args.command == "checksums":
         checksums(args.directory, create=True)
     else:
