@@ -34,11 +34,18 @@ try {
         $info.Dispose()
         if (!(Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'Iceon.lnk'))) { throw 'Missing Start menu shortcut' }
     }
-    $uninstall = Join-Path $install 'uninstall.exe'
-    # _?= keeps the uninstaller in the foreground so its exit can be checked.
-    $process = Start-Process -FilePath $uninstall -ArgumentList "/S _?=$install" -Wait -PassThru
-    if ($process.ExitCode -ne 0 -or (Has-Key $registry)) { throw 'Uninstall failed' }
+    $uninstall = Join-Path $root 'uninstall-runner.exe'
+    # _?= disables NSIS's normal temporary self-copy. Run our own temporary copy
+    # so Delete "$INSTDIR\uninstall.exe" does not target the running executable.
+    # Keep _?= last and unquoted, including when the installation path has spaces.
+    Copy-Item (Join-Path $install 'uninstall.exe') $uninstall
+    $process = Start-Process -FilePath $uninstall -ArgumentList "/S _?=$install" -WorkingDirectory $root -Wait -PassThru
+    $registrationRemains = Has-Key $registry
+    if ($process.ExitCode -ne 0 -or $registrationRemains) {
+        throw "Uninstall failed: exit=$($process.ExitCode), registrationRemains=$registrationRemains"
+    }
     if (Test-Path (Join-Path $install 'iceon.exe')) { throw 'Executable survived uninstall' }
+    if (Test-Path (Join-Path $install 'uninstall.exe')) { throw 'Installed uninstaller survived uninstall' }
     if (!(Test-Path (Join-Path $install 'keep-user-data.txt'))) { throw 'Uninstall removed unknown user data' }
 } finally {
     $hive.DeleteSubKeyTree($registry, $false)
