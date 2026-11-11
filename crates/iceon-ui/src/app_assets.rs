@@ -2,7 +2,7 @@
 use gpui_kit::{AssetSource, SharedString};
 use std::borrow::Cow;
 
-gpui_kit_assets::icon_assets!(ExtraIcons, [Pin, PinOff]);
+gpui_kit_assets::icon_assets!(ExtraIcons, [Pin, PinOff, Pencil]);
 
 pub(crate) struct AppAssets;
 impl AssetSource for AppAssets {
@@ -29,7 +29,12 @@ mod tests {
 
     #[test]
     fn pin_unpin_and_default_component_icons_are_embedded() {
-        for icon in [IconName::Pin, IconName::PinOff, IconName::Check] {
+        for icon in [
+            IconName::Pin,
+            IconName::PinOff,
+            IconName::Pencil,
+            IconName::Check,
+        ] {
             let path = icon.path();
             let bytes = AppAssets.load(&path).unwrap().expect("embedded SVG");
             assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));

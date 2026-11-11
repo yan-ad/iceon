@@ -20,6 +20,7 @@ pub(super) struct ClusterChoice {
     id: String,
     name: String,
     context_name: String,
+    color: String,
 }
 
 #[cfg(test)]
@@ -48,6 +49,20 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn breadcrumbs_show_resource_path_and_track_cluster_color() {
+        assert_eq!(super::opened_path("pods"), "Workloads / Pods");
+        assert_eq!(super::opened_path("nodes"), "Nodes");
+        let mut catalog = snapshot();
+        let before = cluster_choices(&catalog);
+        catalog.clusters[0].color = "#ff0000".into();
+        assert_ne!(before, cluster_choices(&catalog));
+        assert_eq!(
+            super::cluster_dot("#ff0000"),
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xff0000))
+        );
     }
 
     #[test]
@@ -120,8 +135,21 @@ fn cluster_choices(snapshot: &CatalogSnapshot) -> Vec<ClusterChoice> {
             id: cluster.id.clone(),
             name: cluster.name.clone(),
             context_name: cluster.context_name.clone(),
+            color: cluster.color.clone(),
         })
         .collect()
+}
+
+fn opened_path(section: &str) -> String {
+    crate::navigation::destination_label(section).replace(" · ", " / ")
+}
+
+fn cluster_dot(color: &str) -> Hsla {
+    let rgb = color
+        .strip_prefix('#')
+        .filter(|digits| digits.len() == 6)
+        .and_then(|digits| u32::from_str_radix(digits, 16).ok());
+    gpui_kit::rgb(rgb.unwrap_or(crate::shell_theme::PRIMARY_RGB)).into()
 }
 
 /// Call once from `IceonApp::new`, after computing the snapshot and initial route.
@@ -200,7 +228,7 @@ impl IceonApp {
         let current_namespace = self
             .selected_namespace
             .clone()
-            .unwrap_or_else(|| "default".into());
+            .unwrap_or_else(|| "All Namespaces".into());
 
         // Do not replace the delegate on ordinary renders: doing so would reset the
         // filtered view and keyboard cursor while the user types. Exact metadata
@@ -262,6 +290,13 @@ impl IceonApp {
                                     })),
                             )
                             .child(
+                                Button::new("nav-catalog-btn").ghost().xsmall()
+                                    .icon(IconName::LayoutDashboard)
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .tooltip("Clusters catalog").accessibility_label("Clusters catalog")
+                                    .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Catalog, true, window, cx))),
+                            )
+                            .child(
                                 Button::new("nav-back-btn")
                                     .text_color(cx.theme().sidebar_foreground)
                                     .xsmall()
@@ -297,17 +332,6 @@ impl IceonApp {
                                     .ml_3()
                                     .items_center()
                                     .gap_2()
-                                    .child(
-                                        Button::new("app-brand-btn")
-                                            .ghost()
-                                            .xsmall()
-                                            .text_color(cx.theme().sidebar_foreground)
-                                            .label("icekube")
-                                            .tooltip("Clusters Catalog")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.navigate(Route::Catalog, true, window, cx);
-                                            })),
-                                    )
                                     .when_some(selected_cluster, |bar, cluster| {
                                         bar.child(
                                             h_flex()
@@ -318,8 +342,10 @@ impl IceonApp {
                                                         .ghost()
                                                         .xsmall()
                                                         .text_color(cx.theme().sidebar_foreground)
-                                                        .icon(IconName::Network)
-                                                        .label(cluster.name.clone())
+                                                        .child(h_flex().items_center().gap_2()
+                                                            .child(div().size(px(10.0)).flex_shrink_0().rounded_full().bg(cluster_dot(&cluster.color)))
+                                                            .child(div().truncate().child(cluster.name.clone())))
+                                                        .accessibility_label(format!("Switch cluster: {}", cluster.name))
                                                         .tooltip(format!(
                                                             "Cluster: {} ({}) · Click to switch",
                                                             cluster.name, cluster.context_name
@@ -336,6 +362,19 @@ impl IceonApp {
                                                         .text_color(cx.theme().muted_foreground)
                                                         .child("/"),
                                                 )
+                                                .child(
+                                                    Button::new("titlebar-opened-path")
+                                                        .ghost().xsmall()
+                                                        .text_color(cx.theme().sidebar_foreground)
+                                                        .label(opened_path(&self.active_cluster_section))
+                                                        .tooltip("Current resource path · Quick jump")
+                                                        .accessibility_label(format!("Current path: {}", opened_path(&self.active_cluster_section)))
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.search_modal_open = !this.search_modal_open;
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
                                                 .child(
                                                     Button::new("titlebar-namespace-select-btn")
                                                         .ghost()

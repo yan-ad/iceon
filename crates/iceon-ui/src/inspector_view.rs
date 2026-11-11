@@ -1281,7 +1281,7 @@ impl IceonApp {
                 Button::new("insp-open-yaml-btn")
                     .xsmall()
                     .ghost()
-                    .icon(IconName::FileText)
+                    .icon(gpui_kit_assets::IconName::Pencil)
                     .tooltip("Edit YAML")
                     .accessibility_label("Edit YAML")
                     .disabled(!iceon_core::connection::resource_edit::supports_yaml_edit(

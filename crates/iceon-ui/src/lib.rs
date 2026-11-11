@@ -515,57 +515,6 @@ impl IceonApp {
         }
     }
 
-    pub(crate) fn sync_cluster_order(&mut self) {
-        self.cluster_order
-            .retain(|id| self.catalog_snapshot.clusters.iter().any(|c| &c.id == id));
-        for c in &self.catalog_snapshot.clusters {
-            if !self.cluster_order.contains(&c.id) {
-                self.cluster_order.push(c.id.clone());
-            }
-        }
-    }
-
-    pub(crate) fn reorder_rail_cluster(
-        &mut self,
-        from_id: &str,
-        to_id: &str,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if from_id == to_id {
-            return;
-        }
-        self.sync_cluster_order();
-        let Some(from_idx) = self.cluster_order.iter().position(|id| id == from_id) else {
-            return;
-        };
-        let Some(to_idx) = self.cluster_order.iter().position(|id| id == to_id) else {
-            return;
-        };
-        let item = self.cluster_order.remove(from_idx);
-        self.cluster_order.insert(to_idx, item);
-
-        let pinned = &self.catalog_snapshot.pinned_items;
-        let p_from = pinned
-            .iter()
-            .position(|p| p.id == from_id && p.section.is_none());
-        let p_to = pinned
-            .iter()
-            .position(|p| p.id == to_id && p.section.is_none());
-        if let (Some(from), Some(to)) = (p_from, p_to) {
-            let mut next_pins = pinned.clone();
-            let moved = next_pins.remove(from);
-            next_pins.insert(to, moved);
-            if let Ok(snapshot) = self
-                .catalog
-                .reorder_pins(iceon_core::catalog::ReorderPinsRequest { items: next_pins })
-            {
-                self.catalog_snapshot = snapshot;
-            }
-        }
-        cx.notify();
-    }
-
     pub(crate) fn next_operation_id(&mut self) -> u64 {
         self.operation_counter = self.operation_counter.saturating_add(1).max(1);
         self.operation_counter
@@ -738,7 +687,6 @@ impl Render for IceonApp {
                     .min_h_0()
                     .w_full()
                     .overflow_hidden()
-                    .child(self.render_primary_sidebar(cx))
                     .child(
                         v_flex()
                             .flex_1()

@@ -2,12 +2,10 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
-    button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _,
+    button::{Button, ButtonVariants as _},
     h_flex,
-    scroll::ScrollableElement as _,
     sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
-    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -22,7 +20,6 @@ use crate::{
 };
 
 const LIGHT_INK_RGB: u32 = 0xffffff;
-const DARK_INK_RGB: u32 = 0x18181b;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ClusterTilePalette {
@@ -31,32 +28,6 @@ pub(crate) struct ClusterTilePalette {
     pub(crate) hover_rgb: u32,
     pub(crate) active_rgb: u32,
     pub(crate) border_rgb: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DragCluster(pub String);
-
-pub(crate) struct ClusterDragPreview {
-    pub(crate) label: SharedString,
-    pub(crate) bg_rgb: u32,
-    pub(crate) fg_rgb: u32,
-}
-
-impl Render for ClusterDragPreview {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size(px(40.0))
-            .rounded(px(8.0))
-            .bg(rgb(self.bg_rgb))
-            .text_color(rgb(self.fg_rgb))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_xs()
-            .font_semibold()
-            .shadow_md()
-            .child(self.label.clone())
-    }
 }
 
 /// Catalog colors are user-controlled metadata. Only accept an exact RGB hex
@@ -190,28 +161,16 @@ pub(crate) fn cluster_tile_palette(color: &str, seed: &str, is_dark: bool) -> Cl
     let (h, s, l) = rgb_to_hsl(base);
     let saturation = if s < 0.06 { s } else { s.clamp(0.42, 0.75) };
     let lightness = l.clamp(0.22, if is_dark { 0.38 } else { 0.44 });
-    let initial = hsl_to_rgb(h, saturation, lightness);
-    let fg_rgb = if wcag_contrast_ratio(initial, LIGHT_INK_RGB)
-        >= wcag_contrast_ratio(initial, DARK_INK_RGB)
-    {
-        LIGHT_INK_RGB
-    } else {
-        DARK_INK_RGB
-    };
+    let fg_rgb = LIGHT_INK_RGB;
     let accessible = |mut lightness: f64| {
         for _ in 0..=100 {
             let color = hsl_to_rgb(h, saturation, lightness);
             if wcag_contrast_ratio(color, fg_rgb) >= 7.0 {
                 return color;
             }
-            lightness =
-                (lightness + if fg_rgb == LIGHT_INK_RGB { -0.01 } else { 0.01 }).clamp(0.0, 1.0);
+            lightness = (lightness - 0.01).max(0.0);
         }
-        if fg_rgb == LIGHT_INK_RGB {
-            0x000000
-        } else {
-            0xffffff
-        }
+        0x000000
     };
     ClusterTilePalette {
         bg_rgb: accessible(lightness),
@@ -224,34 +183,6 @@ pub(crate) fn cluster_tile_palette(color: &str, seed: &str, is_dark: bool) -> Cl
 
 pub(crate) fn cluster_badge_color(color: &str, seed: &str, is_dark: bool) -> Hsla {
     rgb(cluster_tile_palette(color, seed, is_dark).bg_rgb).into()
-}
-
-fn cluster_initials(name: &str) -> String {
-    let words: Vec<&str> = name
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .collect();
-    let Some(&first) = words.first() else {
-        return "K".into();
-    };
-    if words.len() >= 2 {
-        let mut initials = String::new();
-        for word in words.into_iter().take(3) {
-            if let Some(ch) = word.chars().next() {
-                initials.extend(ch.to_uppercase().take(1));
-            }
-        }
-        return initials;
-    }
-    let mut letters = first.chars();
-    let mut initials = String::new();
-    if let Some(ch) = letters.next() {
-        initials.extend(ch.to_uppercase().take(1));
-    }
-    if let Some(ch) = letters.next() {
-        initials.extend(ch.to_uppercase().take(1));
-    }
-    initials
 }
 
 fn section_icon(section: &str) -> IconName {
@@ -374,282 +305,6 @@ impl IceonApp {
             }
         }
         cx.notify();
-    }
-
-    /// The hotbar is the narrow cluster rail, not the resource sidebar. Retain
-    /// an 8px hover target when auto-hidden; the full rail remains independent
-    /// of resource-sidebar visibility.
-    pub(crate) fn render_primary_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let route = self.history.current().clone();
-        let is_dark = cx.theme().mode.is_dark();
-        let disconnected_dot_fill: Hsla = if is_dark {
-            rgb(0x27272a).into()
-        } else {
-            rgb(0xd4d4d8).into()
-        };
-        let disconnected_dot_border: Hsla = if is_dark {
-            rgb(0x18181b).into()
-        } else {
-            rgb(0x71717a).into()
-        };
-
-        let rail = v_flex()
-            .w(px(60.0))
-            .flex_shrink_0()
-            .h_full()
-            .bg(cx.theme().tokens.sidebar)
-            .text_color(cx.theme().sidebar_foreground)
-            .border_r_1()
-            .border_color(cx.theme().sidebar_border)
-            .py_2()
-            .gap_2()
-            .items_center()
-            .child(
-                Button::new("rail-catalog")
-                    .ghost()
-                    .small()
-                    .size(px(40.0))
-                    .selected(matches!(route, Route::Catalog))
-                    .text_color(cx.theme().sidebar_foreground)
-                    .icon(IconName::LayoutDashboard)
-                    .accessibility_label("Clusters Catalog")
-                    .tooltip("Clusters Catalog")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.navigate(Route::Catalog, true, window, cx);
-                    })),
-            )
-            .child(div().w(px(32.0)).h(px(1.0)).bg(cx.theme().sidebar_border))
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .gap_2()
-                    .py_1()
-                    .items_center()
-                    .overflow_y_scrollbar()
-                    .children({
-                        let mut ordered = Vec::new();
-                        for id in &self.cluster_order {
-                            if let Some(c) =
-                                self.catalog_snapshot.clusters.iter().find(|c| &c.id == id)
-                            {
-                                ordered.push(c.clone());
-                            }
-                        }
-                        for c in &self.catalog_snapshot.clusters {
-                            if !self.cluster_order.contains(&c.id) {
-                                ordered.push(c.clone());
-                            }
-                        }
-                        let sidebar_foreground = cx.theme().sidebar_foreground;
-                        let success = cx.theme().success;
-                        let warning = cx.theme().warning;
-                        let danger = cx.theme().danger;
-                        let pinned = match &route {
-                            Route::Cluster { cluster_id, .. } => self
-                                .catalog_snapshot
-                                .pinned_items
-                                .iter()
-                                .filter(|pin| &pin.id == cluster_id)
-                                .cloned()
-                                .collect::<Vec<_>>(),
-                            _ => Vec::new(),
-                        };
-                        ordered
-                            .into_iter()
-                            .map(|cluster| {
-                                let cid = cluster.id.clone();
-                                let selected = matches!(
-                                    &route,
-                                    Route::Cluster { cluster_id, .. } if cluster_id == &cid
-                                );
-                                let palette =
-                                    cluster_tile_palette(&cluster.color, &cluster.id, is_dark);
-                                let tile_bg: Hsla = rgb(palette.bg_rgb).into();
-                                let tile_fg: Hsla = rgb(palette.fg_rgb).into();
-                                let tile_hover: Hsla = rgb(palette.hover_rgb).into();
-                                let tile_active: Hsla = rgb(palette.active_rgb).into();
-                                let tile_border: Hsla = if selected {
-                                    sidebar_foreground
-                                } else {
-                                    rgb(palette.border_rgb).into()
-                                };
-
-                                let (status_fill, status_border): (Hsla, Hsla) =
-                                    match cluster.status {
-                                        "connected" => (success, disconnected_dot_border),
-                                        "connecting" => (warning, disconnected_dot_border),
-                                        "error" => (danger, disconnected_dot_border),
-                                        _ => (disconnected_dot_fill, disconnected_dot_border),
-                                    };
-
-                                let raw_initials = cluster_initials(&cluster.name);
-                                let is_three_chars = raw_initials.chars().count() >= 3;
-                                let initials: SharedString = raw_initials.into();
-                                let preview_label = initials.clone();
-
-                                div()
-                                    .id(SharedString::from(format!("rail-cluster-drag-{cid}")))
-                                    .w_full()
-                                    .flex()
-                                    .justify_center()
-                                    .on_drag(DragCluster(cid.clone()), move |_, _, _, cx| {
-                                        cx.new(|_| ClusterDragPreview {
-                                            label: preview_label.clone(),
-                                            bg_rgb: palette.bg_rgb,
-                                            fg_rgb: palette.fg_rgb,
-                                        })
-                                    })
-                                    .drag_over::<DragCluster>(|style, _, _, cx| {
-                                        style.rounded(px(8.0)).bg(cx.theme().tokens.sidebar_accent)
-                                    })
-                                    .on_drop(cx.listener({
-                                        let target_id = cid.clone();
-                                        move |this, dragged: &DragCluster, window, cx| {
-                                            this.reorder_rail_cluster(
-                                                &dragged.0, &target_id, window, cx,
-                                            );
-                                        }
-                                    }))
-                                    .child(
-                                        h_flex()
-                                            .relative()
-                                            .w_full()
-                                            .justify_center()
-                                            .when(selected, |row| {
-                                                row.child(
-                                                    div()
-                                                        .absolute()
-                                                        .left_0()
-                                                        .top(px(8.0))
-                                                        .bottom(px(8.0))
-                                                        .w(px(3.0))
-                                                        .rounded_r(px(2.0))
-                                                        .bg(cx.theme().sidebar_foreground),
-                                                )
-                                            })
-                                            .child(
-                                                div()
-                                                    .relative()
-                                                    .size(px(40.0))
-                                                    .child(
-                                                        Button::new(SharedString::from(format!(
-                                                            "rail-cluster-{cid}"
-                                                        )))
-                                                        .small()
-                                                        .size(px(40.0))
-                                                        .rounded(px(8.0))
-                                                        .border_1()
-                                                        .border_color(tile_border)
-                                                        .custom(
-                                                            ButtonCustomVariant::new(cx)
-                                                                .color(tile_bg)
-                                                                .foreground(tile_fg)
-                                                                .hover(tile_hover)
-                                                                .active(tile_active),
-                                                        )
-                                                        .accessibility_label(format!(
-                                                            "{}: {}",
-                                                            cluster.name, cluster.status
-                                                        ))
-                                                        .tooltip(format!(
-                                                            "{} · {}",
-                                                            cluster.name, cluster.status
-                                                        ))
-                                                        .child(
-                                                            div()
-                                                                .relative()
-                                                                .size_full()
-                                                                .flex()
-                                                                .items_center()
-                                                                .justify_center()
-                                                                .when(is_three_chars, |el| {
-                                                                    el.text_xs()
-                                                                })
-                                                                .when(!is_three_chars, |el| {
-                                                                    el.text_sm()
-                                                                })
-                                                                .font_semibold()
-                                                                .child(initials),
-                                                        )
-                                                        .on_click(cx.listener(
-                                                            move |this, _, window, cx| {
-                                                                this.navigate(
-                                                                    Route::Cluster {
-                                                                        cluster_id: cid.clone(),
-                                                                        section: "overview".into(),
-                                                                    },
-                                                                    true,
-                                                                    window,
-                                                                    cx,
-                                                                );
-                                                            },
-                                                        )),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .absolute()
-                                                            .right(px(-2.0))
-                                                            .bottom(px(-2.0))
-                                                            .size(px(10.0))
-                                                            .rounded_full()
-                                                            .bg(status_fill)
-                                                            .border_2()
-                                                            .border_color(status_border),
-                                                    ),
-                                            ),
-                                    )
-                                    .into_any_element()
-                            })
-                            .chain(pinned.into_iter().filter_map(|pin| {
-                                let section = pin.section.unwrap_or_else(|| "overview".into());
-                                let label: SharedString = if section == "overview" {
-                                    "Cluster".into()
-                                } else {
-                                    destination_label(&section).into()
-                                };
-                                Some(
-                                    Button::new(SharedString::from(format!(
-                                        "rail-pin-{}-{}",
-                                        pin.id, section
-                                    )))
-                                    .ghost()
-                                    .small()
-                                    .size(px(40.0))
-                                    .icon(Icon::new(AssetIconName::Pin).small())
-                                    .text_color(sidebar_foreground)
-                                    .accessibility_label(format!("Pinned {label}"))
-                                    .tooltip(format!("Pinned: {label}"))
-                                    .on_click(cx.listener({
-                                        let cluster_id = pin.id.clone();
-                                        move |this, _, window, cx| {
-                                            this.navigate(
-                                                Route::Cluster {
-                                                    cluster_id: cluster_id.clone(),
-                                                    section: section.clone(),
-                                                },
-                                                true,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    }))
-                                    .into_any_element(),
-                                )
-                            }))
-                            .collect::<Vec<_>>()
-                    }),
-            );
-        div()
-            .h_full()
-            .flex_shrink_0()
-            .overflow_hidden()
-            .w(px(60.0))
-            .when(self.preferences_draft.app.auto_hide_hotbar, |el| {
-                el.w(px(8.0)).hover(|style| style.w(px(60.0)))
-            })
-            .child(rail)
     }
 
     pub(crate) fn render_cluster_sidebar(
@@ -863,10 +518,7 @@ impl IceonApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        DARK_INK_RGB, LIGHT_INK_RGB, cluster_initials, cluster_rgb, cluster_tile_palette,
-        wcag_contrast_ratio,
-    };
+    use super::{LIGHT_INK_RGB, cluster_rgb, cluster_tile_palette, wcag_contrast_ratio};
 
     #[test]
     fn colors_accept_only_rgb_hex_metadata() {
@@ -883,15 +535,6 @@ mod tests {
         ] {
             assert_eq!(cluster_rgb(invalid), None);
         }
-    }
-
-    #[test]
-    fn initials_are_compact_and_unicode_safe() {
-        assert_eq!(cluster_initials("production-east"), "PE");
-        assert_eq!(cluster_initials("gke-prod-indo"), "GPI");
-        assert_eq!(cluster_initials("local"), "LO");
-        assert_eq!(cluster_initials("東京"), "東京");
-        assert_eq!(cluster_initials(" -- "), "K");
     }
 
     #[test]
@@ -928,7 +571,7 @@ mod tests {
                         ratio >= 7.0,
                         "expected WCAG AAA >= 7.0 contrast for {sample} (is_dark={is_dark}), got {ratio:.2}"
                     );
-                    assert!(matches!(palette.fg_rgb, LIGHT_INK_RGB | DARK_INK_RGB));
+                    assert_eq!(palette.fg_rgb, LIGHT_INK_RGB);
                 }
             }
         }

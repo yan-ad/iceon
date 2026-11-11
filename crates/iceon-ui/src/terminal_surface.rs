@@ -322,6 +322,34 @@ impl TerminalSurface {
         Some(self.parser.screen().contents_between(a.0, a.1, b.0, b.1))
     }
 
+    fn select_clicked_unit(&mut self, row: u16, col: u16, clicks: usize) {
+        let (cols, _) = self.size();
+        let col = col.min(cols.saturating_sub(1));
+        let screen = self.parser.screen();
+        let (start, end) = if clicks >= 3 {
+            (0, cols)
+        } else {
+            let cells: Vec<_> = (0..cols)
+                .map(|index| {
+                    screen
+                        .cell(row, index)
+                        .map(|cell| {
+                            if cell.is_wide_continuation() {
+                                "\u{fffd}".to_owned()
+                            } else {
+                                cell.contents().to_owned()
+                            }
+                        })
+                        .unwrap_or_default()
+                })
+                .collect();
+            word_columns(&cells, col)
+        };
+        self.selection = Some(((row, start), (row, end)));
+        self.selecting = false;
+        self.grid_cache.dirty = true;
+    }
+
     fn select_all(&mut self, cx: &mut Context<Self>) {
         let (cols, rows) = self.size();
         self.selection = Some(((0, 0), (rows.saturating_sub(1), cols)));
@@ -523,6 +551,35 @@ fn push_text_run(runs: &mut Vec<TextRun>, run: TextRun) {
     runs.push(run);
 }
 
+fn word_columns(cells: &[String], column: u16) -> (u16, u16) {
+    if cells.is_empty() {
+        return (0, 0);
+    }
+    let column = usize::from(column).min(cells.len() - 1);
+    let kind = |cell: &str| {
+        if cell.is_empty() || cell.chars().all(char::is_whitespace) {
+            0
+        } else if cell
+            .chars()
+            .any(|ch| ch.is_alphanumeric() || ch == '_' || ch == '\u{fffd}')
+        {
+            1
+        } else {
+            2
+        }
+    };
+    let selected = kind(&cells[column]);
+    let mut start = column;
+    let mut end = column + 1;
+    while start > 0 && kind(&cells[start - 1]) == selected {
+        start -= 1;
+    }
+    while end < cells.len() && kind(&cells[end]) == selected {
+        end += 1;
+    }
+    (start as u16, end as u16)
+}
+
 impl Render for TerminalSurface {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let preferences = cx
@@ -673,8 +730,13 @@ impl Render for TerminalSurface {
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus_handle, cx);
                     let start = this.cell_at(event.position);
-                    this.selection = Some((start, start));
-                    this.selecting = true;
+                    if event.click_count >= 2 {
+                        this.select_clicked_unit(start.0, start.1, event.click_count);
+                    } else {
+                        this.selection = Some((start, start));
+                        this.selecting = true;
+                    }
+                    cx.stop_propagation();
                     this.grid_cache.dirty = true;
                     cx.notify();
                 }),
@@ -786,6 +848,20 @@ impl Render for TerminalSurface {
 mod tests {
     use super::{ansi_color, dimensions, encode_key, encode_paste, parser};
     use gpui_kit::{Keystroke, Modifiers};
+
+    #[::core::prelude::v1::test]
+    fn double_click_word_boundaries_preserve_unicode_and_separators() {
+        let cells = "hello pod_name 世界 42"
+            .chars()
+            .map(|ch| ch.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(super::word_columns(&cells, 2), (0, 5));
+        assert_eq!(super::word_columns(&cells, 8), (6, 14));
+        assert_eq!(super::word_columns(&cells, 15), (15, 17));
+        assert_eq!(super::word_columns(&[], 0), (0, 0));
+        let punctuation = ["a", ":", "/", "b"].map(str::to_owned);
+        assert_eq!(super::word_columns(&punctuation, 1), (1, 3));
+    }
 
     #[::core::prelude::v1::test]
     fn padded_grid_and_selection_use_the_same_inner_origin() {
