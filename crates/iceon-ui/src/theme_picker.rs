@@ -10,17 +10,15 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use iceon_core::preferences::AppTheme;
 
-const FAMILIES: &[&str] = &[
-    "System",
-    "Dark",
-    "Light",
-    "JetBrains",
-    "VSCode",
-    "GitHub",
-    "Gruvbox",
-    "Catppuccin",
-    "Solarized",
-];
+fn families() -> Vec<&'static str> {
+    let mut families = vec!["System", "Dark", "Light"];
+    for theme in AppTheme::ALL {
+        if theme.family() != "Default" && !families.contains(&theme.family()) {
+            families.push(theme.family());
+        }
+    }
+    families
+}
 
 fn variants(family: &str) -> Vec<AppTheme> {
     AppTheme::ALL
@@ -75,7 +73,7 @@ pub(crate) fn appearance(cx: &App) -> AnyElement {
         .w_full()
         .flex_wrap()
         .gap_3()
-        .children(FAMILIES.iter().copied().map(|family| {
+        .children(families().into_iter().map(|family| {
             let variants = variants(family);
             let active = variants.contains(&current);
             let shown = if active { current } else { variants[0] };
@@ -162,12 +160,12 @@ pub(crate) fn appearance(cx: &App) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{FAMILIES, variants};
+    use super::{families, variants};
     use iceon_core::preferences::AppTheme;
 
     #[test]
     fn every_theme_has_exactly_one_nonempty_preview_family() {
-        let all = FAMILIES
+        let all = families()
             .iter()
             .flat_map(|family| {
                 let choices = variants(family);

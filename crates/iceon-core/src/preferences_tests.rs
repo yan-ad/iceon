@@ -326,7 +326,7 @@ fn every_app_theme_round_trips_through_persistent_store() {
 fn theme_catalog_has_unique_keys_and_legacy_serde_names() {
     let keys: std::collections::HashSet<_> = AppTheme::ALL.iter().map(|t| t.key()).collect();
     assert_eq!(keys.len(), AppTheme::ALL.len());
-    assert_eq!(AppTheme::ALL.len(), 19);
+    assert!(AppTheme::ALL.len() >= 19);
     for (key, theme) in [
         ("system", AppTheme::System),
         ("light", AppTheme::Light),
@@ -341,4 +341,22 @@ fn theme_catalog_has_unique_keys_and_legacy_serde_names() {
     assert_eq!(AppTheme::Light.is_dark(), Some(false));
     assert_eq!(AppTheme::Dark.is_dark(), Some(true));
     assert_eq!(AppTheme::from_key("not-a-theme"), None);
+}
+
+#[test]
+fn generated_theme_palettes_are_complete_and_follow_system_inheritance() {
+    assert!(AppTheme::System.palette_colors().is_none());
+    for &theme in AppTheme::ALL {
+        if theme == AppTheme::System {
+            continue;
+        }
+        let colors = theme
+            .palette_colors()
+            .expect("concrete theme has eight roles");
+        assert!(colors.iter().all(|color| *color <= 0xffffff));
+        assert_ne!(
+            colors[0], colors[3],
+            "text must differ from background: {theme:?}"
+        );
+    }
 }

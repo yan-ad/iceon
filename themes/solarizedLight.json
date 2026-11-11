@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "solarizedLight",
+  "symbol": "SolarizedLight",
+  "family": "Solarized",
+  "name": "Light",
+  "mode": "light",
+  "order": 18,
+  "colors": {
+    "background": "#fdf6e3",
+    "surface": "#eee8d5",
+    "elevated": "#e5dfcb",
+    "foreground": "#586e75",
+    "muted": "#657b83",
+    "border": "#b9b5a6",
+    "link": "#176b9b",
+    "primary": "#006fad"
+  }
+}

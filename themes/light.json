@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "light",
+  "symbol": "Light",
+  "family": "Default",
+  "name": "Light",
+  "mode": "light",
+  "order": 1,
+  "colors": {
+    "background": "#fafafa",
+    "surface": "#f6f6f7",
+    "elevated": "#e4e4e7",
+    "foreground": "#18181b",
+    "muted": "#71717a",
+    "border": "#e4e4e7",
+    "link": "#1a43bf",
+    "primary": "#1a43bf"
+  }
+}

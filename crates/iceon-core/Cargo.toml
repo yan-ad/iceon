@@ -51,3 +51,7 @@ hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 rcgen = "0.13"
 tokio-tungstenite = "0.28"
+
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true

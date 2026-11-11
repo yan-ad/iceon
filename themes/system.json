@@ -1,0 +1,13 @@
+{
+  "$schema": "./schema.json",
+  "id": "system",
+  "symbol": "System",
+  "family": "Default",
+  "name": "System",
+  "mode": "system",
+  "order": 0,
+  "inherits": {
+    "light": "light",
+    "dark": "dark"
+  }
+}

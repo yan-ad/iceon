@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "jetBrainsDarcula",
+  "symbol": "JetBrainsDarcula",
+  "family": "JetBrains",
+  "name": "Darcula",
+  "mode": "dark",
+  "order": 3,
+  "colors": {
+    "background": "#2b2b2b",
+    "surface": "#313335",
+    "elevated": "#3c3f41",
+    "foreground": "#a9b7c6",
+    "muted": "#90989f",
+    "border": "#55585b",
+    "link": "#8ab4f8",
+    "primary": "#4a88c7"
+  }
+}

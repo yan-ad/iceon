@@ -514,11 +514,11 @@ impl ResourceTable {
         app.reload_active_section(window, cx);
     }
 
-    fn namespace_button(&self, namespace: String, idx: usize) -> Button {
+    fn namespace_button(&self, namespace: String, idx: usize, foreground: Hsla) -> Button {
         Button::new(SharedString::from(format!("namespace-row-{idx}")))
             .xsmall()
             .ghost()
-            .text_color(gpui_kit::rgb(crate::shell_theme::PRIMARY_RGB))
+            .text_color(foreground)
             .max_w_full()
             .label(namespace.clone())
             .tooltip(format!("Filter namespace {namespace}"))
@@ -699,13 +699,19 @@ impl ResourceTable {
                 )
                 .text_xs()
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(cx.theme().primary)
+                .text_color(cx.theme().sidebar_accent_foreground)
                 .truncate()
                 .child(if kind == ResourceKind::Namespaces {
-                    self.namespace_button(item.name.clone(), idx)
-                        .into_any_element()
+                    self.namespace_button(
+                        item.name.clone(),
+                        idx,
+                        cx.theme().sidebar_accent_foreground,
+                    )
+                    .into_any_element()
                 } else {
-                    crate::selectable_text::selectable_text(item.name.clone()).into_any_element()
+                    crate::selectable_text::selectable_text(item.name.clone())
+                        .text_color(cx.theme().sidebar_accent_foreground)
+                        .into_any_element()
                 }),
             )
             .when(show_ns, |el| {
@@ -715,7 +721,11 @@ impl ResourceTable {
                         .text_color(cx.theme().muted_foreground)
                         .truncate()
                         .when_some(item.namespace.clone(), |cell, ns| {
-                            cell.child(self.namespace_button(ns, idx))
+                            cell.child(self.namespace_button(
+                                ns,
+                                idx,
+                                cx.theme().sidebar_accent_foreground,
+                            ))
                         }),
                 )
             })

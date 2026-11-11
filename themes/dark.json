@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "dark",
+  "symbol": "Dark",
+  "family": "Default",
+  "name": "Dark",
+  "mode": "dark",
+  "order": 2,
+  "colors": {
+    "background": "#090909",
+    "surface": "#121214",
+    "elevated": "#27272a",
+    "foreground": "#ededed",
+    "muted": "#969696",
+    "border": "#3f3f46",
+    "link": "#9bb4ff",
+    "primary": "#1a43bf"
+  }
+}

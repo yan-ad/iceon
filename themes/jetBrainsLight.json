@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "jetBrainsLight",
+  "symbol": "JetBrainsLight",
+  "family": "JetBrains",
+  "name": "Light",
+  "mode": "light",
+  "order": 4,
+  "colors": {
+    "background": "#ffffff",
+    "surface": "#f2f2f2",
+    "elevated": "#e8e8e8",
+    "foreground": "#242424",
+    "muted": "#666666",
+    "border": "#cccccc",
+    "link": "#174eb6",
+    "primary": "#2675bf"
+  }
+}

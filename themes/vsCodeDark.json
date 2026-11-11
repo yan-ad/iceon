@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "vsCodeDark",
+  "symbol": "VsCodeDark",
+  "family": "VSCode",
+  "name": "Dark",
+  "mode": "dark",
+  "order": 5,
+  "colors": {
+    "background": "#1e1e1e",
+    "surface": "#252526",
+    "elevated": "#333333",
+    "foreground": "#d4d4d4",
+    "muted": "#9d9d9d",
+    "border": "#454545",
+    "link": "#75beff",
+    "primary": "#007acc"
+  }
+}

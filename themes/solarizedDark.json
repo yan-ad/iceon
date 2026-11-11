@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "solarizedDark",
+  "symbol": "SolarizedDark",
+  "family": "Solarized",
+  "name": "Dark",
+  "mode": "dark",
+  "order": 17,
+  "colors": {
+    "background": "#002b36",
+    "surface": "#073642",
+    "elevated": "#164450",
+    "foreground": "#93a1a1",
+    "muted": "#839496",
+    "border": "#586e75",
+    "link": "#65b6e3",
+    "primary": "#268bd2"
+  }
+}

@@ -1,6 +1,7 @@
 //! Pure-Rust GPUI (`gpui-kit`) desktop UI shell for Iceon (`icekube`).
 
 mod age_label;
+mod app_assets;
 pub mod badge;
 pub mod catalog_view;
 pub mod cluster_view;
@@ -778,7 +779,7 @@ pub fn run() {
     secrets_engine.start();
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::app_assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             console_font::init(cx);

@@ -705,7 +705,7 @@ pub fn run() {
     let cleanup = directory.clone();
     let outcome: Outcome = Rc::new(RefCell::new(None));
     let result = outcome.clone();
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+    gpui_kit::application().with_assets(crate::app_assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         // This audit measures table/terminal invalidation, not scrollbar fades.
         // Scrolling mode schedules parent-view notifications (enter/exit and

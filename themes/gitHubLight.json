@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "gitHubLight",
+  "symbol": "GitHubLight",
+  "family": "GitHub",
+  "name": "Light",
+  "mode": "light",
+  "order": 8,
+  "colors": {
+    "background": "#ffffff",
+    "surface": "#f6f8fa",
+    "elevated": "#eaeef2",
+    "foreground": "#1f2328",
+    "muted": "#59636e",
+    "border": "#d1d9e0",
+    "link": "#1a7f37",
+    "primary": "#1a7f37"
+  }
+}

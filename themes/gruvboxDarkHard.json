@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "gruvboxDarkHard",
+  "symbol": "GruvboxDarkHard",
+  "family": "Gruvbox",
+  "name": "Dark Hard",
+  "mode": "dark",
+  "order": 10,
+  "colors": {
+    "background": "#1d2021",
+    "surface": "#282828",
+    "elevated": "#32302f",
+    "foreground": "#ebdbb2",
+    "muted": "#bdae93",
+    "border": "#665c54",
+    "link": "#fe8019",
+    "primary": "#fe8019"
+  }
+}

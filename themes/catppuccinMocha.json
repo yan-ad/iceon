@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "catppuccinMocha",
+  "symbol": "CatppuccinMocha",
+  "family": "Catppuccin",
+  "name": "Mocha",
+  "mode": "dark",
+  "order": 16,
+  "colors": {
+    "background": "#1e1e2e",
+    "surface": "#181825",
+    "elevated": "#313244",
+    "foreground": "#cdd6f4",
+    "muted": "#a6adc8",
+    "border": "#585b70",
+    "link": "#cba6f7",
+    "primary": "#cba6f7"
+  }
+}

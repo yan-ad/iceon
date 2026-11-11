@@ -3,6 +3,7 @@
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
+    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
     h_flex,
     input::Input,
     scroll::ScrollableElement as _,
@@ -30,7 +31,7 @@ use iceon_core::connection::{
     workload_actions::{WorkflowRequest, WorkloadAction},
 };
 
-use crate::IceonApp;
+use crate::{IceonApp, selectable_text::selectable_text};
 
 #[path = "editor_surface.rs"]
 pub(crate) mod editor_surface;
@@ -129,8 +130,8 @@ impl IceonApp {
             dialog
                 .centered()
                 .confirm()
-                .title(title.clone())
-                .description(description.clone())
+                .title(selectable_text(title.clone()))
+                .description(selectable_text(description.clone()))
                 .ok_text(confirm_label)
                 .ok_variant(ButtonVariant::Danger)
                 .on_ok(move |_, window, cx| {
@@ -1048,7 +1049,7 @@ impl IceonApp {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
-                            .child(title),
+                            .child(selectable_text(title)),
                     )
                     .child(
                         h_flex()
@@ -1149,11 +1150,15 @@ impl IceonApp {
                         .py_1p5()
                         .bg(cx.theme().secondary)
                         .text_xs()
-                        .child(msg),
+                        .child(selectable_text(msg)),
                 )
             })
             .when_some(self.inspector.error.clone(), |el, err| {
-                el.child(crate::empty_state::error_state(err))
+                el.child(inspector_empty_state(
+                    IconName::CircleAlert,
+                    "Unable to load this view",
+                    err,
+                ))
             })
             .child(
                 v_flex()
@@ -1166,7 +1171,7 @@ impl IceonApp {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("Loading resource details...")
+                            .child(selectable_text("Loading resource details..."))
                             .into_any_element()
                     } else if let Some(helm) = self.inspector.helm_detail.clone() {
                         self.render_helm_inspector(&helm, cx).into_any_element()
@@ -1189,7 +1194,7 @@ impl IceonApp {
                                 .into_any_element(),
                         }
                     } else {
-                        crate::empty_state::empty_state(
+                        inspector_empty_state(
                             IconName::Search,
                             "No resource selected",
                             "Select a resource from the table to inspect it.",
@@ -1591,7 +1596,7 @@ impl IceonApp {
                                 div()
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(detail.reference.name.clone()),
+                                    .child(selectable_text(detail.reference.name.clone())),
                             )
                             .child(status_tag(&detail.item.status)),
                     )
@@ -1604,7 +1609,7 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!("Namespace: {ns}")),
+                                        .child(selectable_text(format!("Namespace: {ns}"))),
                                 )
                                 .when_some(ns_ref, |row, target_ns| {
                                     row.child(
@@ -1628,13 +1633,13 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!(
+                                .child(selectable_text(format!(
                                     "Created: {}",
                                     crate::preference_runtime::timestamp(
                                         &created,
                                         &self.preferences_draft.app.timezone
                                     )
-                                )),
+                                ))),
                         )
                     })
                     .when_some(uid_opt, |el, uid| {
@@ -1646,7 +1651,7 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!("UID: {uid}")),
+                                        .child(selectable_text(format!("UID: {uid}"))),
                                 )
                                 .child(
                                     Button::new("insp-copy-uid-btn")
@@ -1666,7 +1671,7 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!("ResourceVersion: {rv}")),
+                                .child(selectable_text(format!("ResourceVersion: {rv}"))),
                         )
                     }),
             )
@@ -1705,10 +1710,12 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child("Event Diagnostic"),
+                                        .child(selectable_text("Event Diagnostic")),
                                 )
                                 .when(diag.truncated, |r| {
-                                    r.child(Tag::warning().small().child("Truncated"))
+                                    r.child(
+                                        Tag::warning().small().child(selectable_text("Truncated")),
+                                    )
                                 }),
                         )
                         .when_some(diag.source, |r, src| {
@@ -1716,7 +1723,7 @@ impl IceonApp {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(format!("Reporting Source: {src}")),
+                                    .child(selectable_text(format!("Reporting Source: {src}"))),
                             )
                         })
                         .when_some(diag.field_path, |r, fp| {
@@ -1724,10 +1731,10 @@ impl IceonApp {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(format!("Field Path: {fp}")),
+                                    .child(selectable_text(format!("Field Path: {fp}"))),
                             )
                         })
-                        .child(div().text_xs().child(diag.message)),
+                        .child(div().text_xs().child(selectable_text(diag.message))),
                 )
             })
             // Projected DetailSections for all 41 ResourceKinds
@@ -1745,7 +1752,7 @@ impl IceonApp {
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(cx.theme().muted_foreground)
-                            .child(section.title.to_uppercase()),
+                            .child(selectable_text(section.title.to_uppercase())),
                     )
                     .children(section.facts.iter().map(|fact| {
                         h_flex()
@@ -1757,13 +1764,13 @@ impl IceonApp {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(fact.label.clone()),
+                                    .child(selectable_text(fact.label.clone())),
                             )
                             .child(
                                 div()
                                     .text_xs()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child(fact.value.clone()),
+                                    .child(selectable_text(fact.value.clone())),
                             )
                     }))
             }))
@@ -1810,12 +1817,14 @@ impl IceonApp {
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(cx.theme().muted_foreground)
-                            .child("NODE TELEMETRY & CAPACITY"),
+                            .child(selectable_text("NODE TELEMETRY & CAPACITY")),
                     )
                     .child(if node.schedulable {
-                        Tag::success().small().child("Schedulable")
+                        Tag::success().small().child(selectable_text("Schedulable"))
                     } else {
-                        Tag::warning().small().child("Cordoned / Unschedulable")
+                        Tag::warning()
+                            .small()
+                            .child(selectable_text("Cordoned / Unschedulable"))
                     }),
             )
             .child(
@@ -1825,13 +1834,13 @@ impl IceonApp {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("CPU Usage"),
+                            .child(selectable_text("CPU Usage")),
                     )
                     .child(
                         div()
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(cpu_str),
+                            .child(selectable_text(cpu_str)),
                     ),
             )
             .child(
@@ -1841,13 +1850,13 @@ impl IceonApp {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("Memory Usage"),
+                            .child(selectable_text("Memory Usage")),
                     )
                     .child(
                         div()
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(mem_str),
+                            .child(selectable_text(mem_str)),
                     ),
             )
             .when(!node.internal_ips.is_empty(), |el| {
@@ -1858,13 +1867,13 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("Internal IPs"),
+                                .child(selectable_text("Internal IPs")),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::MEDIUM)
-                                .child(node.internal_ips.join(", ")),
+                                .child(selectable_text(node.internal_ips.join(", "))),
                         ),
                 )
             })
@@ -1876,9 +1885,14 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("Allocatable Ephemeral Storage"),
+                                .child(selectable_text("Allocatable Ephemeral Storage")),
                         )
-                        .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(disk)),
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(selectable_text(disk)),
+                        ),
                 )
             })
             .child(
@@ -1888,13 +1902,13 @@ impl IceonApp {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("Taints Count"),
+                            .child(selectable_text("Taints Count")),
                     )
                     .child(
                         div()
                             .text_xs()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(node.taints.to_string()),
+                            .child(selectable_text(node.taints.to_string())),
                     ),
             )
             .when(!node.conditions.is_empty(), |el| {
@@ -1908,11 +1922,11 @@ impl IceonApp {
                             if healthy {
                                 Tag::success()
                                     .small()
-                                    .child(format!("{}: {}", c.kind, c.status))
+                                    .child(selectable_text(format!("{}: {}", c.kind, c.status)))
                             } else {
                                 Tag::warning()
                                     .small()
-                                    .child(format!("{}: {}", c.kind, c.status))
+                                    .child(selectable_text(format!("{}: {}", c.kind, c.status)))
                             }
                         })),
                 )
@@ -1940,31 +1954,31 @@ impl IceonApp {
                         div()
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Node Drain Review ({} pods)", review.pods.len())),
+                            .child(selectable_text(format!("Node Drain Review ({} pods)", review.pods.len()))),
                     )
                     .child(if review.can_drain {
-                        Tag::success().small().child("Ready to Evict")
+                        Tag::success().small().child(selectable_text("Ready to Evict"))
                     } else {
-                        Tag::danger().small().child("Blocked")
+                        Tag::danger().small().child(selectable_text("Blocked"))
                     }),
             )
             .children(review.pods.iter().take(15).map(|p| {
                 let disp_tag = match p.disposition {
-                    DrainDisposition::Evict => Tag::warning().small().child("Evict"),
-                    DrainDisposition::Skip => Tag::secondary().small().child("Skip"),
-                    DrainDisposition::Wait => Tag::secondary().small().child("Wait"),
-                    DrainDisposition::Block => Tag::danger().small().child("Block"),
+                    DrainDisposition::Evict => Tag::warning().small().child(selectable_text("Evict")),
+                    DrainDisposition::Skip => Tag::secondary().small().child(selectable_text("Skip")),
+                    DrainDisposition::Wait => Tag::secondary().small().child(selectable_text("Wait")),
+                    DrainDisposition::Block => Tag::danger().small().child(selectable_text("Block")),
                 };
                 h_flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_xs().child(format!("{}/{}", p.namespace, p.name)))
+                    .child(div().text_xs().child(selectable_text(format!("{}/{}", p.namespace, p.name))))
                     .child(
                         h_flex().gap_1().items_center().child(disp_tag).child(
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!("{:?}", p.reason)),
+                                .child(selectable_text(format!("{:?}", p.reason))),
                         ),
                     )
             }))
@@ -2009,12 +2023,12 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let state_tag = match result.state {
-            DrainState::Complete => Tag::success().small().child("Complete"),
-            DrainState::Partial => Tag::warning().small().child("Partial"),
-            DrainState::Blocked => Tag::danger().small().child("Blocked"),
-            DrainState::Cancelled => Tag::secondary().small().child("Cancelled"),
-            DrainState::Timeout => Tag::warning().small().child("Timeout"),
-            DrainState::Uncertain => Tag::warning().small().child("Uncertain"),
+            DrainState::Complete => Tag::success().small().child(selectable_text("Complete")),
+            DrainState::Partial => Tag::warning().small().child(selectable_text("Partial")),
+            DrainState::Blocked => Tag::danger().small().child(selectable_text("Blocked")),
+            DrainState::Cancelled => Tag::secondary().small().child(selectable_text("Cancelled")),
+            DrainState::Timeout => Tag::warning().small().child(selectable_text("Timeout")),
+            DrainState::Uncertain => Tag::warning().small().child(selectable_text("Uncertain")),
         };
 
         v_flex()
@@ -2029,27 +2043,37 @@ impl IceonApp {
                 h_flex()
                     .justify_between()
                     .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Node Drain Result · Cordoned: {}", result.cordoned)),
-                    )
+                    .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                        selectable_text(format!(
+                            "Node Drain Result · Cordoned: {}",
+                            result.cordoned
+                        )),
+                    ))
                     .child(state_tag),
             )
             .children(result.pods.iter().take(15).map(|p| {
                 let tag = match p.state {
-                    DrainOutcomeState::Evicted | DrainOutcomeState::Gone => {
-                        Tag::success().small().child(format!("{:?}", p.state))
+                    DrainOutcomeState::Evicted | DrainOutcomeState::Gone => Tag::success()
+                        .small()
+                        .child(selectable_text(format!("{:?}", p.state))),
+                    DrainOutcomeState::Skipped => {
+                        Tag::secondary().small().child(selectable_text("Skipped"))
                     }
-                    DrainOutcomeState::Skipped => Tag::secondary().small().child("Skipped"),
-                    DrainOutcomeState::Blocked => Tag::danger().small().child("Blocked"),
-                    _ => Tag::warning().small().child(format!("{:?}", p.state)),
+                    DrainOutcomeState::Blocked => {
+                        Tag::danger().small().child(selectable_text("Blocked"))
+                    }
+                    _ => Tag::warning()
+                        .small()
+                        .child(selectable_text(format!("{:?}", p.state))),
                 };
                 h_flex()
                     .justify_between()
                     .items_center()
-                    .child(div().text_xs().child(format!("{}/{}", p.namespace, p.name)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .child(selectable_text(format!("{}/{}", p.namespace, p.name))),
+                    )
                     .child(tag)
             }))
     }
@@ -2097,7 +2121,7 @@ impl IceonApp {
                                     .text_xs()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("POD RUNTIME OVERVIEW"),
+                                    .child(selectable_text("POD RUNTIME OVERVIEW")),
                             )
                             .child(
                                 h_flex()
@@ -2105,15 +2129,19 @@ impl IceonApp {
                                     .items_center()
                                     .child(status_tag(&pod.phase))
                                     .when_some(pod.qos.clone(), |r, qos| {
-                                        r.child(Tag::secondary().small().child(qos))
+                                        r.child(
+                                            Tag::secondary().small().child(selectable_text(qos)),
+                                        )
                                     })
                                     .when_some(pod.deletion_timestamp.clone(), |r, dt| {
-                                        r.child(Tag::danger().small().child(format!(
-                                            "Terminating ({})",
-                                            crate::preference_runtime::timestamp(
-                                                &dt,
-                                                &self.preferences_draft.app.timezone
-                                            )
+                                        r.child(Tag::danger().small().child(selectable_text(
+                                            format!(
+                                                "Terminating ({})",
+                                                crate::preference_runtime::timestamp(
+                                                    &dt,
+                                                    &self.preferences_draft.app.timezone
+                                                )
+                                            ),
                                         )))
                                     }),
                             ),
@@ -2126,13 +2154,13 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child("Pod IPs"),
+                                        .child(selectable_text("Pod IPs")),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(pod.pod_ips.join(", ")),
+                                        .child(selectable_text(pod.pod_ips.join(", "))),
                                 ),
                         )
                     })
@@ -2144,13 +2172,13 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child("Host IPs"),
+                                        .child(selectable_text("Host IPs")),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(pod.host_ips.join(", ")),
+                                        .child(selectable_text(pod.host_ips.join(", "))),
                                 ),
                         )
                     })
@@ -2163,7 +2191,7 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!("Node: {node_name}")),
+                                        .child(selectable_text(format!("Node: {node_name}"))),
                                 )
                                 .when_some(node_ref, |r, target| {
                                     r.child(
@@ -2191,7 +2219,9 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!("ServiceAccount: {sa_name}")),
+                                        .child(selectable_text(format!(
+                                            "ServiceAccount: {sa_name}"
+                                        ))),
                                 )
                                 .when_some(sa_ref, |r, target| {
                                     r.child(
@@ -2227,7 +2257,7 @@ impl IceonApp {
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(cx.theme().muted_foreground)
-                                .child("POD CONDITIONS"),
+                                .child(selectable_text("POD CONDITIONS")),
                         )
                         .child(
                             h_flex()
@@ -2235,11 +2265,14 @@ impl IceonApp {
                                 .flex_wrap()
                                 .children(pod.conditions.iter().map(|cond| {
                                     if cond.status == "True" {
-                                        Tag::success().small().child(format!("{}: True", cond.kind))
-                                    } else {
-                                        Tag::warning()
+                                        Tag::success()
                                             .small()
-                                            .child(format!("{}: {}", cond.kind, cond.status))
+                                            .child(selectable_text(format!("{}: True", cond.kind)))
+                                    } else {
+                                        Tag::warning().small().child(selectable_text(format!(
+                                            "{}: {}",
+                                            cond.kind, cond.status
+                                        )))
                                     }
                                 })),
                         ),
@@ -2260,7 +2293,10 @@ impl IceonApp {
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!("CONTAINERS ({})", pod.containers.len())),
+                            .child(selectable_text(format!(
+                                "CONTAINERS ({})",
+                                pod.containers.len()
+                            ))),
                     )
                     .children(pod.containers.iter().map(|c| {
                         let listener_cx = &*cx;
@@ -2280,10 +2316,14 @@ impl IceonApp {
                         let image_copy = c.image.clone();
 
                         let state_badge = match c.state.as_str() {
-                            "running" => Tag::success().small().child("running"),
-                            "waiting" => Tag::warning().small().child("waiting"),
-                            "terminated" => Tag::secondary().small().child("terminated"),
-                            other => Tag::secondary().small().child(other.to_owned()),
+                            "running" => Tag::success().small().child(selectable_text("running")),
+                            "waiting" => Tag::warning().small().child(selectable_text("waiting")),
+                            "terminated" => Tag::secondary()
+                                .small()
+                                .child(selectable_text("terminated")),
+                            other => Tag::secondary()
+                                .small()
+                                .child(selectable_text(other.to_owned())),
                         };
 
                         v_flex()
@@ -2306,21 +2346,30 @@ impl IceonApp {
                                                 div()
                                                     .text_xs()
                                                     .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(c.name.clone()),
+                                                    .child(selectable_text(c.name.clone())),
                                             )
-                                            .child(Tag::secondary().small().child(c.kind))
+                                            .child(
+                                                Tag::secondary()
+                                                    .small()
+                                                    .child(selectable_text(c.kind)),
+                                            )
                                             .child(state_badge)
                                             .child(if c.ready {
-                                                Tag::success().small().child("Ready")
+                                                Tag::success()
+                                                    .small()
+                                                    .child(selectable_text("Ready"))
                                             } else {
-                                                Tag::warning().small().child("Not Ready")
+                                                Tag::warning()
+                                                    .small()
+                                                    .child(selectable_text("Not Ready"))
                                             })
                                             .when(c.restarts > 0, |r| {
-                                                r.child(
-                                                    Tag::warning()
-                                                        .small()
-                                                        .child(format!("Restarts: {}", c.restarts)),
-                                                )
+                                                r.child(Tag::warning().small().child(
+                                                    selectable_text(format!(
+                                                        "Restarts: {}",
+                                                        c.restarts
+                                                    )),
+                                                ))
                                             }),
                                     )
                                     .child(
@@ -2403,7 +2452,7 @@ impl IceonApp {
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
                                             .truncate()
-                                            .child(format!("Image: {image_str}")),
+                                            .child(selectable_text(format!("Image: {image_str}"))),
                                     )
                                     .child(
                                         Button::new(SharedString::from(format!(
@@ -2475,7 +2524,9 @@ impl IceonApp {
             return div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("Metadata details are withheld or unavailable for this resource kind.")
+                .child(selectable_text(
+                    "Metadata details are withheld or unavailable for this resource kind.",
+                ))
                 .into_any_element();
         };
 
@@ -2500,20 +2551,26 @@ impl IceonApp {
                                 div()
                                     .text_xs()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("OBJECT METADATA"),
+                                    .child(selectable_text("OBJECT METADATA")),
                             )
                             .when(meta.partial, |r| {
-                                r.child(Tag::warning().small().child("Partial / Redacted"))
+                                r.child(
+                                    Tag::warning()
+                                        .small()
+                                        .child(selectable_text("Partial / Redacted")),
+                                )
                             }),
                     )
                     .when_some(meta.deletion_timestamp.clone(), |el, dt| {
-                        el.child(div().text_xs().text_color(cx.theme().danger).child(format!(
-                            "Deletion Timestamp: {}",
-                            crate::preference_runtime::timestamp(
-                                &dt,
-                                &self.preferences_draft.app.timezone
-                            )
-                        )))
+                        el.child(div().text_xs().text_color(cx.theme().danger).child(
+                            selectable_text(format!(
+                                "Deletion Timestamp: {}",
+                                crate::preference_runtime::timestamp(
+                                    &dt,
+                                    &self.preferences_draft.app.timezone
+                                )
+                            )),
+                        ))
                     })
                     .when(!meta.finalizers.is_empty(), |el| {
                         el.child(
@@ -2523,15 +2580,13 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child("Finalizers:"),
+                                        .child(selectable_text("Finalizers:")),
                                 )
-                                .child(
-                                    h_flex().gap_1().flex_wrap().children(
-                                        meta.finalizers
-                                            .iter()
-                                            .map(|fin| Tag::secondary().small().child(fin.clone())),
-                                    ),
-                                ),
+                                .child(h_flex().gap_1().flex_wrap().children(
+                                    meta.finalizers.iter().map(|fin| {
+                                        Tag::secondary().small().child(selectable_text(fin.clone()))
+                                    }),
+                                )),
                         )
                     }),
             )
@@ -2549,7 +2604,7 @@ impl IceonApp {
                         div()
                             .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("LABELS ({})", meta.labels.len())),
+                            .child(selectable_text(format!("LABELS ({})", meta.labels.len()))),
                     )
                     .children(meta.labels.iter().map(|entry| {
                         let kv = format!("{}={}", entry.key, entry.value);
@@ -2562,7 +2617,7 @@ impl IceonApp {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(entry.key.clone()),
+                                    .child(selectable_text(entry.key.clone())),
                             )
                             .child(
                                 h_flex()
@@ -2572,7 +2627,7 @@ impl IceonApp {
                                         div()
                                             .text_xs()
                                             .font_weight(FontWeight::MEDIUM)
-                                            .child(entry.value.clone()),
+                                            .child(selectable_text(entry.value.clone())),
                                     )
                                     .child(
                                         Button::new(SharedString::from(format!(
@@ -2603,12 +2658,12 @@ impl IceonApp {
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().secondary)
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("REVIEWED ANNOTATIONS ({})", meta.annotations.len())),
-                    )
+                    .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                        selectable_text(format!(
+                            "REVIEWED ANNOTATIONS ({})",
+                            meta.annotations.len()
+                        )),
+                    ))
                     .children(meta.annotations.iter().map(|entry| {
                         v_flex()
                             .w_full()
@@ -2617,13 +2672,13 @@ impl IceonApp {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(entry.key.clone()),
+                                    .child(selectable_text(entry.key.clone())),
                             )
                             .child(
                                 div()
                                     .text_xs()
                                     .font_weight(FontWeight::MEDIUM)
-                                    .child(entry.value.clone()),
+                                    .child(selectable_text(entry.value.clone())),
                             )
                     })),
             )
@@ -2638,12 +2693,12 @@ impl IceonApp {
                         .border_1()
                         .border_color(cx.theme().border)
                         .bg(cx.theme().secondary)
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("MANAGED FIELDS ({})", meta.managed_fields.len())),
-                        )
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                            selectable_text(format!(
+                                "MANAGED FIELDS ({})",
+                                meta.managed_fields.len()
+                            )),
+                        ))
                         .children(meta.managed_fields.iter().map(|mf| {
                             v_flex()
                                 .w_full()
@@ -2660,10 +2715,12 @@ impl IceonApp {
                                             div()
                                                 .text_xs()
                                                 .font_weight(FontWeight::SEMIBOLD)
-                                                .child(mf.manager.clone()),
+                                                .child(selectable_text(mf.manager.clone())),
                                         )
                                         .child(
-                                            Tag::secondary().small().child(mf.operation.clone()),
+                                            Tag::secondary()
+                                                .small()
+                                                .child(selectable_text(mf.operation.clone())),
                                         ),
                                 )
                                 .when_some(mf.time.clone(), |r, t| {
@@ -2671,13 +2728,13 @@ impl IceonApp {
                                         div()
                                             .text_xs()
                                             .text_color(cx.theme().muted_foreground)
-                                            .child(format!(
+                                            .child(selectable_text(format!(
                                                 "Updated: {}",
                                                 crate::preference_runtime::timestamp(
                                                     &t,
                                                     &self.preferences_draft.app.timezone
                                                 )
-                                            )),
+                                            ))),
                                     )
                                 })
                         })),
@@ -2705,12 +2762,12 @@ impl IceonApp {
                         .border_1()
                         .border_color(cx.theme().border)
                         .bg(cx.theme().secondary)
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("DIRECT REFERENCES ({})", detail.related.len())),
-                        )
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                            selectable_text(format!(
+                                "DIRECT REFERENCES ({})",
+                                detail.related.len()
+                            )),
+                        ))
                         .children(detail.related.iter().enumerate().map(
                             |(idx, (relation, target_ref))| {
                                 let target = target_ref.clone();
@@ -2721,10 +2778,16 @@ impl IceonApp {
                                         h_flex()
                                             .gap_1p5()
                                             .items_center()
-                                            .child(Tag::secondary().small().child(relation.clone()))
-                                            .child(div().text_xs().child(format!(
-                                                "{:?}/{}",
-                                                target_ref.kind, target_ref.name
+                                            .child(
+                                                Tag::secondary()
+                                                    .small()
+                                                    .child(selectable_text(relation.clone())),
+                                            )
+                                            .child(div().text_xs().child(selectable_text(
+                                                format!(
+                                                    "{:?}/{}",
+                                                    target_ref.kind, target_ref.name
+                                                ),
                                             ))),
                                     )
                                     .child(
@@ -2753,12 +2816,18 @@ impl IceonApp {
                     .map(|col| {
                         let is_pods = col.collection == CollectionKind::Pods;
                         let state_badge = match col.state {
-                            CollectionState::Complete => Tag::success().small().child("Complete"),
-                            CollectionState::Partial => Tag::warning().small().child("Partial"),
-                            CollectionState::Denied => Tag::danger().small().child("Denied"),
-                            CollectionState::Unavailable => {
-                                Tag::secondary().small().child("Unavailable")
+                            CollectionState::Complete => {
+                                Tag::success().small().child(selectable_text("Complete"))
                             }
+                            CollectionState::Partial => {
+                                Tag::warning().small().child(selectable_text("Partial"))
+                            }
+                            CollectionState::Denied => {
+                                Tag::danger().small().child(selectable_text("Denied"))
+                            }
+                            CollectionState::Unavailable => Tag::secondary()
+                                .small()
+                                .child(selectable_text("Unavailable")),
                         };
                         v_flex()
                             .w_full()
@@ -2773,7 +2842,11 @@ impl IceonApp {
                                     .justify_between()
                                     .items_center()
                                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
-                                        format!("{:?} ({})", col.collection, col.items.len()),
+                                        selectable_text(format!(
+                                            "{:?} ({})",
+                                            col.collection,
+                                            col.items.len()
+                                        )),
                                     ))
                                     .child(state_badge),
                             )
@@ -2811,7 +2884,9 @@ impl IceonApp {
                                                         div()
                                                             .text_xs()
                                                             .font_weight(FontWeight::MEDIUM)
-                                                            .child(item.reference.name.clone()),
+                                                            .child(selectable_text(
+                                                                item.reference.name.clone(),
+                                                            )),
                                                     )
                                                     .child(status_tag(&item.status)),
                                             )
@@ -2884,7 +2959,7 @@ impl IceonApp {
                                             div()
                                                 .text_xs()
                                                 .text_color(cx.theme().muted_foreground)
-                                                .child(summary_cols),
+                                                .child(selectable_text(summary_cols)),
                                         )
                                     })
                             }))
@@ -2923,17 +2998,25 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("EVENT MESSAGE"),
+                                .child(selectable_text("EVENT MESSAGE")),
                         )
-                        .child(div().text_xs().child(diag.message)),
+                        .child(div().text_xs().child(selectable_text(diag.message))),
                 )
             })
             .when_some(pod_events, |el, pod| {
                 let state_tag = match pod.events_state {
-                    PodEventsState::Complete => Tag::success().small().child("Complete"),
-                    PodEventsState::Partial => Tag::warning().small().child("Partial"),
-                    PodEventsState::Denied => Tag::danger().small().child("Denied"),
-                    PodEventsState::Unavailable => Tag::secondary().small().child("Unavailable"),
+                    PodEventsState::Complete => {
+                        Tag::success().small().child(selectable_text("Complete"))
+                    }
+                    PodEventsState::Partial => {
+                        Tag::warning().small().child(selectable_text("Partial"))
+                    }
+                    PodEventsState::Denied => {
+                        Tag::danger().small().child(selectable_text("Denied"))
+                    }
+                    PodEventsState::Unavailable => Tag::secondary()
+                        .small()
+                        .child(selectable_text("Unavailable")),
                 };
                 el.child(
                     v_flex()
@@ -2948,12 +3031,9 @@ impl IceonApp {
                             h_flex()
                                 .justify_between()
                                 .items_center()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(format!("POD EVENTS ({})", pod.events.len())),
-                                )
+                                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                                    selectable_text(format!("POD EVENTS ({})", pod.events.len())),
+                                ))
                                 .child(state_tag),
                         )
                         .when(pod.events.is_empty(), |r| {
@@ -2961,7 +3041,7 @@ impl IceonApp {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("No pod events recorded."),
+                                    .child(selectable_text("No pod events recorded.")),
                             )
                         })
                         .children(pod.events.iter().map(|ev| {
@@ -2973,26 +3053,30 @@ impl IceonApp {
                                         .gap_1p5()
                                         .items_center()
                                         .child(if ev.kind == "Warning" {
-                                            Tag::warning().small().child(ev.kind.clone())
+                                            Tag::warning()
+                                                .small()
+                                                .child(selectable_text(ev.kind.clone()))
                                         } else {
-                                            Tag::secondary().small().child(ev.kind.clone())
+                                            Tag::secondary()
+                                                .small()
+                                                .child(selectable_text(ev.kind.clone()))
                                         })
                                         .child(
                                             div()
                                                 .text_xs()
                                                 .font_weight(FontWeight::MEDIUM)
-                                                .child(ev.reason.clone()),
+                                                .child(selectable_text(ev.reason.clone())),
                                         ),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
+                                        .child(selectable_text(format!(
                                             "×{} · {}",
                                             ev.count,
                                             ev.last_seen.as_deref().unwrap_or("-")
-                                        )),
+                                        ))),
                                 )
                         })),
                 )
@@ -3006,18 +3090,15 @@ impl IceonApp {
                     .border_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().secondary)
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("INVOLVED EVENTS ({})", col.items.len())),
-                    )
+                    .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                        selectable_text(format!("INVOLVED EVENTS ({})", col.items.len())),
+                    ))
                     .when(col.items.is_empty(), |r| {
                         r.child(
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("No recent events for this object."),
+                                .child(selectable_text("No recent events for this object.")),
                         )
                     })
                     .children(col.items.into_iter().enumerate().map(|(idx, item)| {
@@ -3048,13 +3129,13 @@ impl IceonApp {
                                                 div()
                                                     .text_xs()
                                                     .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(reason),
+                                                    .child(selectable_text(reason)),
                                             )
                                             .child(
                                                 div()
                                                     .text_xs()
                                                     .text_color(cx.theme().muted_foreground)
-                                                    .child(format!("×{count}")),
+                                                    .child(selectable_text(format!("×{count}"))),
                                             ),
                                     )
                                     .child(
@@ -3191,13 +3272,13 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .child(chart_name.clone()),
+                                        .child(selectable_text(chart_name.clone())),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!("Version: {chart_ver}")),
+                                        .child(selectable_text(format!("Version: {chart_ver}"))),
                                 ),
                         )
                         .child(
@@ -3228,7 +3309,7 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child("CHART METADATA"),
+                                .child(selectable_text("CHART METADATA")),
                         )
                         .children(helm.facts.iter().map(|f| {
                             h_flex()
@@ -3238,13 +3319,13 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(f.label.clone()),
+                                        .child(selectable_text(f.label.clone())),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(f.value.clone()),
+                                        .child(selectable_text(f.value.clone())),
                                 )
                         })),
                 )
@@ -3259,15 +3340,12 @@ impl IceonApp {
                         .border_1()
                         .border_color(cx.theme().border)
                         .bg(cx.theme().secondary)
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!(
-                                    "RELEASE REVISION HISTORY ({})",
-                                    helm.history.len()
-                                )),
-                        )
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                            selectable_text(format!(
+                                "RELEASE REVISION HISTORY ({})",
+                                helm.history.len()
+                            )),
+                        ))
                         .children(helm.history.iter().map(|rev| {
                             v_flex()
                                 .w_full()
@@ -3284,10 +3362,10 @@ impl IceonApp {
                                             div()
                                                 .text_xs()
                                                 .font_weight(FontWeight::SEMIBOLD)
-                                                .child(format!(
+                                                .child(selectable_text(format!(
                                                     "Revision #{} · {}",
                                                     rev.revision, rev.chart
-                                                )),
+                                                ))),
                                         )
                                         .child(status_tag(&rev.status)),
                                 )
@@ -3295,15 +3373,42 @@ impl IceonApp {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
+                                        .child(selectable_text(format!(
                                             "App {} · Updated {}",
                                             rev.app_version, rev.updated
-                                        )),
+                                        ))),
                                 )
                         })),
                 )
             })
     }
+}
+
+// Keep the shared empty-state layout, but make the inspector's explanatory copy
+// selectable too. Icons and all interactive controls retain their own surfaces.
+fn inspector_empty_state(
+    icon: IconName,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+) -> impl IntoElement {
+    Empty::new()
+        .w_full()
+        .min_h(px(128.0))
+        .items_center()
+        .justify_center()
+        .p_6()
+        .border_1()
+        .border_color(transparent_black())
+        .header(
+            EmptyHeader::new()
+                .media(
+                    EmptyMedia::new()
+                        .with_variant(EmptyMediaVariant::Icon)
+                        .child(gpui_kit::component::Icon::new(icon)),
+                )
+                .title(EmptyTitle::new().child(selectable_text(title)))
+                .description(EmptyDescription::new().child(selectable_text(description))),
+        )
 }
 
 fn status_tag(status: &str) -> Tag {
@@ -3317,21 +3422,29 @@ fn status_tag(status: &str) -> Tag {
         || lower.contains("deployed")
         || lower == "true"
     {
-        Tag::success().small().child(status.to_owned())
+        Tag::success()
+            .small()
+            .child(selectable_text(status.to_owned()))
     } else if lower.contains("pending")
         || lower.contains("terminating")
         || lower.contains("warning")
         || lower.contains("waiting")
     {
-        Tag::warning().small().child(status.to_owned())
+        Tag::warning()
+            .small()
+            .child(selectable_text(status.to_owned()))
     } else if lower.contains("fail")
         || lower.contains("error")
         || lower.contains("crash")
         || lower == "false"
     {
-        Tag::danger().small().child(status.to_owned())
+        Tag::danger()
+            .small()
+            .child(selectable_text(status.to_owned()))
     } else {
-        Tag::secondary().small().child(status.to_owned())
+        Tag::secondary()
+            .small()
+            .child(selectable_text(status.to_owned()))
     }
 }
 

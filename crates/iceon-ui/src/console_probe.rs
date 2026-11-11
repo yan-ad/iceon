@@ -523,7 +523,7 @@ pub fn run() {
     let outcome = Rc::new(RefCell::new(None));
     let result = outcome.clone();
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::app_assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             crate::console_font::init(cx);

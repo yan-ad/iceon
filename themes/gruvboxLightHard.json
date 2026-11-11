@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "gruvboxLightHard",
+  "symbol": "GruvboxLightHard",
+  "family": "Gruvbox",
+  "name": "Light Hard",
+  "mode": "light",
+  "order": 12,
+  "colors": {
+    "background": "#f9f5d7",
+    "surface": "#f2e5bc",
+    "elevated": "#ebdbb2",
+    "foreground": "#3c3836",
+    "muted": "#665c54",
+    "border": "#bdae93",
+    "link": "#af3a03",
+    "primary": "#af3a03"
+  }
+}

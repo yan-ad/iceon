@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "catppuccinFrappe",
+  "symbol": "CatppuccinFrappe",
+  "family": "Catppuccin",
+  "name": "Frappe",
+  "mode": "dark",
+  "order": 14,
+  "colors": {
+    "background": "#303446",
+    "surface": "#292c3c",
+    "elevated": "#414559",
+    "foreground": "#c6d0f5",
+    "muted": "#a5adce",
+    "border": "#626880",
+    "link": "#ca9ee6",
+    "primary": "#ca9ee6"
+  }
+}

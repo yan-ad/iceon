@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "catppuccinMacchiato",
+  "symbol": "CatppuccinMacchiato",
+  "family": "Catppuccin",
+  "name": "Macchiato",
+  "mode": "dark",
+  "order": 15,
+  "colors": {
+    "background": "#24273a",
+    "surface": "#1e2030",
+    "elevated": "#363a4f",
+    "foreground": "#cad3f5",
+    "muted": "#a5adcb",
+    "border": "#5b6078",
+    "link": "#c6a0f6",
+    "primary": "#c6a0f6"
+  }
+}

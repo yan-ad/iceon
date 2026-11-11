@@ -1,0 +1,14 @@
+{
+  "light": {
+    "danger": ["#ba1a1a", "#ffffff"],
+    "success": ["#2f6c00", "#ffffff"],
+    "warning": ["#884e00", "#ffffff"],
+    "info": ["#005faa", "#ffffff"]
+  },
+  "dark": {
+    "danger": ["#ffb4ab", "#690005"],
+    "success": ["#d0ffad", "#153800"],
+    "warning": ["#ffb873", "#4a2800"],
+    "info": ["#a3c9ff", "#00315c"]
+  }
+}

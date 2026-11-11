@@ -348,14 +348,9 @@ impl PreferencesWindow {
             .default_open(true)
             .groups([
                 SettingGroup::new()
-                    .title("Appearance & Regional")
-                    .description("Customize Iceon color theme and timestamp formatting.")
                     .items([
-                        SettingItem::new(
-                            "Theme",
-                            SettingField::render(|_, _, cx| crate::theme_picker::appearance(cx)),
-                        )
-                        .description("Choose a palette and variant. Changes apply immediately to all windows."),
+                        SettingItem::render(|_, _, cx| crate::theme_picker::appearance(cx))
+                            .keywords(["Theme", "Appearance", "Palette"]),
                         SettingItem::new(
                             "Timezone",
                             SettingField::render(move |options, _, _| {

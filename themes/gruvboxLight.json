@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "gruvboxLight",
+  "symbol": "GruvboxLight",
+  "family": "Gruvbox",
+  "name": "Light",
+  "mode": "light",
+  "order": 11,
+  "colors": {
+    "background": "#fbf1c7",
+    "surface": "#ebdbb2",
+    "elevated": "#d5c4a1",
+    "foreground": "#3c3836",
+    "muted": "#665c54",
+    "border": "#bdae93",
+    "link": "#af3a03",
+    "primary": "#af3a03"
+  }
+}

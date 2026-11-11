@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "vsCodeLight",
+  "symbol": "VsCodeLight",
+  "family": "VSCode",
+  "name": "Light",
+  "mode": "light",
+  "order": 6,
+  "colors": {
+    "background": "#ffffff",
+    "surface": "#f3f3f3",
+    "elevated": "#e8e8e8",
+    "foreground": "#333333",
+    "muted": "#616161",
+    "border": "#cecece",
+    "link": "#005fb8",
+    "primary": "#005fb8"
+  }
+}

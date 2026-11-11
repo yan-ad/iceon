@@ -950,6 +950,15 @@ pub fn namespaced_kind(kind: ResourceKind) -> bool {
     )
 }
 
+fn zero_resource_title(filtered: bool, pending: bool) -> &'static str {
+    match (filtered, pending) {
+        (true, true) => "Searching resources…",
+        (false, true) => "Loading resources…",
+        (true, false) => "No matching resources",
+        (false, false) => "No resources found",
+    }
+}
+
 impl IceonApp {
     pub(crate) fn open_cluster_workspace(
         &mut self,
@@ -2083,13 +2092,32 @@ impl IceonApp {
             .child(self.render_cluster_toolbar(&section, active_kind, window, cx))
             .child(
                 v_flex()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
                     .w_full()
                     .child(self.render_cluster_section_body(&section, active_kind, window, cx))
-                    .when_some(self.cluster_error.clone(), |el, error| {
-                        el.child(crate::empty_state::error_state(error))
+                    .when_some(
+                        self.cluster_error.clone().filter(|_| active_kind.is_none()),
+                        |el, error| el.child(crate::empty_state::error_state(error)),
+                    )
+                    .when_some(active_kind, |el, kind| {
+                        el.child(
+                            div().absolute().right(px(20.0)).bottom(px(20.0)).child(
+                                Button::new("open-create-yaml-btn")
+                                    .primary()
+                                    .rounded_full()
+                                    .shadow_lg()
+                                    .icon(IconName::Plus)
+                                    .label("Create YAML")
+                                    .tooltip("Create a resource from YAML")
+                                    .accessibility_label("Create a resource from YAML")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_create_resource_modal(kind, window, cx);
+                                    })),
+                            ),
+                        )
                     }),
             )
             .into_any_element()
@@ -2189,15 +2217,18 @@ impl IceonApp {
                                             match s.status {
                                                 "connected" => Tag::success().small(),
                                                 "connecting" => Tag::warning().small(),
+                                                "error" => Tag::danger().small(),
                                                 _ => Tag::secondary().small(),
                                             }
-                                            .child(
-                                                format!(
-                                                    "{} {}",
-                                                    s.status,
-                                                    s.api_version.unwrap_or_default()
-                                                ),
-                                            ),
+                                            .child(s.status),
+                                        )
+                                        .when_some(
+                                            s.api_version.filter(|version| !version.is_empty()),
+                                            |el, version| {
+                                                el.child(
+                                                    Tag::info().outline().small().child(version),
+                                                )
+                                            },
                                         )
                                     })
                                     .when(self.active_pod_sync_id.is_some(), |el| {
@@ -2278,18 +2309,6 @@ impl IceonApp {
                                             .search_placeholder("Search namespaces…")
                                             .menu_width(px(240.0)),
                                     ),
-                                )
-                            })
-                            .when_some(active_kind, |el, kind| {
-                                el.child(
-                                    Button::new("open-create-yaml-btn")
-                                        .xsmall()
-                                        .primary()
-                                        .icon(IconName::Plus)
-                                        .label("Create YAML")
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.open_create_resource_modal(kind, window, cx);
-                                        })),
                                 )
                             })
                             .when(dock_count > 0, |el| {
@@ -2801,6 +2820,53 @@ impl IceonApp {
         kind: ResourceKind,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let has_rows = !self.filtered_resource_items(kind, cx).is_empty();
+        if !has_rows {
+            let query = self
+                .resource_filter_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_owned();
+            let filtered = !query.is_empty() || self.selected_status_filter.is_some();
+            let pending = self.cluster_loading || self.resource_pagination.loading;
+            let more = self
+                .resource_page
+                .as_ref()
+                .filter(|page| page.kind == kind)
+                .is_some_and(|page| page.continue_token.is_some() || page.truncated);
+            let state = if let Some(error) = self.cluster_error.clone() {
+                crate::empty_state::error_state(error).into_any_element()
+            } else if pending || more {
+                crate::empty_state::empty_state(
+                    IconName::Search,
+                    zero_resource_title(filtered, true),
+                    "Results will appear here as they become available.",
+                )
+                .into_any_element()
+            } else if filtered {
+                crate::empty_state::empty_state(
+                    IconName::Search,
+                    zero_resource_title(true, false),
+                    "Try a different search, change the status filter, or select another namespace.",
+                ).into_any_element()
+            } else {
+                crate::empty_state::empty_state(
+                    IconName::LayoutDashboard,
+                    zero_resource_title(false, false),
+                    "There are no resources in the selected namespace scope.",
+                )
+                .into_any_element()
+            };
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(state)
+                .into_any_element();
+        }
         let owner = cx.entity().downgrade();
         let table = self
             .resource_table
@@ -2829,8 +2895,20 @@ impl IceonApp {
             },
         };
         table.update(cx, |table, cx| table.sync(data, cx));
-        table
+        let content = table
             .cached(StyleRefinement::default().size_full())
+            .into_any_element();
+        if self.cluster_error.is_none() {
+            return content;
+        }
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .child(div().flex_1().min_h_0().min_w_0().child(content))
+            .when_some(self.cluster_error.clone(), |el, error| {
+                el.child(crate::empty_state::error_state(error))
+            })
             .into_any_element()
     }
 
@@ -3693,5 +3771,28 @@ mod tests {
         let node_yaml = default_yaml_template(ResourceKind::Nodes, "team-a");
         assert!(node_yaml.contains("kind: Node"));
         assert!(!node_yaml.contains("namespace:"));
+    }
+}
+
+#[cfg(test)]
+mod empty_result_tests {
+    #[test]
+    fn zero_results_distinguish_incomplete_scans_from_empty_inventory() {
+        assert_eq!(
+            super::zero_resource_title(true, true),
+            "Searching resources…"
+        );
+        assert_eq!(
+            super::zero_resource_title(false, true),
+            "Loading resources…"
+        );
+        assert_eq!(
+            super::zero_resource_title(true, false),
+            "No matching resources"
+        );
+        assert_eq!(
+            super::zero_resource_title(false, false),
+            "No resources found"
+        );
     }
 }

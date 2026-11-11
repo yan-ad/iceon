@@ -1,0 +1,19 @@
+{
+  "$schema": "./schema.json",
+  "id": "catppuccinLatte",
+  "symbol": "CatppuccinLatte",
+  "family": "Catppuccin",
+  "name": "Latte",
+  "mode": "light",
+  "order": 13,
+  "colors": {
+    "background": "#eff1f5",
+    "surface": "#e6e9ef",
+    "elevated": "#dce0e8",
+    "foreground": "#4c4f69",
+    "muted": "#6c6f85",
+    "border": "#acb0be",
+    "link": "#8839ef",
+    "primary": "#8839ef"
+  }
+}

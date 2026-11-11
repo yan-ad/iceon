@@ -28,19 +28,34 @@ pub(crate) fn background_appearance() -> WindowBackgroundAppearance {
 }
 
 fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
+    let selected = if mode.is_dark() {
+        AppTheme::Dark
+    } else {
+        AppTheme::Light
+    };
+    let [
+        background,
+        surface,
+        _elevated,
+        foreground,
+        muted,
+        border,
+        link,
+        primary,
+    ] = selected.palette_colors().expect("built-in default palette");
     if mode.is_dark() {
-        colors.sidebar = neutral(0x121214, CHROME_ALPHA_DARK);
+        colors.sidebar = neutral(surface, CHROME_ALPHA_DARK);
         colors.title_bar = colors.sidebar;
-        colors.sidebar_foreground = neutral(0xededed, 1.0);
+        colors.sidebar_foreground = neutral(foreground, 1.0);
         colors.sidebar_border = neutral(0xffffff, 0.08);
         colors.title_bar_border = colors.sidebar_border;
         colors.secondary_active = neutral(0xffffff, SELECTED_ALPHA);
 
-        colors.background = neutral(0x090909, 1.0);
+        colors.background = neutral(background, 1.0);
         colors.foreground = colors.sidebar_foreground;
         colors.muted = neutral(0x151515, 1.0);
-        colors.muted_foreground = neutral(0x969696, 1.0);
-        colors.popover = neutral(0x090909, 1.0);
+        colors.muted_foreground = neutral(muted, 1.0);
+        colors.popover = neutral(background, 1.0);
         colors.popover_foreground = colors.foreground;
         colors.accent = colors.secondary_active;
         colors.accent_foreground = colors.foreground;
@@ -49,18 +64,22 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
         colors.secondary_hover = neutral(0xffffff, 0.08);
         colors.border = neutral(0xffffff, 0.10);
     } else {
-        colors.sidebar = neutral(0xf6f6f7, CHROME_ALPHA_LIGHT);
+        colors.sidebar = neutral(surface, CHROME_ALPHA_LIGHT);
         colors.title_bar = colors.sidebar;
-        colors.sidebar_foreground = neutral(0x18181b, 1.0);
+        colors.sidebar_foreground = neutral(foreground, 1.0);
         colors.sidebar_border = neutral(0x000000, 0.08);
         colors.title_bar_border = colors.sidebar_border;
+        colors.background = neutral(background, 1.0);
+        colors.foreground = neutral(foreground, 1.0);
+        colors.muted_foreground = neutral(muted, 1.0);
+        colors.border = neutral(border, 1.0);
         colors.secondary_active = neutral(0x000000, 0.06);
         colors.secondary_hover = neutral(0x000000, 0.05);
     }
 
     // Brand interactive tokens in both modes without tinting the glass surfaces
     // or changing semantic success, warning, info, and danger colors.
-    colors.primary = neutral(PRIMARY_RGB, 1.0);
+    colors.primary = neutral(primary, 1.0);
     colors.primary_foreground = neutral(0xffffff, 1.0);
     colors.primary_hover = neutral(0x163aa6, 1.0);
     colors.primary_active = neutral(0x12308a, 1.0);
@@ -72,7 +91,7 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
     // Filled buttons retain Iceon blue, while text links need a lighter blue
     // against dark content (the brand blue alone is below readable contrast).
     colors.link = if mode.is_dark() {
-        neutral(0x9bb4ff, 1.0)
+        neutral(link, 1.0)
     } else {
         colors.primary
     };
@@ -91,7 +110,7 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
     colors.sidebar_primary_foreground = colors.primary_foreground;
     colors.sidebar_accent = colors.primary.alpha(SELECTED_ALPHA);
     colors.sidebar_accent_foreground = if mode.is_dark() {
-        neutral(0x9bb4ff, 1.0)
+        neutral(link, 1.0)
     } else {
         colors.primary
     };
@@ -111,58 +130,19 @@ struct Palette {
 }
 
 fn palette(theme: AppTheme) -> Option<Palette> {
-    use AppTheme::*;
-    let (background, surface, elevated, foreground, muted, border, link) = match theme {
-        System | Light | Dark => return None,
-        JetBrainsDarcula => (
-            0x2b2b2b, 0x313335, 0x3c3f41, 0xa9b7c6, 0x90989f, 0x55585b, 0x8ab4f8,
-        ),
-        JetBrainsLight => (
-            0xffffff, 0xf2f2f2, 0xe8e8e8, 0x242424, 0x666666, 0xcccccc, 0x174eb6,
-        ),
-        VsCodeDark => (
-            0x1e1e1e, 0x252526, 0x333333, 0xd4d4d4, 0x9d9d9d, 0x454545, 0x75beff,
-        ),
-        VsCodeLight => (
-            0xffffff, 0xf3f3f3, 0xe8e8e8, 0x333333, 0x616161, 0xcecece, 0x005fb8,
-        ),
-        GitHubDark => (
-            0x0d1117, 0x161b22, 0x21262d, 0xe6edf3, 0x9198a1, 0x3d444d, 0x79c0ff,
-        ),
-        GitHubLight => (
-            0xffffff, 0xf6f8fa, 0xeaeef2, 0x1f2328, 0x59636e, 0xd1d9e0, 0x0969da,
-        ),
-        GruvboxDark => (
-            0x282828, 0x32302f, 0x3c3836, 0xebdbb2, 0xbdae93, 0x665c54, 0x83a598,
-        ),
-        GruvboxDarkHard => (
-            0x1d2021, 0x282828, 0x32302f, 0xebdbb2, 0xbdae93, 0x665c54, 0x83a598,
-        ),
-        GruvboxLight => (
-            0xfbf1c7, 0xebdbb2, 0xd5c4a1, 0x3c3836, 0x665c54, 0xbdae93, 0x076678,
-        ),
-        GruvboxLightHard => (
-            0xf9f5d7, 0xf2e5bc, 0xebdbb2, 0x3c3836, 0x665c54, 0xbdae93, 0x076678,
-        ),
-        CatppuccinLatte => (
-            0xeff1f5, 0xe6e9ef, 0xdce0e8, 0x4c4f69, 0x6c6f85, 0xacb0be, 0x1e66f5,
-        ),
-        CatppuccinFrappe => (
-            0x303446, 0x292c3c, 0x414559, 0xc6d0f5, 0xa5adce, 0x626880, 0x8caaee,
-        ),
-        CatppuccinMacchiato => (
-            0x24273a, 0x1e2030, 0x363a4f, 0xcad3f5, 0xa5adcb, 0x5b6078, 0x8aadf4,
-        ),
-        CatppuccinMocha => (
-            0x1e1e2e, 0x181825, 0x313244, 0xcdd6f4, 0xa6adc8, 0x585b70, 0x89b4fa,
-        ),
-        SolarizedDark => (
-            0x002b36, 0x073642, 0x164450, 0x93a1a1, 0x839496, 0x586e75, 0x65b6e3,
-        ),
-        SolarizedLight => (
-            0xfdf6e3, 0xeee8d5, 0xe5dfcb, 0x586e75, 0x657b83, 0xb9b5a6, 0x176b9b,
-        ),
-    };
+    if matches!(theme, AppTheme::System | AppTheme::Light | AppTheme::Dark) {
+        return None;
+    }
+    let [
+        background,
+        surface,
+        elevated,
+        foreground,
+        muted,
+        border,
+        link,
+        _,
+    ] = theme.palette_colors()?;
     Some(Palette {
         background,
         surface,
@@ -174,6 +154,39 @@ fn palette(theme: AppTheme) -> Option<Palette> {
     })
 }
 
+fn primary_rgb(theme: AppTheme) -> u32 {
+    theme
+        .palette_colors()
+        .map_or(PRIMARY_RGB, |colors| colors[7])
+}
+
+fn luminance(rgb: u32) -> f64 {
+    let linear = |shift| {
+        let channel = f64::from((rgb >> shift) & 255u32) / 255.0;
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0)
+}
+
+fn primary_ink(rgb: u32) -> u32 {
+    let l = luminance(rgb);
+    let darkest = luminance(shade(rgb, 0.88));
+    if (darkest + 0.05) / 0.05 >= 1.05 / (l + 0.05) {
+        0x000000
+    } else {
+        0xffffff
+    }
+}
+
+fn shade(rgb: u32, factor: f32) -> u32 {
+    let channel = |shift| (((rgb >> shift) & 255u32) as f32 * factor).round() as u32;
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
 fn custom_colors(colors: &mut ThemeColor, theme: AppTheme) {
     let Some(p) = palette(theme) else { return };
     let bg = neutral(p.background, 1.0);
@@ -183,6 +196,23 @@ fn custom_colors(colors: &mut ThemeColor, theme: AppTheme) {
     let muted = neutral(p.muted, 1.0);
     let border = neutral(p.border, 1.0);
     let link = neutral(p.link, 1.0);
+    let primary = primary_rgb(theme);
+    // Darken both interaction states; choose one foreground with contrast
+    // against all three filled states, rather than inheriting default white.
+    let hover = shade(primary, 0.94);
+    let active = shade(primary, 0.88);
+    let ink = primary_ink(primary);
+    colors.primary = neutral(primary, 1.0);
+    colors.primary_hover = neutral(hover, 1.0);
+    colors.primary_active = neutral(active, 1.0);
+    colors.primary_foreground = neutral(ink, 1.0);
+    colors.button_primary = colors.primary;
+    colors.button_primary_hover = colors.primary_hover;
+    colors.button_primary_active = colors.primary_active;
+    colors.button_primary_foreground = colors.primary_foreground;
+    colors.sidebar_primary = colors.primary;
+    colors.sidebar_primary_foreground = colors.primary_foreground;
+
     colors.background = bg;
     colors.foreground = fg;
     colors.muted = surface;
@@ -242,7 +272,7 @@ fn custom_colors(colors: &mut ThemeColor, theme: AppTheme) {
     colors.sidebar = surface.alpha(alpha);
     colors.sidebar_foreground = fg;
     colors.sidebar_border = border.alpha(0.5);
-    colors.sidebar_accent = raised;
+    colors.sidebar_accent = colors.primary.alpha(0.16);
     colors.sidebar_accent_foreground = link;
     colors.title_bar = colors.sidebar;
     colors.title_bar_border = colors.sidebar_border;
@@ -257,14 +287,31 @@ fn custom_colors(colors: &mut ThemeColor, theme: AppTheme) {
     colors.link = link;
     colors.link_hover = fg;
     colors.link_active = link;
-    colors.ring = link;
-    colors.selection = link.alpha(0.25);
+    colors.ring = colors.primary;
+    colors.selection = colors.primary.alpha(0.25);
     colors.drag_border = link;
     colors.drop_target = link.alpha(0.18);
     colors.progress_bar = colors.primary;
     colors.slider_bar = colors.primary;
     colors.slider_thumb = fg;
     colors.chart_grid = border;
+}
+
+/// Shared semantic tag roles, deliberately applied after every custom palette.
+fn semantic_tag_colors(colors: &mut ThemeColor, mode: ThemeMode) {
+    let [danger, success, warning, info] = if mode.is_dark() {
+        iceon_core::preferences::DARK_TAG_COLORS
+    } else {
+        iceon_core::preferences::LIGHT_TAG_COLORS
+    };
+    colors.danger = neutral(danger[0], 1.0);
+    colors.danger_foreground = neutral(danger[1], 1.0);
+    colors.success = neutral(success[0], 1.0);
+    colors.success_foreground = neutral(success[1], 1.0);
+    colors.warning = neutral(warning[0], 1.0);
+    colors.warning_foreground = neutral(warning[1], 1.0);
+    colors.info = neutral(info[0], 1.0);
+    colors.info_foreground = neutral(info[1], 1.0);
 }
 
 /// Reload the user's chosen content mode, then brand chrome. Theme::update
@@ -303,6 +350,7 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
     Theme::update(cx, |theme| {
         brand_colors(&mut theme.colors, mode);
         custom_colors(&mut theme.colors, selected);
+        semantic_tag_colors(&mut theme.colors, mode);
     });
     if let Some(window) = window {
         window.set_background_appearance(background_appearance());
@@ -315,6 +363,48 @@ mod tests {
         CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
     };
     use gpui_kit::component::theme::{ThemeColor, ThemeMode};
+
+    #[test]
+    fn semantic_tags_match_requested_colors_for_every_palette() {
+        use iceon_core::preferences::AppTheme;
+        for &selected in AppTheme::ALL {
+            for dark in [false, true] {
+                let mode = if selected.is_dark().unwrap_or(dark) {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                };
+                let mut colors = ThemeColor::default();
+                brand_colors(&mut colors, mode);
+                super::custom_colors(&mut colors, selected);
+                super::semantic_tag_colors(&mut colors, mode);
+                let expected = if mode.is_dark() {
+                    [
+                        [0xffb4ab, 0x690005],
+                        [0xd0ffad, 0x153800],
+                        [0xffb873, 0x4a2800],
+                        [0xa3c9ff, 0x00315c],
+                    ]
+                } else {
+                    [
+                        [0xba1a1a, 0xffffff],
+                        [0x2f6c00, 0xffffff],
+                        [0x884e00, 0xffffff],
+                        [0x005faa, 0xffffff],
+                    ]
+                };
+                let actual = [
+                    [colors.danger, colors.danger_foreground],
+                    [colors.success, colors.success_foreground],
+                    [colors.warning, colors.warning_foreground],
+                    [colors.info, colors.info_foreground],
+                ];
+                for (pair, expected) in actual.into_iter().zip(expected) {
+                    assert_eq!(pair, expected.map(|rgb| neutral(rgb, 1.0)), "{selected:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn chrome_colors_match_mode_palette() {
@@ -392,16 +482,15 @@ mod tests {
     }
 
     #[test]
-    fn light_content_palette_is_retained() {
+    fn light_content_palette_uses_json_roles() {
         let mut colors = ThemeColor::default();
-        colors.background = neutral(0xfafafa, 1.0);
-        colors.foreground = neutral(0x121212, 1.0);
-        colors.muted_foreground = neutral(0x666666, 1.0);
-        let before = colors;
         brand_colors(&mut colors, ThemeMode::Light);
-        assert_eq!(colors.background, before.background);
-        assert_eq!(colors.foreground, before.foreground);
-        assert_eq!(colors.muted_foreground, before.muted_foreground);
+        let palette = iceon_core::preferences::AppTheme::Light
+            .palette_colors()
+            .unwrap();
+        assert_eq!(colors.background, neutral(palette[0], 1.0));
+        assert_eq!(colors.foreground, neutral(palette[3], 1.0));
+        assert_eq!(colors.muted_foreground, neutral(palette[4], 1.0));
     }
 
     #[test]
@@ -411,6 +500,20 @@ mod tests {
         assert_eq!(colors.background, neutral(0x090909, 1.0));
         assert_eq!(colors.muted_foreground, neutral(0x969696, 1.0));
     }
+    #[test]
+    fn github_highlights_follow_green_accent() {
+        use iceon_core::preferences::AppTheme;
+        let mut colors = ThemeColor::default();
+        super::custom_colors(&mut colors, AppTheme::GitHubDark);
+        assert_eq!(colors.link, neutral(0x56d364, 1.0));
+        assert_eq!(colors.sidebar_accent_foreground, colors.link);
+        assert_eq!(colors.sidebar_accent, colors.primary.alpha(0.16));
+        let palette = AppTheme::GitHubDark.palette_colors().unwrap();
+        let contrast =
+            (super::luminance(palette[6]) + 0.05) / (super::luminance(palette[0]) + 0.05);
+        assert!(contrast >= 4.5);
+    }
+
     #[test]
     fn custom_palettes_cover_component_surfaces_and_are_distinct() {
         use iceon_core::preferences::AppTheme;
@@ -432,7 +535,18 @@ mod tests {
             assert_eq!(colors.input, colors.border);
             assert_eq!(colors.table_head, colors.secondary);
             assert_eq!(colors.foreground, colors.popover_foreground);
-            assert_eq!(colors.primary, neutral(PRIMARY_RGB, 1.0));
+            assert_eq!(colors.primary, neutral(super::primary_rgb(selected), 1.0));
+            assert_ne!(colors.primary, neutral(PRIMARY_RGB, 1.0));
+            assert_eq!(colors.button_primary, colors.primary);
+            assert_eq!(colors.sidebar_primary, colors.primary);
+            assert_eq!(colors.ring, colors.primary);
+            let primary = super::primary_rgb(selected);
+            let ink = super::luminance(super::primary_ink(primary));
+            for factor in [1.0, 0.94, 0.88] {
+                let fill = super::luminance(super::shade(primary, factor));
+                let contrast = (fill.max(ink) + 0.05) / (fill.min(ink) + 0.05);
+                assert!(contrast >= 4.5, "{selected:?}: primary contrast {contrast}");
+            }
             assert_ne!(colors.link, colors.background);
             assert_ne!(colors.foreground, colors.background);
             let signature = (colors.background, colors.secondary, colors.foreground);
@@ -442,7 +556,7 @@ mod tests {
             );
             seen.push(signature);
         }
-        assert_eq!(seen.len(), 16);
+        assert_eq!(seen.len(), AppTheme::ALL.len() - 3);
     }
 
     #[test]
@@ -459,18 +573,11 @@ mod tests {
 
 /// Preview roles use the same palette source as the live theme.
 pub(crate) fn preview_colors(theme: AppTheme) -> [u32; 4] {
-    if let Some(palette) = palette(theme) {
-        [
-            palette.background,
-            palette.surface,
-            palette.elevated,
-            palette.link,
-        ]
-    } else if theme == AppTheme::Light {
-        [0xffffff, 0xf6f6f7, 0xe4e4e7, PRIMARY_RGB]
-    } else if theme == AppTheme::System {
-        [0xfafafa, 0x18181b, 0xe4e4e7, PRIMARY_RGB]
-    } else {
-        [0x090909, 0x121214, 0x27272a, PRIMARY_RGB]
-    }
+    let [background, surface, elevated, _, _, _, _, primary] =
+        theme.palette_colors().unwrap_or_else(|| {
+            let mut colors = AppTheme::Light.palette_colors().expect("Light palette");
+            colors[1] = AppTheme::Dark.palette_colors().expect("Dark palette")[1];
+            colors
+        });
+    [background, surface, elevated, primary]
 }

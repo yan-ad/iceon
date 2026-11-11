@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Iceon application theme",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "symbol", "family", "name", "mode", "order"],
+  "properties": {
+    "$schema": {"type": "string"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9-]+$"},
+    "symbol": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$", "description": "Unique generated identifier, e.g. OceanDark. No Rust editing needed."},
+    "family": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["system", "light", "dark"]},
+    "order": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "inherits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["light", "dark"],
+      "properties": {"light": {"const": "light"}, "dark": {"const": "dark"}}
+    },
+    "colors": {
+      "type": "object", "additionalProperties": false,
+      "required": ["background", "surface", "elevated", "foreground", "muted", "border", "link", "primary"],
+      "properties": {
+        "background": {"$ref": "#/$defs/color"},
+        "surface": {"$ref": "#/$defs/color"},
+        "elevated": {"$ref": "#/$defs/color"},
+        "foreground": {"$ref": "#/$defs/color"},
+        "muted": {"$ref": "#/$defs/color"},
+        "border": {"$ref": "#/$defs/color"},
+        "link": {"$ref": "#/$defs/color"},
+        "primary": {"$ref": "#/$defs/color"}
+      }
+    }
+  },
+  "allOf": [{
+    "if": {"properties": {"mode": {"const": "system"}}},
+    "then": {"required": ["inherits"], "properties": {"id": {"const": "system"}}, "not": {"required": ["colors"]}},
+    "else": {"required": ["colors"], "not": {"required": ["inherits"]}}
+  }],
+  "$defs": {"color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}}
+}

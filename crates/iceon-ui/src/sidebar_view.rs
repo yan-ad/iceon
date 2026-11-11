@@ -332,7 +332,14 @@ fn menu_item_with_pin(
                             .xsmall()
                             .selected(pinned)
                             .text_color(if pinned { foreground } else { muted })
-                            .child(Icon::new(AssetIconName::Pin))
+                            .icon(
+                                Icon::new(if pinned {
+                                    AssetIconName::PinOff
+                                } else {
+                                    AssetIconName::Pin
+                                })
+                                .small(),
+                            )
                             .accessibility_label(pin_tooltip.clone())
                             .tooltip(pin_tooltip)
                             .on_click(move |event, window, cx| {
@@ -610,7 +617,7 @@ impl IceonApp {
                                     .ghost()
                                     .small()
                                     .size(px(40.0))
-                                    .child(Icon::new(AssetIconName::Pin))
+                                    .icon(Icon::new(AssetIconName::Pin).small())
                                     .text_color(sidebar_foreground)
                                     .accessibility_label(format!("Pinned {label}"))
                                     .tooltip(format!("Pinned: {label}"))
@@ -802,7 +809,7 @@ impl IceonApp {
                             );
                         }),
                     )
-                    .pl_6()
+                    .pl(px(32.0))
                 }));
 
                 // Dynamically append discovered Custom Resource Definitions under Custom Resources
@@ -837,7 +844,7 @@ impl IceonApp {
                                 );
                             }),
                         )
-                        .pl_6()
+                        .pl(px(32.0))
                     }));
                 }
             }
