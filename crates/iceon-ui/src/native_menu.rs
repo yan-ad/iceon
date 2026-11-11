@@ -81,6 +81,7 @@ pub(crate) fn init(cx: &mut App) {
 
 /// Shared, non-destructive commands for the status item and Dock icon menu.
 /// The regular menu bar remains independent (including Services/Edit handling).
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn quick_access_menu() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Show Iceon", ShowMainWindow),
