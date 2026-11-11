@@ -539,6 +539,9 @@ impl IceonApp {
         }
         match route {
             Route::Catalog => {
+                // Home has no console chrome until explicitly opened. Keep
+                // sessions alive so returning to their tabs preserves buffers.
+                self.pod_dock_open = false;
                 self.refresh_catalog(cx);
             }
             Route::Secrets => {

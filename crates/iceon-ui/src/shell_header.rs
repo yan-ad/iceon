@@ -291,9 +291,9 @@ impl IceonApp {
                             )
                             .child(
                                 Button::new("nav-catalog-btn").ghost().xsmall()
-                                    .icon(IconName::LayoutDashboard)
+                                    .icon(gpui_kit_assets::IconName::House)
                                     .text_color(cx.theme().sidebar_foreground)
-                                    .tooltip("Clusters catalog").accessibility_label("Clusters catalog")
+                                    .tooltip("Home · Clusters").accessibility_label("Home · Clusters")
                                     .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Catalog, true, window, cx))),
                             )
                             .child(

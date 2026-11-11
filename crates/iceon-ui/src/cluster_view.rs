@@ -2046,9 +2046,10 @@ impl IceonApp {
                     .min_w_0()
                     .h_full()
                     .child(div().flex_1().min_h_0().min_w_0().children(area))
-                    .when(!console_open, |column| {
-                        column.child(self.render_console_tabs(window, cx))
-                    }),
+                    .when(
+                        !console_open && !matches!(self.history.current(), Route::Catalog),
+                        |column| column.child(self.render_console_tabs(window, cx)),
+                    ),
             )
             .when(inspector_open, |row| {
                 row.child(

@@ -115,6 +115,17 @@ impl IceonApp {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(
+                h_flex().w_full().items_center().justify_between().gap_4().flex_wrap()
+                    .child(v_flex().gap_1()
+                        .child(div().text_2xl().font_semibold().child("Welcome to Iceon"))
+                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                            .child("Open a cluster below to explore its resources, or start a local terminal.")))
+                    .child(Button::new("home-open-terminal")
+                        .small().outline().icon(IconName::SquareTerminal)
+                        .label("Open a terminal").accessibility_label("Open a local terminal")
+                        .on_click(cx.listener(|this, _, window, cx| this.open_device_terminal(window, cx)))),
+            )
+            .child(
                 h_flex()
                     .w_full()
                     .items_center()
