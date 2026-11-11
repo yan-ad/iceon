@@ -2388,22 +2388,73 @@ fn format_node_usage(usage: &iceon_core::connection::Usage, is_cpu: bool) -> Str
 }
 
 pub fn format_age(created_at: Option<&str>) -> String {
-    let Some(raw) = created_at else {
+    format_age_at(created_at, jiff::Timestamp::now())
+}
+
+/// Format an elapsed duration without zero-valued units. Future timestamps clamp
+/// to zero; malformed timestamps never leak raw API data into the Age column.
+/// `now` is injectable so boundary and clock-skew tests are deterministic.
+pub fn format_age_at(created_at: Option<&str>, now: jiff::Timestamp) -> String {
+    let Some(ts) = created_at.and_then(|raw| raw.parse::<jiff::Timestamp>().ok()) else {
         return "—".into();
     };
-    let Ok(ts) = raw.parse::<jiff::Timestamp>() else {
-        return raw.to_string();
-    };
-    let now = jiff::Timestamp::now();
-    let secs = now.as_second().saturating_sub(ts.as_second()).max(0);
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3600)
+    // Subtract before truncating: a subsecond age must not round up across an
+    // epoch-second boundary. Timestamp's supported range fits comfortably in i128.
+    let secs = ((now.as_nanosecond() - ts.as_nanosecond()).max(0) / 1_000_000_000) as u64;
+    let units = [
+        (secs / 86_400, "d"),
+        (secs / 3_600 % 24, "h"),
+        (secs / 60 % 60, "m"),
+        (secs % 60, "s"),
+    ];
+    let parts: Vec<_> = units
+        .into_iter()
+        .filter(|(value, _)| *value != 0)
+        .map(|(value, unit)| format!("{value}{unit}"))
+        .collect();
+    if parts.is_empty() {
+        "0s".into()
     } else {
-        format!("{}d", secs / 86_400)
+        parts.join(" ")
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::format_age_at;
+
+    #[test]
+    fn adaptive_units_omit_every_zero_unit() {
+        let created = "2026-01-01T00:00:00Z";
+        let start: jiff::Timestamp = created.parse().unwrap();
+        for (seconds, expected) in [
+            (0, "0s"),
+            (20, "20s"),
+            (60, "1m"),
+            (62, "1m 2s"),
+            (3_600, "1h"),
+            (3_602, "1h 2s"),
+            (86_400, "1d"),
+            (86_460, "1d 1m"),
+            (111_782, "1d 7h 3m 2s"),
+        ] {
+            let now = jiff::Timestamp::from_second(start.as_second() + seconds).unwrap();
+            assert_eq!(format_age_at(Some(created), now), expected);
+        }
+    }
+
+    #[test]
+    fn missing_invalid_future_and_subsecond_ages_are_safe() {
+        let now = "2026-01-01T00:00:00.1Z".parse().unwrap();
+        for raw in [None, Some(""), Some("not-a-date")] {
+            assert_eq!(format_age_at(raw, now), "—");
+        }
+        assert_eq!(format_age_at(Some("2027-01-01T00:00:00Z"), now), "0s");
+        assert_eq!(format_age_at(Some("2025-12-31T23:59:59.9Z"), now), "0s");
+        assert_eq!(
+            format_age_at(Some("2026-01-01T07:00:00.1+07:00"), now),
+            "0s"
+        );
     }
 }
 

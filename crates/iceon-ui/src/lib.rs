@@ -1,5 +1,6 @@
 //! Pure-Rust GPUI (`gpui-kit`) desktop UI shell for Iceon (`icekube`).
 
+mod age_label;
 pub mod badge;
 pub mod catalog_view;
 pub mod cluster_view;
@@ -18,6 +19,7 @@ mod preference_runtime;
 pub mod preferences_view;
 #[cfg(debug_assertions)]
 mod render_performance_probe;
+mod resource_pagination;
 mod resource_scroll;
 mod resource_table;
 #[cfg(debug_assertions)]
@@ -106,6 +108,7 @@ pub struct IceonApp {
     pub(crate) overview_snapshot: OverviewSnapshot,
     pub(crate) resource_page: Option<std::rc::Rc<ResourcePage>>,
     pub(crate) resource_table: Option<Entity<resource_table::ResourceTable>>,
+    pub(crate) resource_pagination: resource_pagination::ResourcePagination,
     pub(crate) current_continue_token: Option<String>,
     pub(crate) continue_token_history: Vec<Option<String>>,
     pub(crate) active_pod_sync_id: Option<String>,
@@ -234,9 +237,25 @@ impl IceonApp {
         let catalog_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter clusters..."));
         let resource_filter_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources by name..."));
-        cx.observe(&resource_filter_input, |_, _, cx| cx.notify())
-            .detach();
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search all resources by name…"));
+        cx.observe_in(&resource_filter_input, window, |this, _, window, cx| {
+            let query = this
+                .resource_filter_input
+                .read(cx)
+                .value()
+                .trim()
+                .to_string();
+            if this
+                .resource_pagination
+                .request
+                .as_ref()
+                .is_some_and(|r| r.query.as_deref().unwrap_or_default() != query)
+            {
+                this.reload_active_section(window, cx);
+            }
+            cx.notify();
+        })
+        .detach();
         let (namespace_select, namespace_select_items) =
             cluster_view::create_namespace_select(window, cx);
         let status_select = cluster_view::create_status_select(window, cx);
@@ -339,6 +358,7 @@ impl IceonApp {
             overview_snapshot: OverviewSnapshot::default(),
             resource_page: None,
             resource_table: None,
+            resource_pagination: resource_pagination::ResourcePagination::default(),
             current_continue_token: None,
             continue_token_history: vec![],
             active_pod_sync_id: None,
@@ -551,6 +571,8 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_resource_pagination();
+        self.stop_active_pod_sync();
         if push_history {
             self.history.push(route.clone());
         }

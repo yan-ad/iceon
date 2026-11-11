@@ -7,7 +7,7 @@ use crate::{
         row_status_tag, table_cell,
     },
     inspector_view::DeleteTarget,
-    navigation::{Route, cell_value, format_age},
+    navigation::{Route, cell_value},
     resource_scroll::{ResourceScrollScope, ResourceScrollState},
 };
 use gpui_kit::component::{
@@ -77,7 +77,7 @@ impl ColumnLayout {
                 key: "age",
                 label: "Age",
                 width: RESOURCE_AGE_WIDTH,
-                min: 76.0,
+                min: 164.0,
             },
             TableColumn {
                 key: "status",
@@ -561,7 +561,7 @@ impl ResourceTable {
             "Drag separator to resize. Shift+Left/Right resizes by 16 pixels.".to_owned()
         } else {
             format!(
-                "Sort {} on this loaded page only (ascending, descending, API order). Drag separator or Shift+Left/Right to resize.",
+                "Sort {} among currently loaded results (ascending, descending, API order). Drag separator or Shift+Left/Right to resize.",
                 column.label
             )
         };
@@ -673,7 +673,10 @@ impl ResourceTable {
         let row_actions = self
             .render_row_actions(kind, item, idx, cx)
             .into_any_element();
-        let age_str = format_age(item.created_at.as_deref());
+        let timezone = cx
+            .try_global::<crate::preferences_view::GlobalPreferencesState>()
+            .map(|state| state.preferences.app.timezone.clone())
+            .unwrap_or_else(|| "local".to_owned());
 
         h_flex()
             .id(SharedString::from(format!("resource-row-{idx}")))
@@ -755,7 +758,11 @@ impl ResourceTable {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .truncate()
-                    .child(age_str),
+                    .child(crate::age_label::age_label(
+                        SharedString::from(format!("resource-age-{idx}")),
+                        item.created_at.as_deref(),
+                        &timezone,
+                    )),
             )
             .child(
                 table_cell(layout.width("status"), false, true, cx.theme().border)
@@ -1199,7 +1206,17 @@ impl Render for ResourceTable {
                                     entity,
                                     SharedString::from(format!("virtual-resource-table-{kind:?}")),
                                     item_sizes,
-                                    move |this, visible_range, _window, cx| {
+                                    move |this, visible_range, window, cx| {
+                                        if page.as_ref().is_some_and(|p| p.continue_token.is_some())
+                                            && visible_range.end.saturating_add(12) >= indices.len()
+                                        {
+                                            let owner = this.owner.clone();
+                                            window.defer(cx, move |window, cx| {
+                                                let _ = owner.update(cx, |app, cx| {
+                                                    app.load_more_resources(kind, window, cx)
+                                                });
+                                            });
+                                        }
                                         visible_range
                                             .filter_map(|idx| {
                                                 let item =

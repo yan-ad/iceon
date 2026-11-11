@@ -522,6 +522,16 @@ fn scroll(
         }),
         cx,
     );
+    // The wheel hit-test can arm row/column tooltips and scrollbar hover
+    // transitions. Move out of the measured table before taking its next
+    // baseline, so their delayed appearance is not mistaken for terminal work.
+    window.dispatch_event(
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: point(px(-10.), px(-10.)),
+            ..Default::default()
+        }),
+        cx,
+    );
     println!(
         "render_performance_probe wheel dispatch={:?}",
         start.elapsed()
@@ -697,6 +707,15 @@ pub fn run() {
     let result = outcome.clone();
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
+        // This audit measures table/terminal invalidation, not scrollbar fades.
+        // Scrolling mode schedules parent-view notifications (enter/exit and
+        // the two-second idle hold), which can land in stage 3 or stage 15
+        // depending on native display-link timing. Keep the real scrollbars
+        // and wheel paths, but remove that independent animation producer.
+        gpui_kit::component::Theme::set_scrollbar_mode(
+            gpui_kit::component::scroll::ScrollbarMode::Always,
+            cx,
+        );
         crate::console_font::init(cx);
         terminal_surface::init(cx);
         let watchdog = result.clone();

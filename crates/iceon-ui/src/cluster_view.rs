@@ -254,7 +254,7 @@ pub struct ColumnDef {
 pub(crate) const RESOURCE_ACTIONS_WIDTH: f32 = 124.0;
 pub(crate) const RESOURCE_NAME_WIDTH: f32 = 260.0;
 pub(crate) const RESOURCE_NAMESPACE_WIDTH: f32 = 144.0;
-pub(crate) const RESOURCE_AGE_WIDTH: f32 = 76.0;
+pub(crate) const RESOURCE_AGE_WIDTH: f32 = 164.0;
 pub(crate) const RESOURCE_STATUS_WIDTH: f32 = 148.0;
 
 // Shared cell geometry: padding is inside each column; only internal vertical rules.
@@ -1083,6 +1083,7 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) {
         self.stop_active_pod_sync();
+        self.cancel_resource_pagination();
         let section = self.active_cluster_section.clone();
 
         if section == "overview"
@@ -1115,18 +1116,6 @@ impl IceonApp {
         }
         if let Some(kind) = section_to_resource_kind(&section) {
             self.load_resource_table(kind, window, cx);
-            if kind == ResourceKind::Pods
-                && self.current_continue_token.is_none()
-                && self
-                    .resource_filter_input
-                    .read(cx)
-                    .value()
-                    .trim()
-                    .is_empty()
-                && self.selected_status_filter.is_none()
-            {
-                self.start_pod_sync(window, cx);
-            }
         }
     }
 
@@ -1207,64 +1196,154 @@ impl IceonApp {
         .detach();
     }
 
+    pub(crate) fn cancel_resource_pagination(&mut self) {
+        if let Some(request) = self.resource_pagination.request.take() {
+            let _ = self.connection.cancel_resources(request);
+        }
+        self.resource_pagination = Default::default();
+    }
+
     pub(crate) fn load_resource_table(
         &mut self,
         kind: ResourceKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        if session.status != "connected" {
+        self.cancel_resource_pagination();
+        self.stop_active_pod_sync();
+        self.current_continue_token = None;
+        self.continue_token_history.clear();
+        self.resource_page = None;
+        self.cluster_error = None;
+        self.fetch_resource_page(kind, None, window, cx);
+    }
+
+    pub(crate) fn load_more_resources(
+        &mut self,
+        kind: ResourceKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .resource_pagination
+            .request
+            .as_ref()
+            .is_some_and(|r| self.resource_request_is_current(r, cx))
+        {
             return;
         }
-        let read_id = self.next_operation_id();
-        let query_str = {
-            let q = self
-                .resource_filter_input
-                .read(cx)
-                .value()
-                .trim()
-                .to_string();
-            (!q.is_empty()).then_some(q)
+        if self.resource_pagination.loading
+            || self.resource_pagination.stopped
+            || self.cluster_error.is_some()
+        {
+            return;
+        }
+        let Some(token) = self
+            .resource_page
+            .as_ref()
+            .filter(|p| p.kind == kind)
+            .and_then(|p| p.continue_token.clone())
+        else {
+            return;
         };
+        if let Err(error) = self.resource_pagination.begin_next(&token) {
+            self.cluster_error = Some(error.into());
+            cx.notify();
+            return;
+        }
+        self.fetch_resource_page(kind, Some(token), window, cx);
+    }
+
+    fn resource_request_is_current(&self, req: &ResourceRequest, cx: &Context<Self>) -> bool {
+        self.resource_pagination.request.as_ref() == Some(req)
+            && self.cluster_session.as_ref().is_some_and(|s| {
+                s.status == "connected"
+                    && s.cluster_id == req.cluster_id
+                    && s.session_id == req.session_id
+            })
+            && section_to_resource_kind(&self.active_cluster_section) == Some(req.kind)
+            && self
+                .selected_namespace
+                .as_ref()
+                .filter(|_| namespaced_kind(req.kind))
+                == req.namespace.as_ref()
+            && self.selected_status_filter == req.status
+            && self.resource_filter_input.read(cx).value().trim()
+                == req.query.as_deref().unwrap_or_default()
+            && matches!(self.history.current(), Route::Cluster { cluster_id, .. } if cluster_id == &req.cluster_id)
+    }
+
+    fn fetch_resource_page(
+        &mut self,
+        kind: ResourceKind,
+        token: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self
+            .cluster_session
+            .clone()
+            .filter(|s| s.status == "connected")
+        else {
+            return;
+        };
+        let query = self
+            .resource_filter_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         let req = ResourceRequest {
             cluster_id: session.cluster_id,
             session_id: session.session_id,
             kind,
-            read_id,
+            read_id: self.next_operation_id(),
             namespace: if namespaced_kind(kind) {
                 self.selected_namespace.clone()
             } else {
                 None
             },
-            continue_token: self.current_continue_token.clone(),
-            query: query_str,
+            continue_token: token,
+            query: (!query.is_empty()).then_some(query),
             status: self.selected_status_filter.clone(),
             group: None,
         };
-        let connection = self.connection.clone();
+        self.resource_pagination.request = Some(req.clone());
+        self.resource_pagination.loading = true;
         self.cluster_loading = true;
+        let connection = self.connection.clone();
         cx.notify();
-
         cx.spawn_in(window, async move |this, cx| {
-            let result = connection.resources(req).await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let result = connection.resources(req.clone()).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if !this.resource_request_is_current(&req, cx) { return; }
+                this.resource_pagination.completed();
                 this.cluster_loading = false;
                 match result {
-                    Ok(page) => {
+                    Ok(page) if this.resource_pagination.accepts(&req, &page) => {
+                        let (page, limited) = crate::resource_pagination::merge_page(
+                            this.resource_page.as_deref().filter(|_| req.continue_token.is_some()), page);
+                        let incomplete = page.truncated && page.continue_token.is_none();
                         this.resource_page = Some(Rc::new(page));
-                        this.cluster_error = None;
+                        if limited || incomplete {
+                            this.resource_pagination.stopped = true;
+                            this.cluster_error = Some(if limited {
+                                "Resource scan reached the 50,000 item limit; results are incomplete. Narrow the namespace or search."
+                            } else { "Resource response was truncated without a continuation; results are incomplete. Refresh to retry." }.into());
+                        } else if req.query.is_some() || req.status.is_some()
+                            || this.resource_page.as_ref().is_some_and(|p| p.items.is_empty()) {
+                            this.load_more_resources(kind, window, cx);
+                        } else if kind == ResourceKind::Pods && req.continue_token.is_none()
+                            && this.resource_page.as_ref().is_some_and(|p| p.continue_token.is_none()) {
+                            this.start_pod_sync(window, cx);
+                        }
                     }
-                    Err(err) => {
-                        this.cluster_error = Some(format!("Resource load failed: {err:?}"));
-                    }
+                    Ok(_) => this.cluster_error = Some("Resource response identity mismatch; results are incomplete. Refresh to retry.".into()),
+                    Err(err) => this.cluster_error = Some(format!("Resource load failed; results are incomplete. Refresh to retry: {err:?}")),
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
     }
 
     fn start_pod_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1274,22 +1353,13 @@ impl IceonApp {
         if session.status != "connected" {
             return;
         }
-        let read_id = self.next_operation_id();
-        let connection = self.connection.clone();
-        let req = ResourceRequest {
-            cluster_id: session.cluster_id.clone(),
-            session_id: session.session_id.clone(),
-            kind: ResourceKind::Pods,
-            read_id,
-            namespace: self.selected_namespace.clone(),
-            continue_token: None,
-            query: None,
-            status: None,
-            group: None,
+        let Some(req) = self.resource_pagination.request.clone() else {
+            return;
         };
+        let connection = self.connection.clone();
 
         cx.spawn_in(window, async move |this, cx| {
-            let opened = match connection.pod_sync_open(req).await {
+            let opened = match connection.pod_sync_open(req.clone()).await {
                 Ok(snap) => snap,
                 Err(_) => return,
             };
@@ -1297,7 +1367,19 @@ impl IceonApp {
             let mut last_seq = opened.sequence;
             let initial_page = opened.page;
 
+            let mut accepted = false;
             let _ = this.update_in(cx, |this, _, cx| {
+                if !this.resource_request_is_current(&req, cx) {
+                    return;
+                }
+                if initial_page
+                    .as_ref()
+                    .is_some_and(|p| !this.resource_pagination.accepts(&req, p)
+                        || p.truncated || p.continue_token.is_some())
+                {
+                    return;
+                }
+                accepted = true;
                 this.active_pod_sync_id = Some(sync_id.clone());
                 if let Some(page) = initial_page {
                     this.resource_page = Some(Rc::new(page));
@@ -1305,6 +1387,14 @@ impl IceonApp {
                 cx.notify();
             });
 
+            if !accepted {
+                let _ = connection.pod_sync_close(PodSyncRequest {
+                    cluster_id: session.cluster_id.clone(),
+                    session_id: session.session_id.clone(),
+                    sync_id,
+                });
+                return;
+            }
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let snap = match connection.pod_sync_read(PodSyncRequest {
@@ -1323,10 +1413,31 @@ impl IceonApp {
                 let mut still_active = false;
                 let _ = this.update_in(cx, |this, _, cx| {
                     if this.active_pod_sync_id.as_deref() == Some(sync_id.as_str()) {
+                        // A filter/route/session can change before its reload
+                        // callback runs. Never publish a snapshot for that old scope.
+                        if !this.resource_request_is_current(&req, cx) {
+                            this.stop_active_pod_sync();
+                            return;
+                        }
+                        if snap.page.as_ref().is_some_and(|p| !this.resource_pagination.accepts(&req, p)) {
+                            this.stop_active_pod_sync();
+                            this.cluster_error = Some("Live pod response identity mismatch; keeping loaded rows. Refresh to retry.".into());
+                            cx.notify();
+                            return;
+                        }
+                        if snap.page.as_ref().is_some_and(|p| p.truncated || p.continue_token.is_some()) {
+                            this.stop_active_pod_sync();
+                            this.cluster_error = Some("Live pod inventory exceeded its bounded snapshot; keeping loaded rows. Refresh to fetch all pages.".into());
+                            cx.notify();
+                            return;
+                        }
                         still_active = true;
                         if snap.sequence > last_seq {
                             last_seq = snap.sequence;
-                            if let Some(page) = snap.page {
+                            if let Some(page) = snap
+                                .page
+                                .filter(|p| !p.truncated && p.continue_token.is_none())
+                            {
                                 this.resource_page = Some(Rc::new(page));
                                 cx.notify();
                             }
@@ -1337,6 +1448,19 @@ impl IceonApp {
                     break;
                 }
             }
+            // Errors and stopped snapshots also retire the UI's live marker;
+            // do not clear a newer stream that replaced this one meanwhile.
+            let _ = this.update_in(cx, |this, _, cx| {
+                if this.active_pod_sync_id.as_deref() == Some(sync_id.as_str()) {
+                    this.stop_active_pod_sync();
+                    cx.notify();
+                }
+            });
+            let _ = connection.pod_sync_close(PodSyncRequest {
+                cluster_id: session.cluster_id,
+                session_id: session.session_id,
+                sync_id,
+            });
         })
         .detach();
     }
@@ -2087,8 +2211,31 @@ impl IceonApp {
                                         .text_size(px(11.0))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(format!(
-                                            "Showing {count} {kind:?} items (Page {})",
-                                            self.continue_token_history.len() + 1
+                                            "{count} {kind:?} loaded{}",
+                                            if self.resource_pagination.loading {
+                                                if self.selected_status_filter.is_some()
+                                                    || !self
+                                                        .resource_filter_input
+                                                        .read(cx)
+                                                        .value()
+                                                        .trim()
+                                                        .is_empty()
+                                                {
+                                                    " · searching…"
+                                                } else {
+                                                    " · loading…"
+                                                }
+                                            } else if self.cluster_error.is_some() {
+                                                " · incomplete"
+                                            } else if self
+                                                .resource_page
+                                                .as_ref()
+                                                .is_some_and(|p| p.continue_token.is_some())
+                                            {
+                                                " · scroll for more"
+                                            } else {
+                                                " · complete"
+                                            }
                                         )),
                                 )
                             }),
@@ -2168,73 +2315,9 @@ impl IceonApp {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.reload_active_section(window, cx);
                                     })),
-                            )
-                            .when_some(active_kind, |el, kind| {
-                                el.child(self.render_resource_pagination(kind, cx))
-                            }),
+                            ),
                     ),
             )
-    }
-
-    fn render_resource_pagination(
-        &mut self,
-        kind: ResourceKind,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let next_token = self
-            .resource_page
-            .as_ref()
-            .filter(|page| page.kind == kind)
-            .and_then(|page| page.continue_token.clone());
-        let has_prev = !self.continue_token_history.is_empty();
-
-        h_flex()
-            .gap_1()
-            .items_center()
-            .when(has_prev, |row| {
-                row.child(
-                    Button::new("tbl-first-page-btn")
-                        .xsmall()
-                        .ghost()
-                        .icon(IconName::ChevronLeft)
-                        .tooltip("First page")
-                        .accessibility_label("First page")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.continue_token_history.clear();
-                            this.current_continue_token = None;
-                            this.load_resource_table(kind, window, cx);
-                        })),
-                )
-                .child(
-                    Button::new("tbl-prev-page-btn")
-                        .xsmall()
-                        .ghost()
-                        .icon(IconName::ChevronLeft)
-                        .tooltip("Previous page")
-                        .accessibility_label("Previous page")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.current_continue_token =
-                                this.continue_token_history.pop().flatten();
-                            this.load_resource_table(kind, window, cx);
-                        })),
-                )
-            })
-            .when_some(next_token, |row, token| {
-                row.child(
-                    Button::new("tbl-next-page-btn")
-                        .xsmall()
-                        .ghost()
-                        .icon(IconName::ChevronRight)
-                        .tooltip("Next page")
-                        .accessibility_label("Next page")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let previous = this.current_continue_token.take();
-                            this.continue_token_history.push(previous);
-                            this.current_continue_token = Some(token.clone());
-                            this.load_resource_table(kind, window, cx);
-                        })),
-                )
-            })
     }
 
     fn render_cluster_section_body(
@@ -2748,7 +2831,7 @@ impl IceonApp {
                     .trim()
                     .to_lowercase(),
                 status: self.selected_status_filter.clone(),
-                page_token: self.current_continue_token.clone(),
+                page_token: None,
             },
         };
         table.update(cx, |table, cx| table.sync(data, cx));
