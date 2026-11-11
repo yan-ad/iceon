@@ -3,6 +3,9 @@
 //!
 //! The library exposes this module only under `cfg(debug_assertions)`. The probe
 //! drives the real TerminalSurface and standard Dock, not source-inclusion stubs.
+//!
+//! YAML integration: `cargo run -p iceon-ui --example console_probe --locked -- --yaml`.
+//! Both native modes must print PASS; GPUI callback failures can still exit zero.
 
 use std::{
     cell::{Cell, RefCell},
@@ -18,6 +21,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::terminal_surface::{self, TerminalEvent, TerminalSurface};
+
+// Separate fixture-only integration audit; the console probe remains unchanged.
+#[path = "yaml_probe.rs"]
+pub(crate) mod yaml_probe;
 
 const TITLE: &str = "Pod console preview (offline)";
 const LOG_COUNT: usize = 100;
@@ -509,6 +516,10 @@ impl Render for ConsoleProbe {
 /// Open one fixture-only native window, exercise it, print PASS and quit.
 /// The normal application's startup path is intentionally never called.
 pub fn run() {
+    if std::env::args().any(|argument| argument == "--yaml") {
+        yaml_probe::run();
+        return;
+    }
     let outcome = Rc::new(RefCell::new(None));
     let result = outcome.clone();
     gpui_kit::application()

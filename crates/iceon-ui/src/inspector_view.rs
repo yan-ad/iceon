@@ -962,6 +962,28 @@ impl IceonApp {
         );
     }
 
+    fn edit_inspected_yaml(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reference = self
+            .inspector
+            .detail
+            .as_ref()
+            .map(|detail| {
+                let mut reference = detail.reference.clone();
+                reference.uid = reference
+                    .uid
+                    .filter(|uid| !uid.is_empty())
+                    .or(detail.item.uid.clone());
+                reference
+            })
+            .or_else(|| match &self.inspector.target {
+                Some(InspectorTarget::Resource(reference)) => Some(reference.clone()),
+                _ => None,
+            });
+        if let Some(reference) = reference {
+            self.open_yaml_editor(reference, window, cx);
+        }
+    }
+
     pub(crate) fn render_inspector_drawer(
         &mut self,
         window: &mut Window,
@@ -1032,6 +1054,9 @@ impl IceonApp {
                         h_flex()
                             .gap_1()
                             .items_center()
+                            .when_some(self.inspector.detail.clone(), |el, detail| {
+                                el.child(self.render_inspector_action_bar(&detail, window, cx))
+                            })
                             .when(is_resource, |el| {
                                 el.child(
                                     Button::new("inspector-refresh-btn")
@@ -1039,6 +1064,7 @@ impl IceonApp {
                                         .ghost()
                                         .icon(IconName::Undo2)
                                         .tooltip("Refresh Inspector")
+                                        .accessibility_label("Refresh inspector")
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             if let Some(InspectorTarget::Resource(r)) =
                                                 this.inspector.target.clone()
@@ -1053,6 +1079,8 @@ impl IceonApp {
                                     .xsmall()
                                     .ghost()
                                     .icon(IconName::Close)
+                                    .tooltip("Close inspector")
+                                    .accessibility_label("Close inspector")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.inspector.target = None;
                                         this.inspector_open = false;
@@ -1112,9 +1140,6 @@ impl IceonApp {
                             }),
                         ),
                 )
-            })
-            .when_some(self.inspector.detail.clone(), |el, detail| {
-                el.child(self.render_inspector_action_bar(&detail, window, cx))
             })
             .when_some(self.inspector.action_message.clone(), |el, msg| {
                 el.child(
@@ -1181,40 +1206,26 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let kind = detail.reference.kind;
-        let can_scale = matches!(
-            kind,
-            ResourceKind::Deployments
-                | ResourceKind::StatefulSets
-                | ResourceKind::ReplicaSets
-                | ResourceKind::ReplicationControllers
-        );
         let can_restart = matches!(
             kind,
             ResourceKind::Deployments | ResourceKind::DaemonSets | ResourceKind::StatefulSets
         );
         let can_suspend = matches!(kind, ResourceKind::Jobs | ResourceKind::CronJobs);
         let can_trigger = kind == ResourceKind::CronJobs;
-        let is_node = kind == ResourceKind::Nodes;
-        let is_service = kind == ResourceKind::Services;
         let is_pod = kind == ResourceKind::Pods;
 
         h_flex()
-            .w_full()
-            .px_3()
-            .py_2()
-            .gap_1p5()
-            .flex_wrap()
+            .flex_shrink_0()
+            .gap_1()
             .items_center()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .when(can_scale, |el| el.child(self.scale_controls(cx)))
             .when(can_restart, |el| {
                 el.child(
                     Button::new("insp-restart-btn")
                         .xsmall()
                         .danger()
-                        .label("Restart")
+                        .icon(IconName::RefreshCw)
+                        .tooltip("Restart")
+                        .accessibility_label("Restart")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run_workload_action(WorkloadAction::Restart, window, cx);
                         })),
@@ -1225,7 +1236,9 @@ impl IceonApp {
                     Button::new("insp-suspend-btn")
                         .xsmall()
                         .danger()
-                        .label("Suspend")
+                        .icon(IconName::Pause)
+                        .tooltip("Suspend")
+                        .accessibility_label("Suspend")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run_workload_action(WorkloadAction::Suspend, window, cx);
                         })),
@@ -1234,7 +1247,9 @@ impl IceonApp {
                     Button::new("insp-resume-btn")
                         .xsmall()
                         .outline()
-                        .label("Resume")
+                        .icon(IconName::Play)
+                        .tooltip("Resume")
+                        .accessibility_label("Resume")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run_workload_action(WorkloadAction::Resume, window, cx);
                         })),
@@ -1245,14 +1260,14 @@ impl IceonApp {
                     Button::new("insp-trigger-btn")
                         .xsmall()
                         .primary()
-                        .label("Trigger Run")
+                        .icon(IconName::Play)
+                        .tooltip("Trigger Run")
+                        .accessibility_label("Trigger Run")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run_workload_action(WorkloadAction::Trigger, window, cx);
                         })),
                 )
             })
-            .when(is_node, |el| el.child(self.node_controls(cx)))
-            .when(is_service, |el| el.child(self.service_controls(cx)))
             .when_some(
                 is_pod.then(|| self.pod_actions(detail, cx)).flatten(),
                 |el, pod_bar| el.child(pod_bar),
@@ -1261,20 +1276,23 @@ impl IceonApp {
                 Button::new("insp-open-yaml-btn")
                     .xsmall()
                     .ghost()
-                    .label("Edit YAML")
+                    .icon(IconName::FileText)
+                    .tooltip("Edit YAML")
+                    .accessibility_label("Edit YAML")
+                    .disabled(!iceon_core::connection::resource_edit::supports_yaml_edit(
+                        kind,
+                    ))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.inspector.tab = InspectorTab::Yaml;
-                        if this.inspector.edit_load.is_none() {
-                            this.load_inspector_yaml(window, cx);
-                        }
-                        cx.notify();
+                        this.edit_inspected_yaml(window, cx);
                     })),
             )
             .child(
                 Button::new("insp-delete-btn")
                     .xsmall()
                     .danger()
-                    .label("Delete")
+                    .icon(IconName::Delete)
+                    .tooltip("Delete")
+                    .accessibility_label("Delete")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.delete_inspected_resource(window, cx);
                     })),
@@ -1408,7 +1426,9 @@ impl IceonApp {
                         Button::new("insp-pod-quick-logs")
                             .xsmall()
                             .primary()
-                            .label("Logs")
+                            .icon(IconName::FileText)
+                            .tooltip("Logs")
+                            .accessibility_label("Logs")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_pod_stream(
                                     ns_logs.clone(),
@@ -1425,7 +1445,9 @@ impl IceonApp {
                         Button::new("insp-pod-quick-shell")
                             .xsmall()
                             .outline()
-                            .label("Shell")
+                            .icon(IconName::SquareTerminal)
+                            .tooltip("Shell")
+                            .accessibility_label("Shell")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_pod_stream(
                                     ns_shell.clone(),
@@ -1442,7 +1464,9 @@ impl IceonApp {
                         Button::new("insp-pod-quick-attach")
                             .xsmall()
                             .ghost()
-                            .label("Attach")
+                            .icon(IconName::SquareTerminal)
+                            .tooltip("Attach")
+                            .accessibility_label("Attach")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_pod_stream(
                                     ns_attach.clone(),
@@ -1460,7 +1484,9 @@ impl IceonApp {
                     Button::new("insp-pod-force-delete")
                         .xsmall()
                         .danger()
-                        .label("Force Delete (0s)")
+                        .icon(IconName::Delete)
+                        .tooltip("Force Delete (0s)")
+                        .accessibility_label("Force Delete (0s)")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.confirm_inspector_pod_mutation(
                                 ns_force.clone(),
@@ -1478,7 +1504,9 @@ impl IceonApp {
                         Button::new("insp-pod-strip-finalizers")
                             .xsmall()
                             .danger()
-                            .label("Strip Finalizers")
+                            .icon(IconName::Delete)
+                            .tooltip("Strip Finalizers")
+                            .accessibility_label("Strip Finalizers")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_inspector_pod_mutation(
                                     ns_fin.clone(),
@@ -1529,6 +1557,22 @@ impl IceonApp {
         v_flex()
             .w_full()
             .gap_3()
+            .when(
+                matches!(
+                    detail.reference.kind,
+                    ResourceKind::Deployments
+                        | ResourceKind::StatefulSets
+                        | ResourceKind::ReplicaSets
+                        | ResourceKind::ReplicationControllers
+                ),
+                |el| el.child(self.scale_controls(cx)),
+            )
+            .when(detail.reference.kind == ResourceKind::Nodes, |el| {
+                el.child(self.node_controls(cx))
+            })
+            .when(detail.reference.kind == ResourceKind::Services, |el| {
+                el.child(self.service_controls(cx))
+            })
             // Identity & Status card
             .child(
                 v_flex()

@@ -255,10 +255,10 @@ impl Panel for WorkspacePanel {
             .gap_2()
             .items_center()
             .child(Icon::new(IconName::SquareTerminal).size(px(14.)))
-            .child("Terminal")
+            .child("Console")
     }
     fn tab_name(&self, _: &App) -> Option<SharedString> {
-        self.kind.chrome().then(|| "Terminal".into())
+        self.kind.chrome().then(|| "Console".into())
     }
     fn title_bar(&self, _: &App) -> bool {
         self.kind.title_bar()

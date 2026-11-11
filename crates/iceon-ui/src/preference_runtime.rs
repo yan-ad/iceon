@@ -1,21 +1,15 @@
 //! Runtime projections of persisted preferences. This deliberately stays out of the settings UI.
 
-use iceon_core::preferences::{AppTheme, Preferences, TerminalTheme};
+use iceon_core::preferences::{Preferences, TerminalTheme};
 use jiff::{Timestamp, tz::TimeZone};
 
 /// Resolve the app's theme against the actual native window appearance.
 pub(crate) fn theme_mode(prefs: &Preferences, dark: bool) -> gpui_kit::component::theme::ThemeMode {
     use gpui_kit::component::theme::ThemeMode;
-    match prefs.app.theme {
-        AppTheme::Light => ThemeMode::Light,
-        AppTheme::Dark => ThemeMode::Dark,
-        AppTheme::System => {
-            if dark {
-                ThemeMode::Dark
-            } else {
-                ThemeMode::Light
-            }
-        }
+    if prefs.app.theme.is_dark().unwrap_or(dark) {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
     }
 }
 
@@ -103,7 +97,7 @@ pub(crate) fn terminal_colors(theme: TerminalTheme, dark: bool) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iceon_core::preferences::Preferences;
+    use iceon_core::preferences::{AppTheme, Preferences};
 
     #[test]
     fn preserves_invalid_timestamp_and_zone() {
@@ -161,5 +155,17 @@ mod tests {
         p.app.theme = AppTheme::System;
         assert!(theme_mode(&p, true).is_dark());
         assert!(!theme_mode(&p, false).is_dark());
+    }
+    #[test]
+    fn explicit_palette_modes_ignore_system_appearance() {
+        for &theme in AppTheme::ALL {
+            let Some(dark) = theme.is_dark() else {
+                continue;
+            };
+            let mut p = Preferences::default();
+            p.app.theme = theme;
+            assert_eq!(theme_mode(&p, true).is_dark(), dark);
+            assert_eq!(theme_mode(&p, false).is_dark(), dark);
+        }
     }
 }

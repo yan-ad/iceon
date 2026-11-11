@@ -5,7 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::DropdownMenu as _,
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::prelude::*;
@@ -423,32 +423,22 @@ impl IceonApp {
                                     .text_color(cx.theme().sidebar_foreground)
                                     .xsmall()
                                     .ghost()
-                                    .icon(IconName::Settings)
+                                    .child(gpui_kit::component::Icon::new(IconName::Settings).small())
                                     .accessibility_label("Settings")
                                     .tooltip("Settings")
-                                    .dropdown_menu(|menu, _, _| {
-                                        menu.item(PopupMenuItem::new("System").on_click(|_, _, cx| {
-                                            crate::preferences_view::set_theme(cx, iceon_core::preferences::AppTheme::System);
-                                        }))
-                                        .item(PopupMenuItem::new("Light").on_click(|_, _, cx| {
-                                            crate::preferences_view::set_theme(cx, iceon_core::preferences::AppTheme::Light);
-                                        }))
-                                        .item(PopupMenuItem::new("Dark").on_click(|_, _, cx| {
-                                            crate::preferences_view::set_theme(cx, iceon_core::preferences::AppTheme::Dark);
-                                        }))
-                                    }),
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_preferences(window, cx);
+                                    })),
                             )
                             .child(
                                 Button::new("titlebar-theme-btn")
                                     .text_color(cx.theme().sidebar_foreground)
                                     .xsmall()
                                     .ghost()
-                                    .icon(gpui_kit_assets::IconName::Palette)
+                                    .child(gpui_kit::component::Icon::new(if cx.theme().mode.is_dark() { IconName::Moon } else { IconName::Sun }).small())
                                     .accessibility_label("Theme options")
                                     .tooltip("Theme options")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_preferences(window, cx);
-                                    })),
+                                    .dropdown_menu(|menu, _, cx| crate::theme_picker::menu(menu, cx)),
                             )
                             .child(
                                 Button::new("titlebar-github-btn")

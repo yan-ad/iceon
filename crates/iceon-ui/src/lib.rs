@@ -9,6 +9,7 @@ mod console_font;
 mod console_probe;
 mod empty_state;
 mod selectable_text;
+mod theme_picker;
 #[cfg(debug_assertions)]
 pub use console_probe::run as run_console_probe;
 pub mod inspector_view;
@@ -33,6 +34,7 @@ mod sidebar_view;
 mod terminal_surface;
 mod tray;
 mod workspace_dock;
+mod yaml_dock;
 
 use std::sync::Arc;
 
@@ -65,6 +67,8 @@ use pod_dock_view::PodDockTab;
 use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
+    pub(crate) yaml_dock_tabs: Vec<yaml_dock::YamlDockTab>,
+    pub(crate) active_yaml_tab: Option<u64>,
     pub(crate) local_terminal_active: bool,
     pub(crate) device_terminals: Vec<local_console::DeviceTerminalTab>,
     pub(crate) active_device_terminal: Option<u64>,
@@ -319,6 +323,8 @@ impl IceonApp {
         });
 
         let mut app = Self {
+            yaml_dock_tabs: vec![],
+            active_yaml_tab: None,
             local_terminal_active: true,
             device_terminals: Vec::new(),
             active_device_terminal: None,

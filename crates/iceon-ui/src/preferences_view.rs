@@ -243,10 +243,13 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
         });
 
     if let Some(theme) = maybe_theme_change {
-        let mode = match theme {
-            AppTheme::Light => ThemeMode::Light,
-            AppTheme::Dark => ThemeMode::Dark,
-            AppTheme::System => ThemeMode::from(cx.window_appearance()),
+        let mode = if theme.is_dark().unwrap_or(matches!(
+            cx.window_appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        )) {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
         };
         crate::shell_theme::apply(mode, None, cx);
     }
@@ -350,30 +353,9 @@ impl PreferencesWindow {
                     .items([
                         SettingItem::new(
                             "Theme",
-                            SettingField::dropdown(
-                                vec![
-                                    (SharedString::from("dark"), SharedString::from("Dark")),
-                                    (SharedString::from("light"), SharedString::from("Light")),
-                                    (SharedString::from("system"), SharedString::from("System")),
-                                ],
-                                |cx: &App| match current_prefs(cx).app.theme {
-                                    AppTheme::Dark => SharedString::from("dark"),
-                                    AppTheme::Light => SharedString::from("light"),
-                                    AppTheme::System => SharedString::from("system"),
-                                },
-                                |val: SharedString, cx: &mut App| {
-                                    mutate_preferences(cx, |prefs| {
-                                        prefs.app.theme = match val.as_ref() {
-                                            "light" => AppTheme::Light,
-                                            "system" => AppTheme::System,
-                                            _ => AppTheme::Dark,
-                                        };
-                                    });
-                                },
-                            )
-                            .default_value(SharedString::from("system")),
+                            SettingField::render(|_, _, cx| crate::theme_picker::appearance(cx)),
                         )
-                        .description("Select the application color scheme across all windows."),
+                        .description("Choose a palette and variant. Changes apply immediately to all windows."),
                         SettingItem::new(
                             "Timezone",
                             SettingField::render(move |options, _, _| {
@@ -431,7 +413,11 @@ impl PreferencesWindow {
                         SettingItem::new(
                             "Reset Sidebar Order",
                             SettingField::render(|_, _, _| {
-                                Button::new("reset-sidebar-order").label("Reset").on_click(|_, _, cx| {
+                                Button::new("reset-sidebar-order")
+                                    .small()
+                                    .icon(IconName::Undo2)
+                                    .accessibility_label("Reset cluster sidebar order")
+                                    .label("Reset").on_click(|_, _, cx| {
                                     let main = cx.try_global::<GlobalPreferencesState>().map(|state| state.main_app.clone());
                                     if let Some(main) = main {
                                         let _ = main.update(cx, |app, cx| {
@@ -859,7 +845,28 @@ impl Render for PreferencesWindow {
                             .children(PREFERENCE_SECTIONS.into_iter().enumerate().map(
                                 |(ix, name)| {
                                     Button::new(("preferences-section", ix))
-                                        .label(name)
+                                        .small()
+                                        .child(
+                                            h_flex()
+                                                .w_full()
+                                                .gap_2()
+                                                .items_center()
+                                                .child(gpui_kit::component::Icon::new(match ix {
+                                                    0 => IconName::Settings2,
+                                                    1 => IconName::Network,
+                                                    2 => IconName::LayoutDashboard,
+                                                    3 => IconName::FileText,
+                                                    _ => IconName::SquareTerminal,
+                                                }))
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .text_left()
+                                                        .child(name),
+                                                ),
+                                        )
+                                        .accessibility_label(name)
                                         .ghost()
                                         .w_full()
                                         .justify_start()
@@ -876,12 +883,16 @@ impl Render for PreferencesWindow {
                     .child(
                         div().flex_1().min_w_0().h_full().child(
                             Settings::new(("iceon-settings-page", self.section))
+                                .small()
                                 .sidebar_width(px(0.0))
                                 .sidebar_size_range(px(0.0)..px(0.0))
-                                .sidebar_style(&StyleRefinement {
-                                    display: Some(Display::None),
-                                    ..Default::default()
-                                })
+                                .sidebar_style(
+                                    &StyleRefinement::default()
+                                        .w(px(0.0))
+                                        .min_w(px(0.0))
+                                        .max_w(px(0.0))
+                                        .overflow_hidden(),
+                                )
                                 .with_group_variant(GroupBoxVariant::Normal)
                                 .page(self.build_pages(cx).remove(self.section)),
                         ),

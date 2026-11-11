@@ -61,6 +61,7 @@ fn local_poll_changes(
 
 impl IceonApp {
     pub(crate) fn open_device_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.active_yaml_tab = None;
         self.local_terminal_active = true;
         self.pod_dock_open = true;
         let existing = self
@@ -78,7 +79,8 @@ impl IceonApp {
     }
 
     pub(crate) fn new_device_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.device_terminals.len() + self.pod_dock_tabs.len() >= 12 {
+        if self.device_terminals.len() + self.pod_dock_tabs.len() + self.yaml_dock_tabs.len() >= 12
+        {
             self.cluster_error = Some("Console session limit reached (12)".into());
             cx.notify();
             return;
@@ -131,6 +133,7 @@ impl IceonApp {
             process: None,
         });
         self.active_device_terminal = Some(key);
+        self.active_yaml_tab = None;
         self.local_terminal_active = true;
         self.pod_dock_open = true;
         cx.notify();

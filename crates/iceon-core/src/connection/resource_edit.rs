@@ -1,4 +1,6 @@
 //! Reduced existing-object editing. Only reviewed scalar leaves become JSON Patch operations.
+//! Pod YAML contains identity and container name/image leaves only (not a full manifest).
+//! Pod images are editable; metadata, container identities and every omitted field are not.
 use super::details::ResourceReference;
 use super::permissions::{PermissionAction, PermissionCheck};
 use super::{ConnectionEngine, ConnectionError, ResourceKind, Result, SessionRequest};
@@ -85,6 +87,120 @@ impl EditSlot {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
+    #[tokio::test]
+    async fn pod_yaml_engine_read_and_dry_run_use_only_reviewed_image_leaves() {
+        let (_root, _, engine, id, _) = super::super::tests::fixture();
+        let (mut r, raw) = super::tests::pod_fixture();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = seen.clone();
+        let client = Client::new(
+            tower::service_fn(move |request: Request<Body>| {
+                let raw = raw.clone();
+                let captured = captured.clone();
+                async move {
+                    let path = request.uri().path().to_owned();
+                    if path != "/api/v1/namespaces/default/pods/demo" {
+                        let (status, bytes) =
+                            super::super::tests::normal(&request.uri().to_string());
+                        return Ok::<_, std::io::Error>(
+                            http::Response::builder()
+                                .status(status)
+                                .body(Body::from(bytes))
+                                .unwrap(),
+                        );
+                    }
+                    let method = request.method().clone();
+                    let uri = request.uri().to_string();
+                    let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                    captured.lock().unwrap().push((method, uri, bytes.to_vec()));
+                    Ok(http::Response::new(Body::from(
+                        serde_json::to_vec(&raw).unwrap(),
+                    )))
+                }
+            }),
+            "default",
+        );
+        let lease = super::super::tests::connected_authorized(&engine, id, client).await;
+        r.cluster_id = lease.cluster_id;
+        r.session_id = lease.session_id;
+        r.mode = EditMode::Read;
+        r.resource_version = None;
+        let result = engine.resource_edit(r.clone()).await.unwrap();
+        assert!(!result.accepted);
+        assert_eq!(result.resource_version, "7");
+        let yaml = result.yaml.unwrap();
+        assert!(!yaml.contains("SECRET"));
+        let mut edited: Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(edited["kind"], "Pod");
+        assert_eq!(edited["spec"]["containers"][0]["image"], "demo:v1");
+        edited["spec"]["containers"][0]["image"] = json!("demo:v2");
+        r.operation_id += 1;
+        r.mode = EditMode::DryRun;
+        r.resource_version = Some(result.resource_version);
+        r.yaml = Some(serde_yaml_ng::to_string(&edited).unwrap());
+        assert!(engine.resource_edit(r.clone()).await.unwrap().accepted);
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            assert_eq!(seen[0].0, Method::GET);
+            assert_eq!(seen[1].0, Method::GET);
+            assert_eq!(seen[2].0, Method::PATCH);
+            assert!(seen[2].1.ends_with("?dryRun=All&fieldValidation=Strict"));
+            let patch: Value = serde_json::from_slice(&seen[2].2).unwrap();
+            assert_eq!(
+                patch,
+                json!([
+                    {"op":"test","path":"/metadata/uid","value":"uid"},
+                    {"op":"test","path":"/metadata/resourceVersion","value":"7"},
+                    {"op":"test","path":"/spec/containers/0/name","value":"main"},
+                    {"op":"test","path":"/spec/containers/0/image","value":"demo:v1"},
+                    {"op":"replace","path":"/spec/containers/0/image","value":"demo:v2"}
+                ])
+            );
+        }
+        // Forbidden payloads and stale versions can GET, but must never PATCH.
+        edited["spec"]["containers"][0]["env"] = json!([]);
+        r.operation_id += 1;
+        r.yaml = Some(serde_yaml_ng::to_string(&edited).unwrap());
+        assert_eq!(
+            engine.resource_edit(r.clone()).await,
+            Err(ConnectionError::InvalidInput)
+        );
+        r.operation_id += 1;
+        r.resource_version = Some("old".into());
+        assert_eq!(
+            engine.resource_edit(r).await,
+            Err(ConnectionError::Conflict)
+        );
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.0 == Method::PATCH)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_yaml_kinds_are_explicitly_unavailable_before_session_work() {
+        let (_root, _, engine, _, _) = super::super::tests::fixture();
+        for kind in [
+            ResourceKind::Secrets,
+            ResourceKind::ConfigMaps,
+            ResourceKind::Ingresses,
+        ] {
+            let (mut r, _) = super::tests::fixture();
+            r.reference.kind = kind;
+            r.mode = EditMode::Read;
+            r.resource_version = None;
+            assert_eq!(
+                engine.resource_edit(r).await,
+                Err(ConnectionError::ResourceUnavailable)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn permission_denial_never_reads_or_writes_the_resource() {
         let (_root, _, engine, id, _) = super::super::tests::fixture();
@@ -267,7 +383,16 @@ fn fields(kind: ResourceKind) -> &'static [(&'static str, Scalar)] {
         _ => &[],
     }
 }
-fn containers(kind: ResourceKind) -> bool {
+/// Whether reduced YAML read/edit is supported. Unsupported kinds return
+/// `ResourceUnavailable`, rather than treating a valid read as malformed input.
+/// Secrets and ConfigMaps never enter this endpoint's projection/patch pipeline.
+pub fn supports_yaml_edit(kind: ResourceKind) -> bool {
+    !fields(kind).is_empty() || container_path(kind).is_some()
+}
+fn container_path(kind: ResourceKind) -> Option<&'static str> {
+    if kind == ResourceKind::Pods {
+        return Some("/spec/containers");
+    }
     matches!(
         kind,
         ResourceKind::Deployments
@@ -276,6 +401,7 @@ fn containers(kind: ResourceKind) -> bool {
             | ResourceKind::ReplicaSets
             | ResourceKind::ReplicationControllers
     )
+    .then_some("/spec/template/spec/containers")
 }
 fn safe_text(s: &str) -> bool {
     !s.is_empty() && s.len() <= 512 && s.chars().all(|c| !c.is_control())
@@ -331,6 +457,9 @@ fn verify(value: &Value, reference: &ResourceReference) -> Result<String> {
         .ok_or(ConnectionError::InvalidResponse)
 }
 fn projection(value: &Value, reference: &ResourceReference) -> Result<Value> {
+    if !supports_yaml_edit(reference.kind) {
+        return Err(ConnectionError::ResourceUnavailable);
+    }
     verify(value, reference)?;
     let mut out = json!({"apiVersion": value["apiVersion"], "kind": value["kind"], "metadata": {"name": value["metadata"]["name"], "uid": value["metadata"]["uid"], "resourceVersion": value["metadata"]["resourceVersion"]}});
     if let Some(ns) = &reference.namespace {
@@ -344,8 +473,8 @@ fn projection(value: &Value, reference: &ResourceReference) -> Result<Value> {
             insert(&mut out, path, v.clone());
         }
     }
-    if containers(reference.kind)
-        && let Some(list) = value.pointer("/spec/template/spec/containers")
+    if let Some(path) = container_path(reference.kind)
+        && let Some(list) = value.pointer(path)
     {
         let list = list
             .as_array()
@@ -365,7 +494,7 @@ fn projection(value: &Value, reference: &ResourceReference) -> Result<Value> {
                 .ok_or(ConnectionError::InvalidResponse)?;
             reduced.push(json!({"name": name, "image": image}));
         }
-        insert(&mut out, "/spec/template/spec/containers", json!(reduced));
+        insert(&mut out, path, json!(reduced));
     }
     Ok(out)
 }
@@ -416,8 +545,9 @@ fn patch(current: &Value, edited: &Value, r: &EditRequest) -> Result<Value> {
             }
         }
     }
-    let path = "/spec/template/spec/containers";
-    if let Some(list) = baseline.pointer(path).and_then(Value::as_array) {
+    if let Some(path) = container_path(r.reference.kind)
+        && let Some(list) = baseline.pointer(path).and_then(Value::as_array)
+    {
         let edited = edited
             .pointer(path)
             .and_then(Value::as_array)
@@ -476,8 +606,10 @@ impl ConnectionEngine {
         super::validate_request(&r.session())?;
         super::validate_read_id(r.operation_id)?;
         super::details::validate_reference(&r.reference)?;
-        if fields(r.reference.kind).is_empty() || !r.reference.uid.as_deref().is_some_and(safe_text)
-        {
+        if !supports_yaml_edit(r.reference.kind) {
+            return Err(ConnectionError::ResourceUnavailable);
+        }
+        if !r.reference.uid.as_deref().is_some_and(safe_text) {
             return Err(ConnectionError::InvalidInput);
         }
         let edited = match r.mode {
@@ -660,6 +792,85 @@ async fn send(
 #[cfg(test)]
 mod tests {
     use super::*;
+    pub(super) fn pod_fixture() -> (EditRequest, Value) {
+        let (mut r, _) = fixture();
+        r.reference.kind = ResourceKind::Pods;
+        (
+            r,
+            json!({"apiVersion":"v1","kind":"Pod",
+            "metadata":{"name":"demo","namespace":"default","uid":"uid","resourceVersion":"7",
+                "annotations":{"token":"SECRET"},"labels":{"private":"SECRET"}},
+            "spec":{"containers":[{"name":"main","image":"demo:v1",
+                "env":[{"name":"TOKEN","value":"SECRET"}],"command":["SECRET"],
+                "volumeMounts":[{"name":"SECRET","mountPath":"/secret"}]}],
+                "initContainers":[{"name":"init","image":"SECRET"}],
+                "volumes":[{"name":"private","secret":{"secretName":"SECRET"}}],
+                "imagePullSecrets":[{"name":"SECRET"}],"serviceAccountName":"SECRET"},
+            "status":{"message":"SECRET"}}),
+        )
+    }
+
+    #[test]
+    fn pod_projection_rejects_every_unreviewed_edit_and_identity_change() {
+        let (r, raw) = pod_fixture();
+        assert!(supports_yaml_edit(ResourceKind::Pods));
+        let base = projection(&raw, &r.reference).unwrap();
+        assert!(!base.to_string().contains("SECRET"));
+        assert_eq!(patch(&raw, &base, &r), Err(ConnectionError::InvalidInput));
+        let mut forbidden = Vec::new();
+        for key in ["uid", "resourceVersion", "name", "namespace"] {
+            let mut edited = base.clone();
+            edited["metadata"][key] = json!("changed");
+            forbidden.push(edited);
+        }
+        for key in [
+            "env",
+            "command",
+            "volumeMounts",
+            "resources",
+            "securityContext",
+        ] {
+            let mut edited = base.clone();
+            edited["spec"]["containers"][0][key] = json!({});
+            forbidden.push(edited);
+        }
+        for key in [
+            "volumes",
+            "initContainers",
+            "imagePullSecrets",
+            "serviceAccountName",
+            "nodeName",
+        ] {
+            let mut edited = base.clone();
+            edited["spec"][key] = json!("injected");
+            forbidden.push(edited);
+        }
+        let mut edited = base.clone();
+        edited["metadata"]["labels"] = json!({"x":"y"});
+        forbidden.push(edited);
+        let mut edited = base.clone();
+        edited["spec"]["containers"][0]["name"] = json!("renamed");
+        forbidden.push(edited);
+        let mut edited = base.clone();
+        edited["spec"]["containers"][0]["image"] = json!(false);
+        forbidden.push(edited);
+        let mut edited = base.clone();
+        edited["spec"]["containers"] = json!([]);
+        forbidden.push(edited);
+        let mut edited = base.clone();
+        edited.as_object_mut().unwrap().remove("spec");
+        forbidden.push(edited);
+        for edited in forbidden {
+            assert_eq!(patch(&raw, &edited, &r), Err(ConnectionError::InvalidInput));
+        }
+        let mut replaced = raw;
+        replaced["metadata"]["uid"] = json!("replacement");
+        assert_eq!(
+            projection(&replaced, &r.reference),
+            Err(ConnectionError::InvalidResponse)
+        );
+    }
+
     #[test]
     fn integer_percentage_changes_use_reviewed_scalar_schema() {
         let (r, mut raw) = fixture();
@@ -787,13 +998,18 @@ mod tests {
     #[test]
     fn sensitive_and_unreviewed_kinds_are_denied() {
         for kind in [
-            ResourceKind::Pods,
             ResourceKind::Secrets,
             ResourceKind::ConfigMaps,
             ResourceKind::MutatingWebhookConfigurations,
             ResourceKind::CustomResourceDefinitions,
         ] {
-            assert!(fields(kind).is_empty());
+            assert!(!supports_yaml_edit(kind));
+            let (mut r, raw) = fixture();
+            r.reference.kind = kind;
+            assert_eq!(
+                projection(&raw, &r.reference),
+                Err(ConnectionError::ResourceUnavailable)
+            );
         }
     }
 }

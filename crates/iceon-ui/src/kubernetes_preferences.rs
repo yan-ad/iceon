@@ -3,10 +3,13 @@
 //! remains the single authority for saved preferences.
 use super::{GlobalPreferencesState, current_prefs, mutate_preferences};
 use gpui_kit::component::{
-    Disableable as _, Sizable as _,
+    Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::{
+        Input, InputEvent, InputGroup, InputGroupAddon, InputGroupAddonAlignment, InputGroupButton,
+        InputState,
+    },
     setting::{SettingField, SettingGroup, SettingItem},
     v_flex,
 };
@@ -18,6 +21,7 @@ use iceon_core::{
 };
 
 pub(super) struct KubernetesPreferencesView {
+    path_inputs: std::collections::HashMap<&'static str, Entity<InputState>>,
     repository_name: Entity<InputState>,
     repository_url: Entity<InputState>,
     repository_search: Entity<InputState>,
@@ -93,6 +97,7 @@ impl KubernetesPreferencesView {
             .detach();
         }
         Self {
+            path_inputs: Default::default(),
             repository_name: cx
                 .new(|cx| InputState::new(window, cx).placeholder("Repository name")),
             repository_url: cx
@@ -291,6 +296,9 @@ impl KubernetesPreferencesView {
                     .child(Input::new(&self.repository_search).small())
                     .child(
                         Button::new("helm-reload")
+                            .small()
+                            .icon(IconName::RefreshCw)
+                            .accessibility_label("Load or refresh Helm repositories")
                             .label(if self.busy {
                                 "Working…"
                             } else {
@@ -326,6 +334,9 @@ impl KubernetesPreferencesView {
                     )
                     .child(
                         Button::new(("helm-remove", ix))
+                            .small()
+                            .icon(IconName::Delete)
+                            .accessibility_label(format!("Remove Helm repository {}", repo.name))
                             .label("Remove")
                             .danger()
                             .disabled(self.busy || !self.loaded)
@@ -346,6 +357,9 @@ impl KubernetesPreferencesView {
             )
             .child(
                 Button::new("helm-add")
+                    .small()
+                    .icon(IconName::Plus)
+                    .accessibility_label("Add Helm repository")
                     .label("Add repository")
                     .disabled(self.busy)
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -372,6 +386,9 @@ impl KubernetesPreferencesView {
             .gap_2()
             .child(
                 Button::new("kubeconfig-add")
+                    .small()
+                    .icon(IconName::FolderOpen)
+                    .accessibility_label("Add kubeconfig files or directories")
                     .label("Add files or directories…")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.pick(PathTarget::Kubeconfigs, window, cx)
@@ -387,6 +404,9 @@ impl KubernetesPreferencesView {
                     .child(div().flex_1().child(path.clone()))
                     .child(
                         Button::new(("kubeconfig-remove", ix))
+                            .small()
+                            .icon(IconName::Delete)
+                            .accessibility_label("Remove kubeconfig source")
                             .label("Remove source")
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 mutate_preferences(cx, |prefs| {
@@ -409,26 +429,57 @@ fn path_items(
     get: fn(&KubernetesPreferences) -> &String,
     set: fn(&mut KubernetesPreferences, String),
 ) -> Vec<SettingItem> {
-    let weak = view.downgrade();
+    let view = view.clone();
     vec![
         SettingItem::new(
             title,
-            SettingField::input(
-                move |cx| get(&current_prefs(cx).kubernetes).clone().into(),
-                move |value: SharedString, cx| {
-                    mutate_preferences(cx, |prefs| set(&mut prefs.kubernetes, value.trim().into()))
-                },
-            )
-            .default_value(SharedString::default()),
-        ),
-        SettingItem::render(move |_, _, _| {
-            let weak = weak.clone();
-            Button::new(SharedString::from(format!("pick-{title}")))
-                .label(format!("Choose {title}…"))
-                .on_click(move |_, window, cx| {
-                    let _ = weak.update(cx, |this, cx| this.pick(target, window, cx));
-                })
-        })
+            SettingField::render(move |_, window, cx| {
+                let saved = get(&current_prefs(cx).kubernetes).clone();
+                let input = view.update(cx, |this, cx| {
+                    this.path_inputs
+                        .entry(title)
+                        .or_insert_with(|| {
+                            let input = cx
+                                .new(|cx| InputState::new(window, cx).default_value(saved.clone()));
+                            cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    let value = input.read(cx).value().trim().to_string();
+                                    mutate_preferences(cx, |preferences| {
+                                        set(&mut preferences.kubernetes, value)
+                                    });
+                                }
+                            })
+                            .detach();
+                            input
+                        })
+                        .clone()
+                });
+                if input.read(cx).value().as_ref() != saved {
+                    input.update(cx, |input, cx| input.set_value(saved, window, cx));
+                }
+                let weak = view.downgrade();
+                InputGroup::new(SharedString::from(format!("path-group-{title}")))
+                    .small()
+                    .w_full()
+                    .aria_label(title)
+                    .input(Input::new(&input).small().aria_label(title))
+                    .addon(
+                        InputGroupAddon::new("browse-addon")
+                            .align(InputGroupAddonAlignment::InlineEnd)
+                            .child(
+                                InputGroupButton::new(SharedString::from(format!("pick-{title}")))
+                                    .icon(IconName::FolderOpen)
+                                    .label("Browse…")
+                                    .accessibility_label(format!("Choose {title}"))
+                                    .tooltip(format!("Choose {title}"))
+                                    .on_click(move |_, window, cx| {
+                                        let _ = weak
+                                            .update(cx, |this, cx| this.pick(target, window, cx));
+                                    }),
+                            ),
+                    )
+            }),
+        )
         .keywords([title]),
     ]
 }
@@ -487,6 +538,9 @@ pub(super) fn groups(view: &Entity<KubernetesPreferencesView>, _cx: &App) -> Vec
                     .child(Input::new(&input).small())
                     .child(
                         Button::new("mirror-apply")
+                            .small()
+                            .icon(IconName::Check)
+                            .accessibility_label("Apply mirror URL")
                             .label("Apply mirror URL")
                             .on_click(move |_, _, cx| {
                                 let _ = weak.update(cx, |this, cx| {
@@ -531,6 +585,9 @@ pub(super) fn groups(view: &Entity<KubernetesPreferencesView>, _cx: &App) -> Vec
                 .gap_2()
                 .child(
                     Button::new("prepare-kubectl")
+                        .small()
+                        .icon(gpui_kit_assets::IconName::Download)
+                        .accessibility_label("Prepare kubectl for connected cluster")
                         .label("Prepare kubectl for connected cluster")
                         .on_click(move |_, window, cx| {
                             if let Some(main) = &main {

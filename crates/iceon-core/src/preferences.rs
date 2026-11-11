@@ -68,6 +68,148 @@ pub enum AppTheme {
     System,
     Light,
     Dark,
+    JetBrainsDarcula,
+    JetBrainsLight,
+    VsCodeDark,
+    VsCodeLight,
+    GitHubDark,
+    GitHubLight,
+    GruvboxDark,
+    GruvboxDarkHard,
+    GruvboxLight,
+    GruvboxLightHard,
+    CatppuccinLatte,
+    CatppuccinFrappe,
+    CatppuccinMacchiato,
+    CatppuccinMocha,
+    SolarizedDark,
+    SolarizedLight,
+}
+
+impl AppTheme {
+    /// Stable picker order, grouped by palette family.
+    pub const ALL: &'static [Self] = &[
+        Self::System,
+        Self::Light,
+        Self::Dark,
+        Self::JetBrainsDarcula,
+        Self::JetBrainsLight,
+        Self::VsCodeDark,
+        Self::VsCodeLight,
+        Self::GitHubDark,
+        Self::GitHubLight,
+        Self::GruvboxDark,
+        Self::GruvboxDarkHard,
+        Self::GruvboxLight,
+        Self::GruvboxLightHard,
+        Self::CatppuccinLatte,
+        Self::CatppuccinFrappe,
+        Self::CatppuccinMacchiato,
+        Self::CatppuccinMocha,
+        Self::SolarizedDark,
+        Self::SolarizedLight,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+            Self::JetBrainsDarcula => "Darcula",
+            Self::JetBrainsLight => "Light",
+            Self::VsCodeDark => "Dark",
+            Self::VsCodeLight => "Light",
+            Self::GitHubDark => "Dark",
+            Self::GitHubLight => "Light",
+            Self::GruvboxDark => "Dark",
+            Self::GruvboxDarkHard => "Dark Hard",
+            Self::GruvboxLight => "Light",
+            Self::GruvboxLightHard => "Light Hard",
+            Self::CatppuccinLatte => "Latte",
+            Self::CatppuccinFrappe => "Frappe",
+            Self::CatppuccinMacchiato => "Macchiato",
+            Self::CatppuccinMocha => "Mocha",
+            Self::SolarizedDark => "Dark",
+            Self::SolarizedLight => "Light",
+        }
+    }
+
+    pub const fn family(self) -> &'static str {
+        match self {
+            Self::System => "Default",
+            Self::Light => "Default",
+            Self::Dark => "Default",
+            Self::JetBrainsDarcula => "JetBrains",
+            Self::JetBrainsLight => "JetBrains",
+            Self::VsCodeDark => "VSCode",
+            Self::VsCodeLight => "VSCode",
+            Self::GitHubDark => "GitHub",
+            Self::GitHubLight => "GitHub",
+            Self::GruvboxDark => "Gruvbox",
+            Self::GruvboxDarkHard => "Gruvbox",
+            Self::GruvboxLight => "Gruvbox",
+            Self::GruvboxLightHard => "Gruvbox",
+            Self::CatppuccinLatte => "Catppuccin",
+            Self::CatppuccinFrappe => "Catppuccin",
+            Self::CatppuccinMacchiato => "Catppuccin",
+            Self::CatppuccinMocha => "Catppuccin",
+            Self::SolarizedDark => "Solarized",
+            Self::SolarizedLight => "Solarized",
+        }
+    }
+
+    pub const fn is_dark(self) -> Option<bool> {
+        match self {
+            Self::System => None,
+            Self::Light => Some(false),
+            Self::Dark => Some(true),
+            Self::JetBrainsDarcula => Some(true),
+            Self::JetBrainsLight => Some(false),
+            Self::VsCodeDark => Some(true),
+            Self::VsCodeLight => Some(false),
+            Self::GitHubDark => Some(true),
+            Self::GitHubLight => Some(false),
+            Self::GruvboxDark => Some(true),
+            Self::GruvboxDarkHard => Some(true),
+            Self::GruvboxLight => Some(false),
+            Self::GruvboxLightHard => Some(false),
+            Self::CatppuccinLatte => Some(false),
+            Self::CatppuccinFrappe => Some(true),
+            Self::CatppuccinMacchiato => Some(true),
+            Self::CatppuccinMocha => Some(true),
+            Self::SolarizedDark => Some(true),
+            Self::SolarizedLight => Some(false),
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::JetBrainsDarcula => "jetBrainsDarcula",
+            Self::JetBrainsLight => "jetBrainsLight",
+            Self::VsCodeDark => "vsCodeDark",
+            Self::VsCodeLight => "vsCodeLight",
+            Self::GitHubDark => "gitHubDark",
+            Self::GitHubLight => "gitHubLight",
+            Self::GruvboxDark => "gruvboxDark",
+            Self::GruvboxDarkHard => "gruvboxDarkHard",
+            Self::GruvboxLight => "gruvboxLight",
+            Self::GruvboxLightHard => "gruvboxLightHard",
+            Self::CatppuccinLatte => "catppuccinLatte",
+            Self::CatppuccinFrappe => "catppuccinFrappe",
+            Self::CatppuccinMacchiato => "catppuccinMacchiato",
+            Self::CatppuccinMocha => "catppuccinMocha",
+            Self::SolarizedDark => "solarizedDark",
+            Self::SolarizedLight => "solarizedLight",
+        }
+    }
+
+    /// Parse stable persisted keys; unknown values are never silently reset.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|theme| theme.key() == key)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

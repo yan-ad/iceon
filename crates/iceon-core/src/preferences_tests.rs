@@ -293,3 +293,52 @@ fn integrated_save_rejects_failure_without_persisting_and_rolls_back_store_failu
     ));
     assert_eq!(fake.calls, calls);
 }
+
+#[test]
+fn every_app_theme_round_trips_through_persistent_store() {
+    let dir = tempdir().unwrap();
+    for &theme in AppTheme::ALL {
+        let engine = PreferencesEngine::new(dir.path().into()).unwrap();
+        let mut snapshot = engine.snapshot().unwrap();
+        snapshot.preferences.app.theme = theme;
+        let saved = engine
+            .save(SavePreferencesRequest {
+                revision: snapshot.revision,
+                preferences: snapshot.preferences,
+            })
+            .unwrap();
+        drop(engine);
+        let restored = PreferencesEngine::new(dir.path().into())
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert_eq!(restored, saved, "{} {}", theme.family(), theme.label());
+        assert_eq!(AppTheme::from_key(theme.key()), Some(theme));
+        assert_eq!(serde_json::to_value(theme).unwrap(), theme.key());
+        assert_eq!(
+            serde_json::from_value::<AppTheme>(serde_json::json!(theme.key())).unwrap(),
+            theme
+        );
+    }
+}
+
+#[test]
+fn theme_catalog_has_unique_keys_and_legacy_serde_names() {
+    let keys: std::collections::HashSet<_> = AppTheme::ALL.iter().map(|t| t.key()).collect();
+    assert_eq!(keys.len(), AppTheme::ALL.len());
+    assert_eq!(AppTheme::ALL.len(), 19);
+    for (key, theme) in [
+        ("system", AppTheme::System),
+        ("light", AppTheme::Light),
+        ("dark", AppTheme::Dark),
+    ] {
+        assert_eq!(
+            serde_json::from_str::<AppTheme>(&format!("\"{key}\"")).unwrap(),
+            theme
+        );
+    }
+    assert_eq!(AppTheme::System.is_dark(), None);
+    assert_eq!(AppTheme::Light.is_dark(), Some(false));
+    assert_eq!(AppTheme::Dark.is_dark(), Some(true));
+    assert_eq!(AppTheme::from_key("not-a-theme"), None);
+}

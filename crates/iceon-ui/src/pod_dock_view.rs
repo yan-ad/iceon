@@ -310,7 +310,8 @@ impl IceonApp {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
-        if self.pod_dock_tabs.len() + self.device_terminals.len() >= 12 {
+        if self.pod_dock_tabs.len() + self.device_terminals.len() + self.yaml_dock_tabs.len() >= 12
+        {
             self.cluster_error =
                 Some("Close a pod console before opening another (maximum 12).".into());
             cx.notify();
@@ -438,6 +439,7 @@ impl IceonApp {
             .detach();
         }
         self.active_pod_tab = Some(tab_index);
+        self.active_yaml_tab = None;
         self.local_terminal_active = false;
         self.pod_dock_open = true;
         if mode != PodStreamMode::Logs {
@@ -851,7 +853,19 @@ impl IceonApp {
             .map(|tab| tab.key)
             .collect::<Vec<_>>();
         let pod_offset = 1 + extra_keys.len();
-        let selected_index = if self.local_terminal_active {
+        let yaml_offset = pod_offset + pod_keys.len();
+        let yaml_keys = self
+            .yaml_dock_tabs
+            .iter()
+            .map(|t| t.key)
+            .collect::<Vec<_>>();
+        let selected_index = if let Some(key) = self.active_yaml_tab {
+            yaml_keys
+                .iter()
+                .position(|k| *k == key)
+                .map(|i| yaml_offset + i)
+                .unwrap_or(usize::MAX)
+        } else if self.local_terminal_active {
             extra_keys
                 .iter()
                 .position(|key| Some(*key) == self.active_device_terminal)
@@ -954,7 +968,42 @@ impl IceonApp {
                         })),
                 )
         }));
-        let duplicate_key = (!self.local_terminal_active)
+        tabs.extend(self.yaml_dock_tabs.iter().map(|tab| {
+            let key = tab.key;
+            let title = format!(
+                "{}{}.yaml",
+                if tab.dirty(cx) { "● " } else { "" },
+                tab.reference.name
+            );
+            let tooltip = format!(
+                "{:?} / {} / {} — {}",
+                tab.reference.kind,
+                tab.reference.namespace.as_deref().unwrap_or("cluster"),
+                tab.reference.name,
+                tab.message
+            );
+            Tab::new()
+                .min_w(px(160.))
+                .px_3()
+                .flex_shrink_0()
+                .label(console_tab_title(&title))
+                .aria_label(tooltip.clone())
+                .prefix(gpui_kit::component::Icon::new(IconName::FileText).small())
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .suffix(
+                    Button::new(SharedString::from(format!("close-yaml-{key}")))
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::Close)
+                        .tooltip("Close YAML editor")
+                        .accessibility_label("Close YAML editor")
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            cx.stop_propagation();
+                            app.request_close_yaml_tab(key, window, cx);
+                        })),
+                )
+        }));
+        let duplicate_key = (!self.local_terminal_active && self.active_yaml_tab.is_none())
             .then(|| {
                 self.active_pod_tab
                     .and_then(|index| self.pod_dock_tabs.get(index))
@@ -1051,6 +1100,14 @@ impl IceonApp {
                     ),
             )
             .on_click(cx.listener(move |this, index: &usize, window, cx| {
+                if let Some(key) = index
+                    .checked_sub(yaml_offset)
+                    .and_then(|i| yaml_keys.get(i))
+                {
+                    this.select_yaml_tab(*key, window, cx);
+                    return;
+                }
+                this.active_yaml_tab = None;
                 if *index == 0 {
                     this.local_terminal_active = true;
                     this.pod_dock_open = true;
@@ -1098,6 +1155,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.active_yaml_tab.is_some() {
+            return self.render_yaml_dock(window, cx);
+        }
         if self.local_terminal_active {
             return self.render_device_terminal(window, cx).into_any_element();
         }
