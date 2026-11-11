@@ -1,0 +1,144 @@
+{
+  "measured_at_utc": "2026-11-11T15:28:55.265632+00:00",
+  "hardware": {
+    "chip": "Apple M4",
+    "ram_bytes": 17179869184,
+    "logical_cpus": 10,
+    "macos": "27.0.1"
+  },
+  "workload": "Existing running installed apps; no benchmark-driven UI interaction; Iceon given 30 seconds to settle before sampling.",
+  "method": "1 Hz proc_pid_rusage v2 physical footprint; responsibility owner plus recursive descendants; Mach-timebase converted CPU-time deltas, 100% = one core",
+  "rounds": 3,
+  "seconds_per_round": 60,
+  "aggregation": "CPU: total CPU seconds divided by total sampled wall time; memory: median of all 180 post-baseline footprint samples.",
+  "results": {
+    "freelens": {
+      "version": "2.0.0",
+      "cpu_percent_mean_one_core": 1.8855239605455714,
+      "physical_footprint_mib_median": 632.5078964233398,
+      "process_count": 7
+    },
+    "iceon": {
+      "version": "0.1.2",
+      "cpu_percent_mean_one_core": 0.15574386552842956,
+      "physical_footprint_mib_median": 208.8143539428711,
+      "process_count": 3
+    }
+  },
+  "ratios": {
+    "cpu_freelens_divided_by_iceon": 12.106569681881865,
+    "memory_freelens_divided_by_iceon": 3.029044146057056
+  },
+  "round_summaries": [
+    {
+      "iceon": {
+        "duration_s": 60.025121166999725,
+        "intervals": 60,
+        "footprint_mib_median": 209.0018539428711,
+        "footprint_mib_p95": 219.9081039428711,
+        "footprint_mib_min": 208.8143539428711,
+        "footprint_mib_max": 220.0018539428711,
+        "rss_mib_median": 123.484375,
+        "cpu_seconds": 0.097199542,
+        "cpu_percent_mean_one_core": 0.16193143822163214,
+        "cpu_percent_p95_one_core": 0.5694334010252456,
+        "process_count_min": 3,
+        "process_count_max": 3,
+        "processes_left_accounting": 0,
+        "processes_joined_accounting": 0
+      },
+      "freelens": {
+        "duration_s": 60.025121166999725,
+        "intervals": 60,
+        "footprint_mib_median": 627.0782089233398,
+        "footprint_mib_p95": 658.3703964233398,
+        "footprint_mib_min": 623.0547714233398,
+        "footprint_mib_max": 739.5547714233398,
+        "rss_mib_median": 416.40625,
+        "cpu_seconds": 0.785213041,
+        "cpu_percent_mean_one_core": 1.3081407013163848,
+        "cpu_percent_p95_one_core": 4.218295044332401,
+        "process_count_min": 7,
+        "process_count_max": 7,
+        "processes_left_accounting": 0,
+        "processes_joined_accounting": 0
+      }
+    },
+    {
+      "iceon": {
+        "duration_s": 60.00889870799983,
+        "intervals": 60,
+        "footprint_mib_median": 208.8143539428711,
+        "footprint_mib_p95": 208.9862289428711,
+        "footprint_mib_min": 208.7674789428711,
+        "footprint_mib_max": 208.9862289428711,
+        "rss_mib_median": 123.109375,
+        "cpu_seconds": 0.090409625,
+        "cpu_percent_mean_one_core": 0.15066036362361607,
+        "cpu_percent_p95_one_core": 0.5996479912157433,
+        "process_count_min": 3,
+        "process_count_max": 3,
+        "processes_left_accounting": 0,
+        "processes_joined_accounting": 0
+      },
+      "freelens": {
+        "duration_s": 60.00889870799983,
+        "intervals": 60,
+        "footprint_mib_median": 643.2500839233398,
+        "footprint_mib_p95": 737.3321151733398,
+        "footprint_mib_min": 626.1953964233398,
+        "footprint_mib_max": 740.1172714233398,
+        "rss_mib_median": 438.796875,
+        "cpu_seconds": 1.453429458,
+        "cpu_percent_mean_one_core": 2.4220232153772923,
+        "cpu_percent_p95_one_core": 8.081856000174923,
+        "process_count_min": 7,
+        "process_count_max": 7,
+        "processes_left_accounting": 0,
+        "processes_joined_accounting": 0
+      }
+    },
+    {
+      "iceon": {
+        "duration_s": 60.005789750000076,
+        "intervals": 60,
+        "footprint_mib_median": 208.7831039428711,
+        "footprint_mib_p95": 208.7831039428711,
+        "footprint_mib_min": 208.7674789428711,
+        "footprint_mib_max": 208.7831039428711,
+        "rss_mib_median": 123.234375,
+        "cpu_seconds": 0.092791792,
+        "cpu_percent_mean_one_core": 0.15463806473774455,
+        "cpu_percent_p95_one_core": 0.5778685781231834,
+        "process_count_min": 3,
+        "process_count_max": 3,
+        "processes_left_accounting": 0,
+        "processes_joined_accounting": 0
+      },
+      "freelens": {
+        "duration_s": 60.005789750000076,
+        "intervals": 60,
+        "footprint_mib_median": 638.2578964233398,
+        "footprint_mib_p95": 672.237605667114,
+        "footprint_mib_min": 620.6172714233398,
+        "footprint_mib_max": 749.4766693115234,
+        "rss_mib_median": 521.46875,
+        "cpu_seconds": 1.15605125,
+        "cpu_percent_mean_one_core": 1.9265661777245395,
+        "cpu_percent_p95_one_core": 6.43060078956155,
+        "process_count_min": 7,
+        "process_count_max": 7,
+        "processes_left_accounting": 0,
+        "processes_joined_accounting": 0
+      }
+    }
+  ],
+  "limitations": [
+    "Existing profiles; connected clusters, matching views, and workload equivalence not independently verified. This is an observational resource baseline, not a controlled workload comparison.",
+    "Apps sampled concurrently on one host; other system activity can affect results.",
+    "Includes responsibility-owned processes and recursive descendants, including Electron helpers. Physical footprint is summed process charges, not unique system-wide pages.",
+    "No process joins or exits observed; sequential snapshots can miss short-lived processes.",
+    "Not a measurement of UI latency, task throughput, startup time, energy, GPU use, or feature parity."
+  ],
+  "runner": "../../tools/benchmarks/macos_apps.py"
+}

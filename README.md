@@ -31,6 +31,25 @@ is not a claim of production readiness or complete provider/platform validation.
 - **Desktop & secrets:** themes/preferences, native macOS menus/tray, and read-only
   Vault KV v2 browsing with explicit, time-limited reveal and OS credential storage.
 
+## How fast is it?
+
+An overall resource-usage snapshot of the installed apps, measured with Python:
+
+| Metric | Freelens | Iceon | # |
+| --- | --- | --- | --- |
+| CPU Usage (mean, % of one core) | 1.89% | 0.16% | 12.1× lower CPU usage |
+| Memory Usage (median physical footprint) | 633 MiB | 209 MiB | 3.0× lower memory usage |
+
+Measured on an Apple M4 with 16 GiB RAM, macOS 27.0.1, using Freelens 2.0.0
+and Iceon 0.1.2. Three 60-second rounds at 1 Hz, including child/helper processes;
+ratios use unrounded values. Existing profiles were used, with no benchmark-driven
+UI interaction. Matching views and connected-cluster workloads were not verified,
+so this is an observational baseline—not a UI-speed or live-cluster throughput claim.
+Results vary by workload and machine.
+
+[Python benchmark](tools/benchmarks/macos_apps.py) ·
+[Results and methodology](docs/benchmarks/macos-idle-2026-11-11.json)
+
 ## OS roadmap
 
 | Platform | Current target | Next |
