@@ -205,13 +205,16 @@ impl IceonApp {
             .size_full()
             .min_h_0()
             .min_w_0()
-            .p_4()
-            .gap_3()
+            .gap_0()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(
                 h_flex()
                     .w_full()
+                    .px_4()
+                    .py_3()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .items_center()
                     .justify_between()
                     .gap_4()
@@ -322,6 +325,8 @@ impl IceonApp {
                                     .items_stretch()
                                     .text_xs()
                                     .font_semibold()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
                                     .text_color(cx.theme().muted_foreground)
                                     .children(CATALOG_COLUMNS.into_iter().map(|column| {
                                         catalog_cell(column, cx.theme().border).child(selectable_text(column.title))
@@ -345,7 +350,9 @@ impl IceonApp {
                                         let is_pinned = cluster.pinned;
                                         let remove_target = cluster.clone();
                                         let source = cluster.source.clone();
-                                        let version = catalog_version(&cluster.id, self.cluster_session.as_ref().and_then(|session| session.api_version.as_deref().map(|version| (session.cluster_id.as_str(), version)))).to_owned();
+                                        let version = self.cluster_health.iter().find(|health| health.cluster_id == cluster.id)
+                                            .map(|health| health.api_version.as_deref().unwrap_or("—"))
+                                            .unwrap_or_else(|| catalog_version(&cluster.id, self.cluster_session.as_ref().and_then(|session| session.api_version.as_deref().map(|version| (session.cluster_id.as_str(), version))))).to_owned();
                                         let distro = catalog_distro(&version);
                                         let row_id = cluster.id.clone();
                                         let status_badge = match cluster.status {
@@ -366,6 +373,8 @@ impl IceonApp {
                                             .flex_shrink_0()
                                             .items_stretch()
                                             .cursor_pointer()
+                                            .border_b_1()
+                                            .border_color(cx.theme().border)
                                             .hover(|row| row.bg(cx.theme().secondary))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.navigate(Route::Cluster { cluster_id: row_id.clone(), section: "overview".into() }, true, window, cx);
@@ -452,7 +461,7 @@ impl IceonApp {
                                                         )))
                                                         .xsmall()
                                                         .ghost()
-                                                        .icon(IconName::Star)
+                                                        .icon(if is_pinned { gpui_kit_assets::IconName::PinOff } else { gpui_kit_assets::IconName::Pin })
                                                         .selected(is_pinned)
                                                         .tooltip(if is_pinned { "Unpin cluster" } else { "Pin cluster" })
                                                         .accessibility_label(if is_pinned { "Unpin cluster" } else { "Pin cluster" })
@@ -471,7 +480,7 @@ impl IceonApp {
                                                         )))
                                                         .xsmall()
                                                         .danger()
-                                                        .icon(gpui_kit::assets::IconName::Trash)
+                                                        .icon(Icon::new(gpui_kit_assets::IconName::Trash).small())
                                                         .tooltip("Remove cluster context")
                                                         .accessibility_label("Remove cluster context")
                                                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -505,15 +514,18 @@ impl IceonApp {
             let result = iceon_core::runtime::spawn_blocking(move || {
                 let mut snapshot = catalog.list_with_preferences(&preferences)?;
                 let _ = connection.project_catalog_statuses(&mut snapshot);
-                Ok::<_, iceon_core::catalog::CatalogError>(snapshot)
+                let health = connection.cluster_health_snapshot().unwrap_or_default();
+                Ok::<_, iceon_core::catalog::CatalogError>((snapshot, health))
             })
             .await;
             let _ = owner.update(cx, |app, cx| {
                 app.catalog_refresh_pending = false;
                 let changed = match result {
-                    Ok(Ok(snapshot)) => {
-                        let changed =
-                            app.catalog_snapshot != snapshot || app.catalog_error.is_some();
+                    Ok(Ok((snapshot, health))) => {
+                        let changed = app.catalog_snapshot != snapshot
+                            || app.cluster_health != health
+                            || app.catalog_error.is_some();
+                        app.cluster_health = health;
                         app.catalog_snapshot = snapshot;
                         app.catalog_error = None;
                         changed
@@ -636,6 +648,9 @@ impl IceonApp {
             id: cluster_id.clone(),
         }) {
             Ok(mut snapshot) => {
+                let _ = self.connection.clear_cluster_health(&cluster_id);
+                self.cluster_health
+                    .retain(|health| health.cluster_id != cluster_id);
                 if let Some(session) = &self.cluster_session
                     && session.cluster_id == cluster_id
                 {

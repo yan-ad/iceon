@@ -84,6 +84,7 @@ pub struct IceonApp {
     pub(crate) catalog_snapshot: CatalogSnapshot,
     pub(crate) catalog_error: Option<String>,
     pub(crate) catalog_refresh_pending: bool,
+    pub(crate) cluster_health: Vec<iceon_core::connection::health::ClusterHealthSnapshot>,
     pub(crate) home_catalog_visible: bool,
     pub(crate) pending_remove_cluster: Option<ClusterSummary>,
 
@@ -340,6 +341,7 @@ impl IceonApp {
             catalog_snapshot,
             catalog_error: None,
             catalog_refresh_pending: false,
+            cluster_health: Vec::new(),
             home_catalog_visible: false,
             pending_remove_cluster: None,
             history: NavigationHistory::new(initial_route.clone()),
@@ -444,6 +446,25 @@ impl IceonApp {
                     .timer(std::time::Duration::from_secs(5))
                     .await;
                 if this.update(cx, |app, cx| app.refresh_catalog(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let health_connection = app.connection.clone();
+        let health_owner = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(30))
+                    .await;
+                let _ = health_connection.refresh_cluster_health().await;
+                if health_owner
+                    .update(cx, |app, cx| {
+                        app.refresh_catalog(cx);
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }

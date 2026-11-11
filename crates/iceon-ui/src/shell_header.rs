@@ -276,7 +276,7 @@ impl IceonApp {
                             .min_w_0()
                             .items_center()
                             .gap_1p5()
-                            .child(
+                            .when(matches!(self.history.current(), Route::Cluster { .. }), |navigation| navigation.child(
                                 Button::new("nav-toggle-sidebar")
                                     .text_color(cx.theme().sidebar_foreground)
                                     .xsmall()
@@ -288,7 +288,7 @@ impl IceonApp {
                                         this.sidebar_collapsed = !this.sidebar_collapsed;
                                         cx.notify();
                                     })),
-                            )
+                            ))
                             .child(
                                 Button::new("nav-catalog-btn").ghost().xsmall()
                                     .icon(gpui_kit_assets::IconName::House)

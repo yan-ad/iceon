@@ -2,7 +2,7 @@
 use gpui_kit::{AssetSource, SharedString};
 use std::borrow::Cow;
 
-gpui_kit_assets::icon_assets!(ExtraIcons, [Pin, PinOff, Pencil, House]);
+gpui_kit_assets::icon_assets!(ExtraIcons, [Pin, PinOff, Pencil, House, Trash]);
 
 pub(crate) struct AppAssets;
 impl AssetSource for AppAssets {
@@ -54,6 +54,7 @@ mod tests {
             IconName::PinOff,
             IconName::Pencil,
             IconName::House,
+            IconName::Trash,
             IconName::Check,
         ] {
             let path = icon.path();
