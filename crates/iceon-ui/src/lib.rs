@@ -83,6 +83,7 @@ pub struct IceonApp {
     pub(crate) cluster_select_items: Vec<shell_header::ClusterChoice>,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) cluster_sidebar_collapsed: bool,
+    pub(crate) navigation_widths: cluster_view::NavigationWidths,
     pub(crate) expanded_cluster_groups: Vec<String>,
 
     pub(crate) search_modal_open: bool,
@@ -318,6 +319,7 @@ impl IceonApp {
             cluster_select_items,
             sidebar_collapsed: false,
             cluster_sidebar_collapsed: false,
+            navigation_widths: cluster_view::NavigationWidths::load(),
             expanded_cluster_groups,
             search_modal_open: false,
             preferences_open: false,

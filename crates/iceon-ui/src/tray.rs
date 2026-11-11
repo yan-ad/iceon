@@ -72,9 +72,14 @@ mod native {
     use std::cell::RefCell;
 
     use gpui_kit::{AnyWindowHandle, App, AsyncApp};
+    use objc2::AnyThread;
     use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained, sel};
-    use objc2_app_kit::{NSImage, NSSquareStatusItemLength, NSStatusBar, NSStatusItem};
-    use objc2_foundation::{NSObject, NSObjectProtocol, NSSize, ns_string};
+    use objc2_app_kit::{
+        NSImage, NSMenu, NSMenuItem, NSSquareStatusItemLength, NSStatusBar, NSStatusItem,
+    };
+    use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, ns_string};
+
+    const TRAY_ICON: &[u8] = include_bytes!("../../../assets/icons/32x32.png");
 
     #[derive(Clone)]
     struct MainWindow {
@@ -102,16 +107,23 @@ mod native {
         unsafe impl NSObjectProtocol for ActionTarget {}
 
         impl ActionTarget {
-            // SAFETY: Matches AppKit target/action's void action(id) signature.
-            #[unsafe(method(showIceon:))]
-            fn show_iceon(&self, _sender: &NSObject) {
-                // Release the TLS borrow before entering GPUI. update_window is
-                // fallible if the handle closed, GPUI is quitting, or is borrowed.
+            // SAFETY: AppKit calls this selector only from the NSMenuItems
+            // constructed below; the tag indexes the immutable shared model.
+            #[unsafe(method(performIceonCommand:))]
+            fn perform_command(&self, sender: &NSMenuItem) {
+                let Ok(index) = usize::try_from(sender.tag()) else { return };
+                let model = crate::native_menu::quick_access_menu();
+                let Some(gpui_kit::MenuItem::Action { action, .. }) = model.get(index) else {
+                    return;
+                };
                 let main = STATE.with(|state| state.borrow().main_window.clone());
                 if let Some(mut main) = main {
+                    // Always dispatch against the registered shell, not a
+                    // preferences window that happens to have keyboard focus.
                     let _ = main.window.update(&mut main.cx, |_, window, cx| {
                         cx.activate(true);
                         window.activate_window();
+                        window.dispatch_action(action.boxed_clone(), cx);
                     });
                 }
             }
@@ -120,7 +132,8 @@ mod native {
 
     struct StatusItem {
         item: Retained<NSStatusItem>,
-        // NSControl does not retain its target; keep it until after disconnection.
+        commands: Vec<Retained<NSMenuItem>>,
+        // NSMenuItem does not retain its target; keep until after disconnection.
         _target: Retained<ActionTarget>,
         mtm: MainThreadMarker,
     }
@@ -128,13 +141,12 @@ mod native {
     impl StatusItem {
         fn new(mtm: MainThreadMarker) -> Result<Self, String> {
             // Resolve the image before creating an item, so failure leaves no
-            // empty menu-bar slot. SF Symbols are available on supported macOS.
-            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                ns_string!("cube"),
-                Some(ns_string!("Iceon — Show main window")),
-            )
-            .ok_or_else(|| "macOS could not load the Iceon status icon".to_string())?;
-            image.setTemplate(true);
+            // empty menu-bar slot. Embed the branded asset so cargo run does
+            // not depend on a .app bundle or the process working directory.
+            let data = NSData::with_bytes(TRAY_ICON);
+            let image = NSImage::initWithData(NSImage::alloc(), &data)
+                .ok_or_else(|| "macOS could not load the Iceon status icon".to_string())?;
+            image.setTemplate(false);
             image.setSize(NSSize::new(18.0, 18.0));
             let item =
                 NSStatusBar::systemStatusBar().statusItemWithLength(NSSquareStatusItemLength);
@@ -146,15 +158,37 @@ mod native {
             let target: Retained<ActionTarget> =
                 unsafe { msg_send![ActionTarget::alloc(mtm), init] };
             button.setImage(Some(&image));
-            button.setToolTip(Some(ns_string!("Iceon — Show main window")));
-            // SAFETY: target implements showIceon: with the correct signature and
-            // is retained by this controller for the entire button lifetime.
-            unsafe {
-                button.setTarget(Some(&target));
-                button.setAction(Some(sel!(showIceon:)));
+            button.setToolTip(Some(ns_string!("Iceon")));
+            // Native NSStatusItem menus handle both primary and secondary click
+            // without custom event routing or taking over GPUI's app delegate.
+            let menu = NSMenu::new(mtm);
+            menu.setTitle(ns_string!("Iceon"));
+            menu.setAutoenablesItems(false);
+            let mut commands = Vec::new();
+            for (index, entry) in crate::native_menu::quick_access_menu().iter().enumerate() {
+                match entry {
+                    gpui_kit::MenuItem::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+                    gpui_kit::MenuItem::Action { name, disabled, .. } => {
+                        let entry = NSMenuItem::new(mtm);
+                        entry.setTitle(&objc2_foundation::NSString::from_str(name));
+                        entry.setTag(index as isize);
+                        entry.setEnabled(!disabled);
+                        // SAFETY: target implements void action(NSMenuItem*) and
+                        // remains alive until after this menu is disconnected.
+                        unsafe {
+                            entry.setTarget(Some(&target));
+                            entry.setAction(Some(sel!(performIceonCommand:)));
+                        }
+                        menu.addItem(&entry);
+                        commands.push(entry);
+                    }
+                    _ => unreachable!("quick access model contains only actions and separators"),
+                }
             }
+            item.setMenu(Some(&menu));
             Ok(Self {
                 item,
+                commands,
                 _target: target,
                 mtm,
             })
@@ -163,6 +197,15 @@ mod native {
 
     impl Drop for StatusItem {
         fn drop(&mut self) {
+            for command in &self.commands {
+                // SAFETY: Detach before releasing the non-retained target, even
+                // if AppKit is still retaining an item during menu tracking.
+                unsafe {
+                    command.setAction(None);
+                    command.setTarget(None);
+                }
+            }
+            self.item.setMenu(None);
             if let Some(button) = self.item.button(self.mtm) {
                 // SAFETY: Disconnect before releasing the non-retained target.
                 unsafe {

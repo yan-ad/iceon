@@ -143,8 +143,9 @@ fn xml_path(path: &Path) -> Result<String, IntegrationError> {
         .replace('\'', "&apos;"))
 }
 
-/// Default backend with the existing dependency set. GPUI Kit 0.9 / GPUI Pre
-/// 0.3.11 expose no tray API. Reject tray enable until a real adapter is supplied.
+/// Default backend for non-UI OS settings. The native tray is owned by the UI
+/// crate because AppKit objects and GPUI handles are main-thread-only. Reject
+/// tray enable unless the caller supplies the UI adapter.
 #[derive(Default)]
 pub struct NativeAppIntegration;
 impl AppIntegration for NativeAppIntegration {

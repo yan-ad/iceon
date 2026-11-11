@@ -2,8 +2,8 @@
 //! pin/unpin actions, and remove confirmation modal.
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    button::{Button, ButtonVariant, ButtonVariants as _},
     h_flex,
     input::Input,
     scroll::{ScrollableElement as _, ScrollbarAxis},
@@ -106,7 +106,6 @@ impl IceonApp {
             .discovery_error
             .map(catalog_error_message);
         let catalog_error = self.catalog_error.clone();
-        let pending_remove = self.pending_remove_cluster.clone();
 
         v_flex()
             .size_full()
@@ -221,50 +220,6 @@ impl IceonApp {
                                     this.catalog_error = None;
                                     cx.notify();
                                 })),
-                        ),
-                )
-            })
-            .when_some(pending_remove, |el, target| {
-                let target_id = target.id.clone();
-                let target_name = target.name.clone();
-                el.child(
-                    h_flex()
-                        .w_full()
-                        .p_3()
-                        .rounded(px(6.0))
-                        .border_1()
-                        .border_color(cx.theme().danger)
-                        .bg(cx.theme().secondary)
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(
-                            div().text_xs().child(format!(
-                                "Remove cluster context \"{target_name}\" from Iceon catalog? (Your kubeconfig file on disk will not be modified.)"
-                            )),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    Button::new("cancel-remove-cluster")
-                                        .xsmall()
-                                        .outline()
-                                        .label("Cancel")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.pending_remove_cluster = None;
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    Button::new("confirm-remove-cluster")
-                                        .xsmall()
-                                        .danger()
-                                        .label("Remove")
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.confirm_remove_cluster(target_id.clone(), cx);
-                                        })),
-                                ),
                         ),
                 )
             })
@@ -440,12 +395,12 @@ impl IceonApp {
                                                             "remove-cluster-{cluster_id}"
                                                         )))
                                                         .xsmall()
-                                                        .ghost()
+                                                        .danger()
                                                         .icon(gpui_kit::assets::IconName::Trash)
-                                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                                            this.pending_remove_cluster =
-                                                                Some(remove_target.clone());
-                                                            cx.notify();
+                                                        .tooltip("Remove cluster context")
+                                                        .accessibility_label("Remove cluster context")
+                                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                                            this.prompt_remove_cluster(remove_target.clone(), window, cx);
                                                         })),
                                                     ),
                                             )
@@ -564,6 +519,33 @@ impl IceonApp {
             }
         }
         cx.notify();
+    }
+
+    fn prompt_remove_cluster(
+        &self,
+        target: ClusterSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let app = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let app = app.clone();
+            let id = target.id.clone();
+            dialog
+                .centered()
+                .confirm()
+                .title("Remove cluster context?")
+                .description(format!(
+                    "Remove \"{}\" from Iceon's catalog? Your kubeconfig file on disk will not be modified.",
+                    target.name
+                ))
+                .ok_text("Remove")
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, _, cx| {
+                    let _ = app.update(cx, |this, cx| this.confirm_remove_cluster(id.clone(), cx));
+                    true
+                })
+        });
     }
 
     pub(crate) fn confirm_remove_cluster(&mut self, cluster_id: String, cx: &mut Context<Self>) {

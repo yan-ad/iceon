@@ -10,11 +10,119 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
+    resizable::{HandleEdge, resize_handle},
     scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     tag::Tag,
     v_flex,
 };
+
+// Kept independently of the route/drawer lifecycle, so toggling either panel
+// never discards the last chosen size. The file contains geometry only.
+pub(crate) const SIDEBAR_MIN_WIDTH: f32 = 224.0;
+pub(crate) const INSPECTOR_MIN_WIDTH: f32 = 360.0;
+
+pub(crate) struct NavigationWidths {
+    sidebar: f32,
+    inspector: f32,
+    dirty: bool,
+}
+
+impl Default for NavigationWidths {
+    fn default() -> Self {
+        Self {
+            sidebar: 252.0,
+            inspector: 420.0,
+            dirty: false,
+        }
+    }
+}
+
+fn bounded_panel_width(value: f32, minimum: f32, maximum: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(minimum, maximum)
+    } else {
+        fallback
+    }
+}
+
+impl NavigationWidths {
+    fn path() -> std::path::PathBuf {
+        iceon_core::runtime::app_data_dir().join("navigation-widths")
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        let mut values = text.split_whitespace();
+        let sidebar = values.next()?.parse().ok()?;
+        let inspector = values.next()?.parse().ok()?;
+        if values.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            sidebar: bounded_panel_width(sidebar, SIDEBAR_MIN_WIDTH, 420.0, 252.0),
+            inspector: bounded_panel_width(inspector, INSPECTOR_MIN_WIDTH, 720.0, 420.0),
+            dirty: false,
+        })
+    }
+
+    pub(crate) fn load() -> Self {
+        std::fs::read_to_string(Self::path())
+            .ok()
+            .and_then(|text| Self::parse(&text))
+            .unwrap_or_default()
+    }
+
+    fn save(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        let path = Self::path();
+        // Atomic replacement prevents a partially written width on next launch.
+        let temporary = path.with_extension("tmp");
+        let result = (|| -> std::io::Result<()> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&temporary, format!("{} {}\n", self.sidebar, self.inspector))?;
+            std::fs::rename(&temporary, &path)
+        })();
+        if result.is_ok() {
+            self.dirty = false;
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ResizeNavigation {
+    sidebar: bool,
+}
+
+impl Render for ResizeNavigation {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+#[cfg(test)]
+mod navigation_width_tests {
+    use super::{NavigationWidths, SIDEBAR_MIN_WIDTH};
+
+    #[test]
+    fn persisted_widths_round_trip_and_clamp_to_accessible_ranges() {
+        let widths = NavigationWidths::parse("280 480\n").unwrap();
+        assert_eq!((widths.sidebar, widths.inspector), (280.0, 480.0));
+        let widths = NavigationWidths::parse("12 9999").unwrap();
+        assert_eq!(
+            (widths.sidebar, widths.inspector),
+            (SIDEBAR_MIN_WIDTH, 720.0)
+        );
+        let widths = NavigationWidths::parse("NaN inf").unwrap();
+        assert_eq!((widths.sidebar, widths.inspector), (252.0, 420.0));
+        for bad in ["", "280", "wrong 480", "280 480 secret"] {
+            assert!(NavigationWidths::parse(bad).is_none());
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NamespaceChoice {
@@ -94,6 +202,7 @@ pub(crate) fn create_namespace_select(
     .detach();
     (select, items)
 }
+use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -149,7 +258,7 @@ pub(crate) const RESOURCE_AGE_WIDTH: f32 = 76.0;
 pub(crate) const RESOURCE_STATUS_WIDTH: f32 = 148.0;
 
 // Shared cell geometry: padding is inside each column; only internal vertical rules.
-pub(crate) fn table_cell(width: f32, flexible: bool, separator: bool, border: Hsla) -> Div {
+pub(crate) fn table_cell(width: f32, flexible: bool, _separator: bool, _border: Hsla) -> Div {
     h_flex()
         .h_full()
         .items_center()
@@ -158,7 +267,6 @@ pub(crate) fn table_cell(width: f32, flexible: bool, separator: bool, border: Hs
         .overflow_hidden()
         .when(flexible, |cell| cell.flex_1().min_w(px(width)))
         .when(!flexible, |cell| cell.w(px(width)))
-        .when(separator, |cell| cell.border_r_1().border_color(border))
 }
 
 pub fn section_to_resource_kind(section: &str) -> Option<ResourceKind> {
@@ -1711,10 +1819,56 @@ impl IceonApp {
             dock.dock_area.clone()
         });
         h_flex()
+            .id("resizable-cluster-workspace")
             .size_full()
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
+            .on_drag_move(cx.listener(
+                move |this, event: &DragMoveEvent<ResizeNavigation>, _, cx| {
+                    let sidebar = event.drag(cx).sidebar;
+                    let requested: f32 = if sidebar {
+                        (event.event.position.x - event.bounds.left()).into()
+                    } else {
+                        (event.bounds.right() - event.event.position.x).into()
+                    };
+                    // Keep the table reachable while respecting each panel's minimum.
+                    let total: f32 = event.bounds.size.width.into();
+                    let other = if sidebar && inspector_open {
+                        this.navigation_widths.inspector
+                    } else if !sidebar && sidebar_open {
+                        this.navigation_widths.sidebar
+                    } else {
+                        0.0
+                    };
+                    let (minimum, maximum, fallback) = if sidebar {
+                        (SIDEBAR_MIN_WIDTH, 420.0_f32, 252.0)
+                    } else {
+                        (INSPECTOR_MIN_WIDTH, 720.0_f32, 420.0)
+                    };
+                    let width = bounded_panel_width(
+                        requested,
+                        minimum,
+                        maximum.min((total - other - 320.0).max(minimum)),
+                        fallback,
+                    );
+                    if sidebar {
+                        this.navigation_widths.sidebar = width;
+                    } else {
+                        this.navigation_widths.inspector = width;
+                    }
+                    this.navigation_widths.dirty = true;
+                    cx.notify();
+                },
+            ))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.navigation_widths.save()),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.navigation_widths.save()),
+            )
             .when(sidebar_open, |row| {
                 let cluster_id = self
                     .cluster_session
@@ -1723,10 +1877,26 @@ impl IceonApp {
                     .unwrap_or_default();
                 row.child(
                     div()
-                        .w(px(252.))
+                        .relative()
+                        .w(px(self.navigation_widths.sidebar))
+                        .min_w(px(SIDEBAR_MIN_WIDTH))
                         .h_full()
                         .flex_shrink_0()
-                        .child(self.render_cluster_sidebar(&cluster_id, cx)),
+                        .child(self.render_cluster_sidebar(&cluster_id, cx))
+                        .child(
+                            resize_handle("resource-sidebar-resize", Axis::Horizontal)
+                                .inside(HandleEdge::Trailing)
+                                .with_appearance(Rc::new(|_, _, _| Some(div().into_any_element())))
+                                .on_drag(ResizeNavigation { sidebar: true }, |drag, _, _, cx| {
+                                    cx.new(|_| drag.clone())
+                                })
+                                .on_double_click(cx.listener(|this, _, _, cx| {
+                                    this.navigation_widths.sidebar = 252.0;
+                                    this.navigation_widths.dirty = true;
+                                    this.navigation_widths.save();
+                                    cx.notify();
+                                })),
+                        ),
                 )
             })
             .child(
@@ -1742,10 +1912,26 @@ impl IceonApp {
             .when(inspector_open, |row| {
                 row.child(
                     div()
-                        .w(px(420.))
+                        .relative()
+                        .w(px(self.navigation_widths.inspector))
+                        .min_w(px(INSPECTOR_MIN_WIDTH))
                         .h_full()
                         .flex_shrink_0()
-                        .child(self.render_inspector_drawer(window, cx)),
+                        .child(self.render_inspector_drawer(window, cx))
+                        .child(
+                            resize_handle("inspector-resize", Axis::Horizontal)
+                                .inside(HandleEdge::Leading)
+                                .with_appearance(Rc::new(|_, _, _| Some(div().into_any_element())))
+                                .on_drag(ResizeNavigation { sidebar: false }, |drag, _, _, cx| {
+                                    cx.new(|_| drag.clone())
+                                })
+                                .on_double_click(cx.listener(|this, _, _, cx| {
+                                    this.navigation_widths.inspector = 420.0;
+                                    this.navigation_widths.dirty = true;
+                                    this.navigation_widths.save();
+                                    cx.notify();
+                                })),
+                        ),
                 )
             })
     }

@@ -1,8 +1,8 @@
 //! Right-hand Resource & Helm Inspector drawer with Summary, Metadata, Related, Events, and YAML tabs.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, WindowExt as _,
+    button::{Button, ButtonVariant, ButtonVariants as _},
     h_flex,
     input::Input,
     scroll::ScrollableElement as _,
@@ -43,6 +43,10 @@ pub struct DeleteTarget {
     pub namespace: Option<String>,
     pub uid: String,
     pub resource_version: String,
+}
+
+fn workload_requires_confirmation(action: WorkloadAction) -> bool {
+    matches!(action, WorkloadAction::Restart | WorkloadAction::Suspend)
 }
 
 pub fn supported_collections_for_kind(kind: ResourceKind) -> Vec<CollectionKind> {
@@ -99,6 +103,50 @@ pub struct InspectorState {
 }
 
 impl IceonApp {
+    /// Standard window-level confirmation, never an inspector-local overlay.
+    /// Capture the lease so an old dialog cannot mutate a newly selected cluster.
+    pub(crate) fn confirm_destructive_action(
+        &self,
+        title: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+        confirm_label: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let title = title.into();
+        let description = description.into();
+        let app = cx.entity().downgrade();
+        let lease = self
+            .cluster_session
+            .as_ref()
+            .map(|session| (session.cluster_id.clone(), session.session_id.clone()));
+        let action = std::rc::Rc::new(action);
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let app = app.clone();
+            let lease = lease.clone();
+            let action = action.clone();
+            dialog
+                .centered()
+                .confirm()
+                .title(title.clone())
+                .description(description.clone())
+                .ok_text(confirm_label)
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, window, cx| {
+                    let _ = app.update(cx, |this, cx| {
+                        let current = this.cluster_session.as_ref().map(|session| {
+                            (session.cluster_id.clone(), session.session_id.clone())
+                        });
+                        if current == lease {
+                            action(this, window, cx);
+                        }
+                    });
+                    true
+                })
+        });
+    }
+
     pub(crate) fn open_resource_inspector(
         &mut self,
         reference: ResourceReference,
@@ -361,6 +409,26 @@ impl IceonApp {
         .detach();
     }
 
+    fn confirm_inspector_pod_mutation(
+        &self,
+        namespace: String,
+        name: String,
+        uid: String,
+        resource_version: Option<String>,
+        action: PodAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_destructive_action(
+            "Confirm destructive Pod action",
+            format!("{action:?} {namespace}/{name}? This bypasses normal Pod cleanup and may leave workloads or resources running."),
+            "Confirm", window, cx,
+            move |this, window, cx| this.run_pod_mutation(
+                namespace.clone(), name.clone(), uid.clone(), resource_version.clone(), action, window, cx,
+            ),
+        );
+    }
+
     pub(crate) fn run_pod_mutation(
         &mut self,
         namespace: String,
@@ -508,7 +576,30 @@ impl IceonApp {
             namespace: detail.reference.namespace,
             uid: Some(uid),
         };
-        self.run_workload_action_for(reference, rv, action, replicas, window, cx);
+        if workload_requires_confirmation(action) {
+            self.confirm_destructive_action(
+                format!("{action:?} workload?"),
+                format!(
+                    "{action:?} {}? This can interrupt running workloads.",
+                    reference.name
+                ),
+                "Confirm",
+                window,
+                cx,
+                move |this, window, cx| {
+                    this.run_workload_action_for(
+                        reference.clone(),
+                        rv.clone(),
+                        action,
+                        replicas,
+                        window,
+                        cx,
+                    );
+                },
+            );
+        } else {
+            self.run_workload_action_for(reference, rv, action, replicas, window, cx);
+        }
     }
 
     pub(crate) fn run_node_action_for(
@@ -804,16 +895,20 @@ impl IceonApp {
             cx.notify();
             return;
         };
-        self.delete_resource_by_target(
-            DeleteTarget {
-                kind: detail.reference.kind,
-                name: detail.reference.name,
-                namespace: detail.reference.namespace,
-                uid,
-                resource_version: rv,
-            },
+        let target = DeleteTarget {
+            kind: detail.reference.kind,
+            name: detail.reference.name,
+            namespace: detail.reference.namespace,
+            uid,
+            resource_version: rv,
+        };
+        self.confirm_destructive_action(
+            "Delete resource?",
+            format!("Delete {}? This action cannot be undone.", target.name),
+            "Delete",
             window,
             cx,
+            move |this, window, cx| this.delete_resource_by_target(target.clone(), window, cx),
         );
     }
 
@@ -1075,7 +1170,7 @@ impl IceonApp {
                 el.child(
                     Button::new("insp-restart-btn")
                         .xsmall()
-                        .outline()
+                        .danger()
                         .label("Restart")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run_workload_action(WorkloadAction::Restart, window, cx);
@@ -1086,7 +1181,7 @@ impl IceonApp {
                 el.child(
                     Button::new("insp-suspend-btn")
                         .xsmall()
-                        .outline()
+                        .danger()
                         .label("Suspend")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.run_workload_action(WorkloadAction::Suspend, window, cx);
@@ -1321,10 +1416,10 @@ impl IceonApp {
                 .child(
                     Button::new("insp-pod-force-delete")
                         .xsmall()
-                        .outline()
+                        .danger()
                         .label("Force Delete (0s)")
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.run_pod_mutation(
+                            this.confirm_inspector_pod_mutation(
                                 ns_force.clone(),
                                 name_force.clone(),
                                 uid_force.clone(),
@@ -1342,7 +1437,7 @@ impl IceonApp {
                             .danger()
                             .label("Strip Finalizers")
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.run_pod_mutation(
+                                this.confirm_inspector_pod_mutation(
                                     ns_fin.clone(),
                                     name_fin.clone(),
                                     uid_fin.clone(),
@@ -1793,11 +1888,18 @@ impl IceonApp {
                     .when_some(review.plan_id.clone(), |row, pid| {
                         row.child(
                             Button::new("confirm-node-drain-btn")
+                                .disabled(!review.can_drain)
                                 .xsmall()
                                 .danger()
                                 .label("Confirm & Execute Eviction Plan")
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.execute_node_drain(pid.clone(), window, cx);
+                                    let pid = pid.clone();
+                                    this.confirm_destructive_action(
+                                        "Drain node?",
+                                        "Execute the reviewed eviction plan? Pods will be evicted and the node will be cordoned.",
+                                        "Drain", window, cx,
+                                        move |this, window, cx| this.execute_node_drain(pid.clone(), window, cx),
+                                    );
                                 })),
                         )
                     })
@@ -3139,5 +3241,38 @@ fn status_tag(status: &str) -> Tag {
         Tag::danger().small().child(status.to_owned())
     } else {
         Tag::secondary().small().child(status.to_owned())
+    }
+}
+
+#[cfg(test)]
+mod destructive_confirmation_tests {
+    use super::{DeleteTarget, ResourceKind, WorkloadAction, workload_requires_confirmation};
+
+    #[test]
+    fn disruptive_workload_actions_require_explicit_confirmation() {
+        assert!(workload_requires_confirmation(WorkloadAction::Restart));
+        assert!(workload_requires_confirmation(WorkloadAction::Suspend));
+        for action in [
+            WorkloadAction::Scale,
+            WorkloadAction::Resume,
+            WorkloadAction::Trigger,
+        ] {
+            assert!(!workload_requires_confirmation(action));
+        }
+    }
+
+    #[test]
+    fn delete_confirmation_snapshot_preserves_identity_preconditions() {
+        let original = DeleteTarget {
+            kind: ResourceKind::Pods,
+            name: "example".into(),
+            namespace: Some("default".into()),
+            uid: "original-uid".into(),
+            resource_version: "123".into(),
+        };
+        let captured = original.clone();
+        assert_eq!(captured, original);
+        assert_eq!(captured.uid, "original-uid");
+        assert_eq!(captured.resource_version, "123");
     }
 }

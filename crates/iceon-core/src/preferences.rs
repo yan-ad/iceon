@@ -23,6 +23,12 @@ pub enum PreferencesError {
     StoreCorrupt,
 }
 
+// A missing preference uses the native platform default. Explicit persisted
+// false remains false: an upgrade must not override the user's opt-out.
+fn default_show_tray_icon() -> bool {
+    cfg!(target_os = "macos")
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyPreferencesError {
     #[error("preference store: {0:?}")]
@@ -71,6 +77,7 @@ pub struct AppPreferences {
     pub timezone: String,
     pub persistent_search: bool,
     pub open_at_login: bool,
+    #[serde(default = "default_show_tray_icon")]
     pub show_tray_icon: bool,
     #[serde(default)]
     pub auto_hide_hotbar: bool,
@@ -85,7 +92,7 @@ impl Default for AppPreferences {
             timezone: "system".into(),
             persistent_search: false,
             open_at_login: false,
-            show_tray_icon: false,
+            show_tray_icon: default_show_tray_icon(),
             auto_hide_hotbar: false,
             restore_last_page: false,
         }

@@ -59,6 +59,17 @@ fn legacy_kubernetes_preferences_migrate_with_safe_defaults() {
 }
 
 #[test]
+fn tray_default_preserves_explicit_opt_out_and_accepts_missing_field() {
+    let mut json = serde_json::to_value(AppPreferences::default()).unwrap();
+    json.as_object_mut().unwrap().remove("showTrayIcon");
+    let migrated: AppPreferences = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(migrated.show_tray_icon, cfg!(target_os = "macos"));
+    json["showTrayIcon"] = serde_json::json!(false);
+    let existing: AppPreferences = serde_json::from_value(json).unwrap();
+    assert!(!existing.show_tray_icon);
+}
+
+#[test]
 fn validates_kubernetes_options_before_persistence() {
     let mut prefs = Preferences::default();
     prefs.kubernetes.kubectl_download_mirror = DownloadMirror::Custom;
@@ -90,6 +101,10 @@ fn default_preferences_match_specification() {
     assert_eq!(snap.preferences.app.theme, AppTheme::System);
     assert_eq!(snap.preferences.app.timezone, "system");
     assert!(!snap.preferences.app.persistent_search);
+    assert_eq!(
+        snap.preferences.app.show_tray_icon,
+        cfg!(target_os = "macos")
+    );
     assert_eq!(snap.preferences.editor.font_size, 12);
     assert_eq!(snap.preferences.editor.tab_size, 2);
     assert_eq!(snap.preferences.editor.line_numbers, LineNumbers::On);

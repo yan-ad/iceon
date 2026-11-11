@@ -2,7 +2,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
@@ -182,82 +182,42 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> u32 {
     (r_u8 << 16) | (g_u8 << 8) | b_u8
 }
 
-/// Computes a mode-aware cluster tile palette that preserves the cluster's
-/// persisted color hue while guaranteeing surface separation and WCAG AA
-/// foreground contrast in both Dark and Light modes.
+/// Solid cluster surfaces retain the catalog hue and meet WCAG AAA (7:1)
+/// with the same ink in idle, hover and pressed states.
 pub(crate) fn cluster_tile_palette(color: &str, seed: &str, is_dark: bool) -> ClusterTilePalette {
-    let base_rgb = cluster_rgb(color).unwrap_or_else(|| fallback_cluster_rgb(seed));
-    let (h, s, l) = rgb_to_hsl(base_rgb);
-
-    // Keep chromatic saturation balanced and clamp lightness so random extreme
-    // colors never vanish into the dark (#121214) or light (#f6f6f7) sidebar rail.
-    let tuned_s = if s < 0.06 {
-        s
-    } else if is_dark {
-        s.clamp(0.42, 0.72)
-    } else {
-        s.clamp(0.42, 0.75)
-    };
-    let tuned_l = if is_dark {
-        l.clamp(0.22, 0.38)
-    } else {
-        l.clamp(0.26, 0.44)
-    };
-
-    let mut bg_rgb = hsl_to_rgb(h, tuned_s, tuned_l);
-    let hover_rgb = hsl_to_rgb(
-        h,
-        tuned_s,
-        if is_dark {
-            (tuned_l + 0.06).min(0.48)
-        } else {
-            (tuned_l - 0.05).max(0.18)
-        },
-    );
-    let active_rgb = hsl_to_rgb(
-        h,
-        tuned_s,
-        if is_dark {
-            (tuned_l + 0.10).min(0.52)
-        } else {
-            (tuned_l - 0.08).max(0.15)
-        },
-    );
-    let border_rgb = hsl_to_rgb(
-        h,
-        tuned_s,
-        if is_dark {
-            (tuned_l + 0.12).min(0.56)
-        } else {
-            (tuned_l - 0.08).max(0.16)
-        },
-    );
-
-    let white_contrast = wcag_contrast_ratio(bg_rgb, LIGHT_INK_RGB);
-    let dark_contrast = wcag_contrast_ratio(bg_rgb, DARK_INK_RGB);
-    let fg_rgb = if white_contrast >= dark_contrast {
+    let base = cluster_rgb(color).unwrap_or_else(|| fallback_cluster_rgb(seed));
+    let (h, s, l) = rgb_to_hsl(base);
+    let saturation = if s < 0.06 { s } else { s.clamp(0.42, 0.75) };
+    let lightness = l.clamp(0.22, if is_dark { 0.38 } else { 0.44 });
+    let initial = hsl_to_rgb(h, saturation, lightness);
+    let fg_rgb = if wcag_contrast_ratio(initial, LIGHT_INK_RGB)
+        >= wcag_contrast_ratio(initial, DARK_INK_RGB)
+    {
         LIGHT_INK_RGB
     } else {
         DARK_INK_RGB
     };
-    // Off-white/off-black ink can leave a small contrast gap around mid-tones.
-    // Preserve hue and saturation, adjusting only the surface's lightness.
-    let mut accessible_l = tuned_l;
-    for _ in 0..100 {
-        if wcag_contrast_ratio(bg_rgb, fg_rgb) >= 4.5 {
-            break;
+    let accessible = |mut lightness: f64| {
+        for _ in 0..=100 {
+            let color = hsl_to_rgb(h, saturation, lightness);
+            if wcag_contrast_ratio(color, fg_rgb) >= 7.0 {
+                return color;
+            }
+            lightness =
+                (lightness + if fg_rgb == LIGHT_INK_RGB { -0.01 } else { 0.01 }).clamp(0.0, 1.0);
         }
-        accessible_l =
-            (accessible_l + if fg_rgb == LIGHT_INK_RGB { -0.01 } else { 0.01 }).clamp(0.0, 1.0);
-        bg_rgb = hsl_to_rgb(h, tuned_s, accessible_l);
-    }
-
+        if fg_rgb == LIGHT_INK_RGB {
+            0x000000
+        } else {
+            0xffffff
+        }
+    };
     ClusterTilePalette {
-        bg_rgb,
+        bg_rgb: accessible(lightness),
         fg_rgb,
-        hover_rgb,
-        active_rgb,
-        border_rgb,
+        hover_rgb: accessible(lightness - 0.025),
+        active_rgb: accessible(lightness - 0.05),
+        border_rgb: accessible(lightness),
     }
 }
 
@@ -319,66 +279,74 @@ fn menu_item_with_pin(
     label: impl Into<SharedString>,
     icon: Option<IconName>,
     active: bool,
-    action_icon: IconName,
+    action_icon: Option<IconName>,
     pin_state: Option<(bool, Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>)>,
     handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> SidebarMenuItem {
     let id_key = id_key.into();
     let label = label.into();
     let handler = Rc::new(handler);
-    SidebarMenuItem::new(label.clone())
-        .accessibility_label(label.clone())
-        .active(active)
-        .when_some(icon, |item, icon| item.icon(icon))
-        .on_click({
-            let handler = handler.clone();
-            move |event, window, cx| handler(event, window, cx)
-        })
-        .suffix(move |_, cx| {
-            let foreground = cx.theme().sidebar_foreground;
-            let muted = cx.theme().muted_foreground;
-            let handler = handler.clone();
-            let pin_state = pin_state.clone();
-            let id_key = id_key.clone();
-            let label = label.clone();
-            h_flex()
-                .items_center()
-                .gap_0p5()
-                .when_some(pin_state, |row, (pinned, pin_handler)| {
-                    let pin_tooltip: SharedString = if pinned {
-                        format!("Unpin {label} from Favorites").into()
-                    } else {
-                        format!("Pin {label} to Favorites").into()
-                    };
-                    row.child(
-                        Button::new(SharedString::from(format!("pin-{id_key}")))
-                            .ghost()
-                            .xsmall()
-                            .selected(pinned)
-                            .text_color(if pinned { foreground } else { muted })
-                            .icon(IconName::Star)
-                            .accessibility_label(pin_tooltip.clone())
-                            .tooltip(pin_tooltip)
-                            .on_click(move |event, window, cx| {
-                                cx.stop_propagation();
-                                pin_handler(event, window, cx);
-                            }),
-                    )
-                })
-                .child(
-                    Button::new(SharedString::from(format!("activate-{id_key}")))
+    SidebarMenuItem::new(if action_icon.is_some() {
+        label.clone()
+    } else {
+        "".into()
+    })
+    .accessibility_label(label.clone())
+    .active(active)
+    .when_some(icon, |item, icon| item.icon(icon))
+    .on_click({
+        let handler = handler.clone();
+        move |event, window, cx| handler(event, window, cx)
+    })
+    .suffix(move |_, cx| {
+        let foreground = cx.theme().sidebar_foreground;
+        let muted = cx.theme().muted_foreground;
+        let handler = handler.clone();
+        let pin_state = pin_state.clone();
+        let id_key = id_key.clone();
+        let label = label.clone();
+        h_flex()
+            .items_center()
+            .gap_0p5()
+            .when(action_icon.is_none(), |row| row.w_full().flex_row_reverse())
+            .when_some(pin_state, |row, (pinned, pin_handler)| {
+                let pin_tooltip: SharedString = if pinned {
+                    format!("Unpin {label} from Favorites").into()
+                } else {
+                    format!("Pin {label} to Favorites").into()
+                };
+                row.child(
+                    Button::new(SharedString::from(format!("pin-{id_key}")))
                         .ghost()
-                        .text_color(foreground)
                         .xsmall()
-                        .icon(action_icon.clone())
-                        .accessibility_label(label.clone())
-                        .tooltip(label)
+                        .selected(pinned)
+                        .text_color(if pinned { foreground } else { muted })
+                        .icon(IconName::Star)
+                        .accessibility_label(pin_tooltip.clone())
+                        .tooltip(pin_tooltip)
                         .on_click(move |event, window, cx| {
                             cx.stop_propagation();
-                            handler(event, window, cx);
+                            pin_handler(event, window, cx);
                         }),
                 )
-        })
+            })
+            .child(
+                Button::new(SharedString::from(format!("activate-{id_key}")))
+                    .ghost()
+                    .text_color(foreground)
+                    .xsmall()
+                    .when_some(action_icon.clone(), |button, icon| button.icon(icon))
+                    .when(action_icon.is_none(), |button| {
+                        button.label(label.clone()).flex_1().justify_start()
+                    })
+                    .accessibility_label(label.clone())
+                    .tooltip(label)
+                    .on_click(move |event, window, cx| {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    }),
+            )
+    })
 }
 
 impl IceonApp {
@@ -412,11 +380,6 @@ impl IceonApp {
     pub(crate) fn render_primary_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let route = self.history.current().clone();
         let is_dark = cx.theme().mode.is_dark();
-        let rail_surface: Hsla = if is_dark {
-            rgb(0x121214).into()
-        } else {
-            rgb(0xf6f6f7).into()
-        };
         let disconnected_dot_fill: Hsla = if is_dark {
             rgb(0x27272a).into()
         } else {
@@ -434,8 +397,7 @@ impl IceonApp {
             .h_full()
             .bg(cx.theme().tokens.sidebar)
             .text_color(cx.theme().sidebar_foreground)
-            .border_r_1()
-            .border_color(cx.theme().sidebar_border)
+            .border_color(gpui_kit::transparent_black())
             .py_2()
             .gap_2()
             .items_center()
@@ -459,7 +421,7 @@ impl IceonApp {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .gap_3()
+                    .gap_2()
                     .py_1()
                     .items_center()
                     .overflow_y_scrollbar()
@@ -596,20 +558,7 @@ impl IceonApp {
                                                                     el.text_sm()
                                                                 })
                                                                 .font_semibold()
-                                                                .child(initials)
-                                                                .child(
-                                                                    div()
-                                                                        .absolute()
-                                                                        .top(px(3.5))
-                                                                        .left(px(3.5))
-                                                                        .size(px(8.0))
-                                                                        .rounded_full()
-                                                                        .bg(status_fill)
-                                                                        .border_1()
-                                                                        .border_color(
-                                                                            status_border,
-                                                                        ),
-                                                                ),
+                                                                .child(initials),
                                                         )
                                                         .on_click(cx.listener(
                                                             move |this, _, window, cx| {
@@ -628,21 +577,13 @@ impl IceonApp {
                                                     .child(
                                                         div()
                                                             .absolute()
-                                                            .right(px(-3.0))
-                                                            .bottom(px(-3.0))
-                                                            .size(px(17.0))
+                                                            .right(px(-2.0))
+                                                            .bottom(px(-2.0))
+                                                            .size(px(10.0))
                                                             .rounded_full()
-                                                            .bg(rail_surface)
-                                                            .border_1()
-                                                            .border_color(cx.theme().sidebar_border)
-                                                            .flex()
-                                                            .items_center()
-                                                            .justify_center()
-                                                            .child(
-                                                                Icon::new(IconName::Network)
-                                                                    .size(px(10.0))
-                                                                    .text_color(sidebar_foreground),
-                                                            ),
+                                                            .bg(status_fill)
+                                                            .border_2()
+                                                            .border_color(status_border),
                                                     ),
                                             ),
                                     )
@@ -721,7 +662,7 @@ impl IceonApp {
                     label,
                     Some(IconName::Star),
                     *active == normalize_destination(&destination),
-                    IconName::ChevronRight,
+                    None,
                     Some((true, unpin_handler)),
                     cx.listener(move |this, _, window, cx| {
                         this.navigate(
@@ -769,10 +710,12 @@ impl IceonApp {
                 },
                 Some(section_icon(group_id)),
                 leaf && active == group.default_child,
-                if expanded && !leaf {
-                    IconName::ChevronDown
+                if leaf {
+                    None
+                } else if expanded {
+                    Some(IconName::ChevronDown)
                 } else {
-                    IconName::ChevronRight
+                    Some(IconName::ChevronRight)
                 },
                 pin_state,
                 cx.listener(move |this, _, window, cx| {
@@ -816,7 +759,7 @@ impl IceonApp {
                         child.label,
                         None,
                         active == destination,
-                        IconName::ChevronRight,
+                        None,
                         Some((pinned, pin_handler)),
                         cx.listener(move |this, _, window, cx| {
                             this.navigate(
@@ -851,7 +794,7 @@ impl IceonApp {
                             label,
                             None,
                             is_active,
-                            IconName::ChevronRight,
+                            None,
                             None,
                             cx.listener(move |this, _, window, cx| {
                                 this.navigate(
@@ -875,6 +818,7 @@ impl IceonApp {
             "cluster-navigation-{cluster_id}"
         )))
         .w_full()
+        .border_0()
         .collapsible(false)
         .children(groups)
     }
@@ -914,19 +858,41 @@ mod tests {
     }
 
     #[test]
-    fn cluster_tile_palette_maintains_wcag_aa_contrast_in_dark_and_light_modes() {
+    fn tile_states_meet_aaa_across_the_rgb_gamut() {
+        for red in (0..=255).step_by(51) {
+            for green in (0..=255).step_by(51) {
+                for blue in (0..=255).step_by(51) {
+                    let color = format!("#{red:02x}{green:02x}{blue:02x}");
+                    for dark in [false, true] {
+                        let palette = cluster_tile_palette(&color, "gamut", dark);
+                        for surface in [palette.bg_rgb, palette.hover_rgb, palette.active_rgb] {
+                            assert!(
+                                wcag_contrast_ratio(surface, palette.fg_rgb) >= 7.0,
+                                "{color}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cluster_tile_palette_maintains_wcag_aaa_contrast_in_dark_and_light_modes() {
         for is_dark in [true, false] {
             for sample in [
                 "#000000", "#ffffff", "#ffff00", "#681848", "#6d1a36", "#1d4e78", "#4ba7a5",
                 "#121214", "#f6f6f7", "invalid",
             ] {
                 let palette = cluster_tile_palette(sample, "cluster-seed", is_dark);
-                let ratio = wcag_contrast_ratio(palette.bg_rgb, palette.fg_rgb);
-                assert!(
-                    ratio >= 4.5,
-                    "expected WCAG AA >= 4.5 contrast for {sample} (is_dark={is_dark}), got {ratio:.2}"
-                );
-                assert!(matches!(palette.fg_rgb, LIGHT_INK_RGB | DARK_INK_RGB));
+                for surface in [palette.bg_rgb, palette.hover_rgb, palette.active_rgb] {
+                    let ratio = wcag_contrast_ratio(surface, palette.fg_rgb);
+                    assert!(
+                        ratio >= 7.0,
+                        "expected WCAG AAA >= 7.0 contrast for {sample} (is_dark={is_dark}), got {ratio:.2}"
+                    );
+                    assert!(matches!(palette.fg_rgb, LIGHT_INK_RGB | DARK_INK_RGB));
+                }
             }
         }
     }

@@ -354,6 +354,40 @@ impl Probe {
                     "PASS table interactions: sort cycle, minimum widths, resize, namespace filtering; caches retained"
                 );
             }
+            20 => {}
+            21 => {
+                let owner = self._owner.read(cx);
+                require(
+                    owner.inspector_open,
+                    "native row click did not open inspector",
+                )?;
+                require(
+                    matches!(&owner.inspector.target,
+                        Some(crate::inspector_view::InspectorTarget::Resource(reference))
+                            if reference.name.starts_with("offline-pod-")
+                                && reference.namespace.as_deref() == Some("fixture-namespace")
+                                && reference.uid.as_deref().is_some_and(|uid| uid.starts_with("fixture-uid-"))),
+                    "native row click did not retain fixture identity",
+                )?;
+            }
+            22 => {
+                let owner = self._owner.read(cx);
+                require(
+                    owner.selected_namespace.as_deref() == Some("fixture-namespace"),
+                    "native namespace click did not set scope",
+                )?;
+                require(
+                    owner.current_continue_token.is_none(),
+                    "native namespace click retained stale pagination",
+                )?;
+                require(
+                    !owner.inspector_open && owner.inspector.target.is_none(),
+                    "namespace click bubbled into row inspector",
+                )?;
+                println!(
+                    "PASS native row and namespace clicks: fixture identity, scope, pagination reset, no row propagation"
+                );
+            }
             18 => {}
             19 => {
                 let widths = self.table.read(cx).column_widths();
@@ -383,7 +417,7 @@ impl Probe {
                     "vertical scroll did not render new virtual rows",
                 )?;
                 println!(
-                    "render_performance_probe vertical: offset={vertical:?}, table={stats:?}, event-to-postframe={:?}",
+                    "render_performance_probe vertical: offset={vertical:?}, table={stats:?}, event-to-draw={:?}",
                     self.vertical_timing.get()
                 );
             }
@@ -398,7 +432,7 @@ impl Probe {
                     "horizontal wheel did not move overflow columns",
                 )?;
                 println!(
-                    "render_performance_probe horizontal: offset={horizontal:?}, table={stats:?}, event-to-postframe={:?}",
+                    "render_performance_probe horizontal: offset={horizontal:?}, table={stats:?}, event-to-draw={:?}",
                     self.horizontal_timing.get()
                 );
                 self.baseline = stats;
@@ -428,9 +462,14 @@ impl Probe {
             }
             4..=13 => {
                 require(
+                    terminal.0 > self.terminal_baseline.0,
+                    "requested refresh did not render the terminal",
+                )?;
+                require(
                     terminal.1 == self.terminal_baseline.1,
                     "redraw extracted the full unchanged terminal grid",
                 )?;
+                self.terminal_baseline = terminal;
             }
             14 => {
                 require(
@@ -448,10 +487,10 @@ impl Probe {
                 )?;
                 require(
                     self.vertical_timing.get().is_some() && self.horizontal_timing.get().is_some(),
-                    "scroll postframe callbacks were not observed",
+                    "scroll draws were not observed",
                 )?;
                 println!(
-                    "PASS render_performance_probe: actual ResourceTable, 100 fixtures; vertical/horizontal wheel; filter_builds=1 row_size_builds=1; terminal-only burst leaves table cached; 10 refreshes reuse terminal grid; idle stable. final table={stats:?}, terminal={terminal:?}. Timings are native event-to-postframe callback latency, not FPS or GPU completion."
+                    "PASS render_performance_probe: actual ResourceTable, 100 fixtures; vertical/horizontal wheel; filter_builds=1 row_size_builds=1; terminal-only burst leaves table cached; 10 refreshes reuse terminal grid; idle stable. final table={stats:?}, terminal={terminal:?}. Timings are native CPU event-to-draw latency, not FPS or GPU completion."
                 );
             }
             _ => unreachable!(),
@@ -487,14 +526,40 @@ fn scroll(
         "render_performance_probe wheel dispatch={:?}",
         start.elapsed()
     );
-    window.draw(cx).clear(cx);
-    // Two callbacks bracket at least one completed native draw. This is not a
-    // GPU fence, and includes platform scheduling rather than pretending to be FPS.
-    window.on_next_frame(move |window, _| {
-        window.on_next_frame(move |_, _| timing.set(Some(start.elapsed())));
-        window.refresh();
+    // A hidden/occluded native window has no display-link frames. Draw after
+    // dispatch notifications flush, not inside the event's entity update.
+    window.defer(cx, move |window, cx| {
+        window.draw(cx).clear(cx);
+        timing.set(Some(start.elapsed()));
     });
-    window.refresh();
+}
+
+fn click(window: &mut Window, cx: &mut App, position: Point<Pixels>) {
+    window.dispatch_event(
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            ..Default::default()
+        }),
+        cx,
+    );
+    window.dispatch_event(
+        PlatformInput::MouseDown(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 1,
+            ..Default::default()
+        }),
+        cx,
+    );
+    window.dispatch_event(
+        PlatformInput::MouseUp(MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            click_count: 1,
+            ..Default::default()
+        }),
+        cx,
+    );
 }
 
 impl Render for Probe {
@@ -505,7 +570,7 @@ impl Render for Probe {
             window.on_next_frame(move |window, cx| {
                 let _ = weak.update(cx, |_, cx| {
                     cx.spawn_in(window, async move |this, cx| {
-                        for stage in 0..=19 {
+                        for stage in 0..=22 {
                             cx.background_executor().timer(Duration::from_millis(220)).await;
                             let result = cx.update(|window, cx| {
                                 let checked = this.update(cx, |probe, cx| {
@@ -558,9 +623,35 @@ impl Render for Probe {
                                                     button: MouseButton::Left, click_count: 1, ..Default::default()
                                                 }), cx);
                                             }
+                                            20 => {
+                                                click(window, cx, bounds.unwrap().origin + point(px(30.), px(70.)));
+                                            }
+                                            21 => {
+                                                let _ = this.update(cx, |probe, cx| {
+                                                    probe._owner.update(cx, |owner, _| {
+                                                        owner.inspector_open = false;
+                                                        owner.inspector.target = None;
+                                                        owner.selected_namespace = None;
+                                                        owner.current_continue_token = Some("stale-native-click-token".into());
+                                                    });
+                                                });
+                                                let table = this.read_with(cx, |probe, _| probe.table.clone()).unwrap();
+                                                let header = table.read(cx).column_header_bounds("namespace").expect("Namespace header rendered");
+                                                // Vertical scroll leaves the first row partially clipped;
+                                                // target the next full row, inside its namespace button.
+                                                click(window, cx, point(header.left() + px(65.), header.bottom() + px(37.)));
+                                            }
                                             _ => {}
                                         }
-                                        if stage == 19 {
+                                        // Drive one native CPU draw even when macOS reports Hidden
+                                        // (e.g. no screen/occluded automation). Defer until cx.notify
+                                        // effects invalidate cached views; never force refresh here:
+                                        // stage 2 must prove terminal-only invalidation preserves table.
+                                        // Stages 13..15 deliberately schedule no work for idle checks.
+                                        if !matches!(stage, 0 | 1 | 13..=15 | 22) {
+                                            window.defer(cx, |window, cx| window.draw(cx).clear(cx));
+                                        }
+                                        if stage == 22 {
                                             let _ = this.update(cx, |probe, _| {
                                                 *probe.outcome.borrow_mut() = Some(Ok(()));
                                                 probe.directory.cleanup();

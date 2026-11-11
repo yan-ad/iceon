@@ -12,6 +12,9 @@ use gpui_kit::{
 use crate::{IceonApp, navigation::Route};
 use iceon_core::project::REPOSITORY_URL;
 
+#[path = "native_app.rs"]
+mod native_app;
+
 gpui_kit::actions!(
     iceon,
     [
@@ -22,6 +25,7 @@ gpui_kit::actions!(
         HideOthers,
         ShowAll,
         Quit,
+        ShowMainWindow,
         AddCluster,
         CloseWindow,
         Catalog,
@@ -62,10 +66,30 @@ impl Global for MenuState {}
 
 /// Call after gpui_kit::init. Shutdown belongs in the application's on_quit hook.
 pub(crate) fn init(cx: &mut App) {
+    if let Err(error) = native_app::init() {
+        eprintln!("Iceon native application integration: {error}");
+    }
     cx.set_global(MenuState::default());
     cx.bind_keys(bindings(cfg!(target_os = "macos")));
     cx.on_action(|_: &Quit, cx| cx.quit());
     publish_menus(Capabilities::default(), cx);
+    // GPUI's macOS backend already implements applicationDockMenu: on its
+    // application delegate. Use that supported hook, never replace/swizzle it.
+    #[cfg(target_os = "macos")]
+    cx.set_dock_menu(quick_access_menu());
+}
+
+/// Shared, non-destructive commands for the status item and Dock icon menu.
+/// The regular menu bar remains independent (including Services/Edit handling).
+pub(crate) fn quick_access_menu() -> Vec<MenuItem> {
+    vec![
+        MenuItem::action("Show Iceon", ShowMainWindow),
+        MenuItem::action("Catalog", Catalog),
+        MenuItem::separator(),
+        MenuItem::action("Preferences…", Preferences),
+        MenuItem::separator(),
+        MenuItem::action("Quit Iceon", Quit),
+    ]
 }
 
 /// Available on all platforms; only render this in the Linux/Windows header.
@@ -73,6 +97,7 @@ pub(crate) fn create_menu_bar(cx: &mut App) -> Entity<AppMenuBar> {
     if let Some(bar) = cx.global::<MenuState>().bar.as_ref() {
         return bar.clone();
     }
+
     let bar = AppMenuBar::new(cx);
     cx.global_mut::<MenuState>().bar = Some(bar.clone());
     bar
@@ -128,6 +153,10 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
             register_window_action::<$action>(app, window, cx, $handler);
         };
     }
+    register!(ShowMainWindow, |_, _: &ShowMainWindow, window, cx| {
+        cx.activate(true);
+        window.activate_window();
+    });
     register!(About, |_, _: &About, window, cx| {
         window.open_dialog(cx, |dialog, _, _| {
             dialog.title("About Iceon").child(
@@ -141,6 +170,8 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
         });
     });
     register!(Preferences, |this, _: &Preferences, window, cx| {
+        cx.activate(true);
+        window.activate_window();
         this.open_preferences(window, cx);
     });
     register!(Extensions, |_, _: &Extensions, window, cx| {
@@ -159,6 +190,8 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(CloseWindow, |_, _: &CloseWindow, window, _| window
         .remove_window());
     register!(Catalog, |this, _: &Catalog, window, cx| {
+        cx.activate(true);
+        window.activate_window();
         this.navigate(Route::Catalog, true, window, cx);
     });
     register!(ToggleSidebar, |this, _: &ToggleSidebar, _, cx| {
@@ -597,10 +630,22 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Back, Capabilities, Forward, Quit, UnavailableBack, UnavailableForward, bindings,
-        menu_model, owned_menu,
+        Back, Capabilities, Forward, Quit, ShowMainWindow, UnavailableBack, UnavailableForward,
+        bindings, menu_model, owned_menu, quick_access_menu,
     };
     use gpui_kit::{Action, KeyBinding, MenuItem};
+
+    #[test]
+    fn quick_access_menu_is_small_and_safe() {
+        let items = quick_access_menu();
+        assert!(matches!(&items[2], MenuItem::Separator));
+        assert!(items.iter().any(|item| matches!(item,
+            MenuItem::Action { name, action, .. }
+            if name.as_ref() == "Show Iceon" && action.name() == ShowMainWindow.name())));
+        assert!(items.iter().any(|item| matches!(item,
+            MenuItem::Action { name, action, .. }
+            if name.as_ref() == "Quit Iceon" && action.name() == Quit.name())));
+    }
 
     #[test]
     fn platform_layout_and_system_services() {

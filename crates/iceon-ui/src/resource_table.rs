@@ -518,6 +518,7 @@ impl ResourceTable {
         Button::new(SharedString::from(format!("namespace-row-{idx}")))
             .xsmall()
             .ghost()
+            .text_color(gpui_kit::rgb(crate::shell_theme::PRIMARY_RGB))
             .max_w_full()
             .label(namespace.clone())
             .tooltip(format!("Filter namespace {namespace}"))
@@ -615,6 +616,7 @@ impl ResourceTable {
                     Axis::Horizontal,
                 )
                 .inside(HandleEdge::Trailing)
+                .with_appearance(Rc::new(|_, _, _| Some(div().into_any_element())))
                 .on_drag(
                     ColumnResize {
                         kind,
@@ -643,6 +645,7 @@ impl ResourceTable {
     {
         let owner = self.owner.clone();
         move |event, window, cx| {
+            cx.stop_propagation();
             let _ = owner.update(cx, |app, cx| callback(app, event, window, cx));
         }
     }
@@ -666,12 +669,19 @@ impl ResourceTable {
             namespace: item.namespace.clone(),
             uid: item.uid.clone(),
         };
+        let row_reference = reference.clone();
         let row_actions = self
             .render_row_actions(kind, item, idx, cx)
             .into_any_element();
         let age_str = format_age(item.created_at.as_deref());
 
         h_flex()
+            .id(SharedString::from(format!("resource-row-{idx}")))
+            .cursor_pointer()
+            .hover(|row| row.bg(cx.theme().muted))
+            .on_click(self.action(move |app, _, window, cx| {
+                app.open_resource_inspector(row_reference.clone(), window, cx);
+            }))
             .w_full()
             .h(px(42.0))
             .border_b_1()
@@ -686,6 +696,7 @@ impl ResourceTable {
                 )
                 .text_xs()
                 .font_weight(FontWeight::MEDIUM)
+                .text_color(cx.theme().primary)
                 .truncate()
                 .child(if kind == ResourceKind::Namespaces {
                     self.namespace_button(item.name.clone(), idx)
@@ -778,7 +789,7 @@ impl ResourceTable {
         kind: ResourceKind,
         item: &ResourceItem,
         idx: usize,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let is_pod = kind == ResourceKind::Pods;
         let can_restart = matches!(
@@ -885,17 +896,32 @@ impl ResourceTable {
                         Button::new(SharedString::from(format!("row-wl-restart-{idx}")))
                             .xsmall()
                             .ghost()
+                            .text_color(cx.theme().danger)
                             .icon(IconName::RefreshCw)
                             .tooltip("Restart workload")
                             .accessibility_label("Restart workload")
                             .on_click(self.action(move |this, _, window, cx| {
-                                this.run_workload_action_for(
-                                    wref.clone(),
-                                    r.clone(),
-                                    WorkloadAction::Restart,
-                                    None,
+                                let reference = wref.clone();
+                                let version = r.clone();
+                                this.confirm_destructive_action(
+                                    "Restart workload?",
+                                    format!(
+                                        "Restart {}? This can interrupt running workloads.",
+                                        reference.name
+                                    ),
+                                    "Restart",
                                     window,
                                     cx,
+                                    move |app, window, cx| {
+                                        app.run_workload_action_for(
+                                            reference.clone(),
+                                            version.clone(),
+                                            WorkloadAction::Restart,
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                    },
                                 );
                             })),
                     )
@@ -1055,11 +1081,22 @@ impl ResourceTable {
                         Button::new(SharedString::from(format!("row-del-{idx}")))
                             .xsmall()
                             .ghost()
+                            .text_color(cx.theme().danger)
                             .icon(IconName::Delete)
                             .tooltip("Delete resource")
                             .accessibility_label("Delete resource")
                             .on_click(self.action(move |this, _, window, cx| {
-                                this.delete_resource_by_target(target.clone(), window, cx);
+                                let target = target.clone();
+                                this.confirm_destructive_action(
+                                    "Delete resource?",
+                                    format!("Delete {}? This cannot be undone.", target.name),
+                                    "Delete",
+                                    window,
+                                    cx,
+                                    move |app, window, cx| {
+                                        app.delete_resource_by_target(target.clone(), window, cx);
+                                    },
+                                );
                             })),
                     )
                 },
@@ -1133,6 +1170,8 @@ impl Render for ResourceTable {
                                 h_flex()
                                     .w_full()
                                     .h(px(40.0))
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
                                     .items_center()
                                     .flex_shrink_0()
                                     .children(
