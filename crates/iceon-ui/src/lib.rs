@@ -7,6 +7,8 @@ pub mod cluster_view;
 mod console_font;
 #[cfg(debug_assertions)]
 mod console_probe;
+mod empty_state;
+mod selectable_text;
 #[cfg(debug_assertions)]
 pub use console_probe::run as run_console_probe;
 pub mod inspector_view;
@@ -89,7 +91,6 @@ pub struct IceonApp {
     pub(crate) expanded_cluster_groups: Vec<String>,
 
     pub(crate) search_modal_open: bool,
-    pub(crate) preferences_open: bool,
     pub(crate) preferences_window: Option<AnyWindowHandle>,
     pub(crate) preferences_revision: u64,
     runtime_editor_preferences: Option<iceon_core::preferences::EditorPreferences>,
@@ -341,7 +342,6 @@ impl IceonApp {
             navigation_widths: cluster_view::NavigationWidths::load(),
             expanded_cluster_groups,
             search_modal_open: false,
-            preferences_open: false,
             preferences_window: None,
             preferences_revision,
             runtime_editor_preferences: None,

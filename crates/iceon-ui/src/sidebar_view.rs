@@ -2,7 +2,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     scroll::ScrollableElement as _,
@@ -11,6 +11,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use gpui_kit_assets::IconName as AssetIconName;
 use iceon_core::catalog::SectionPinRequest;
 
 use crate::{
@@ -331,7 +332,7 @@ fn menu_item_with_pin(
                             .xsmall()
                             .selected(pinned)
                             .text_color(if pinned { foreground } else { muted })
-                            .icon(IconName::Star)
+                            .child(Icon::new(AssetIconName::Pin))
                             .accessibility_label(pin_tooltip.clone())
                             .tooltip(pin_tooltip)
                             .on_click(move |event, window, cx| {
@@ -438,6 +439,16 @@ impl IceonApp {
                         let success = cx.theme().success;
                         let warning = cx.theme().warning;
                         let danger = cx.theme().danger;
+                        let pinned = match &route {
+                            Route::Cluster { cluster_id, .. } => self
+                                .catalog_snapshot
+                                .pinned_items
+                                .iter()
+                                .filter(|pin| &pin.id == cluster_id)
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                            _ => Vec::new(),
+                        };
                         ordered
                             .into_iter()
                             .map(|cluster| {
@@ -582,23 +593,46 @@ impl IceonApp {
                                                     ),
                                             ),
                                     )
+                                    .into_any_element()
                             })
+                            .chain(pinned.into_iter().filter_map(|pin| {
+                                let section = pin.section.unwrap_or_else(|| "overview".into());
+                                let label: SharedString = if section == "overview" {
+                                    "Cluster".into()
+                                } else {
+                                    destination_label(&section).into()
+                                };
+                                Some(
+                                    Button::new(SharedString::from(format!(
+                                        "rail-pin-{}-{}",
+                                        pin.id, section
+                                    )))
+                                    .ghost()
+                                    .small()
+                                    .size(px(40.0))
+                                    .child(Icon::new(AssetIconName::Pin))
+                                    .text_color(sidebar_foreground)
+                                    .accessibility_label(format!("Pinned {label}"))
+                                    .tooltip(format!("Pinned: {label}"))
+                                    .on_click(cx.listener({
+                                        let cluster_id = pin.id.clone();
+                                        move |this, _, window, cx| {
+                                            this.navigate(
+                                                Route::Cluster {
+                                                    cluster_id: cluster_id.clone(),
+                                                    section: section.clone(),
+                                                },
+                                                true,
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    }))
+                                    .into_any_element(),
+                                )
+                            }))
                             .collect::<Vec<_>>()
                     }),
-            )
-            .child(
-                Button::new("rail-preferences")
-                    .ghost()
-                    .small()
-                    .size(px(40.0))
-                    .selected(self.preferences_open)
-                    .text_color(cx.theme().sidebar_foreground)
-                    .icon(IconName::Settings)
-                    .accessibility_label("Preferences")
-                    .tooltip("Preferences")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_preferences(window, cx);
-                    })),
             );
         div()
             .h_full()

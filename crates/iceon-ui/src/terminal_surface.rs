@@ -680,7 +680,10 @@ impl Render for TerminalSurface {
                 }),
             )
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if this.selecting && event.pressed_button == Some(MouseButton::Left) {
+                // On native windows GPUI may report the drag without preserving
+                // `pressed_button` on every move event. `dragging()` is the
+                // stable signal and keeps selection working across dock panes.
+                if this.selecting && event.dragging() {
                     let end = this.cell_at(event.position);
                     if let Some((_, selected_end)) = &mut this.selection {
                         if *selected_end == end {

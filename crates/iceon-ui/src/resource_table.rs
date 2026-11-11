@@ -705,7 +705,7 @@ impl ResourceTable {
                     self.namespace_button(item.name.clone(), idx)
                         .into_any_element()
                 } else {
-                    div().truncate().child(item.name.clone()).into_any_element()
+                    crate::selectable_text::selectable_text(item.name.clone()).into_any_element()
                 }),
             )
             .when(show_ns, |el| {
@@ -749,7 +749,9 @@ impl ResourceTable {
                     table_cell(layout.width(c.key), false, true, cx.theme().border)
                         .text_xs()
                         .truncate()
-                        .child(cell_value(item, c.key))
+                        .child(crate::selectable_text::selectable_text(cell_value(
+                            item, c.key,
+                        )))
                         .into_any_element()
                 }
             }))

@@ -1128,15 +1128,7 @@ impl IceonApp {
                 )
             })
             .when_some(self.inspector.error.clone(), |el, err| {
-                el.child(
-                    div()
-                        .w_full()
-                        .px_3()
-                        .py_2()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(err),
-                )
+                el.child(crate::empty_state::error_state(err))
             })
             .child(
                 v_flex()
@@ -1172,11 +1164,12 @@ impl IceonApp {
                                 .into_any_element(),
                         }
                     } else {
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Select a resource to inspect.")
-                            .into_any_element()
+                        crate::empty_state::empty_state(
+                            IconName::Search,
+                            "No resource selected",
+                            "Select a resource from the table to inspect it.",
+                        )
+                        .into_any_element()
                     }),
             )
     }

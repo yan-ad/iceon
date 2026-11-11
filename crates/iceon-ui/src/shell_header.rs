@@ -428,6 +428,30 @@ impl IceonApp {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_preferences(window, cx);
                                     })),
+                            )
+                            .child(
+                                Button::new("titlebar-theme-btn")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(gpui_kit_assets::IconName::Palette)
+                                    .accessibility_label("Theme options")
+                                    .tooltip("Theme options")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_preferences(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("titlebar-github-btn")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(gpui_kit_assets::IconName::Github)
+                                    .accessibility_label("GitHub")
+                                    .tooltip("GitHub")
+                                    .on_click(|_, _, cx| {
+                                        cx.open_url(iceon_core::project::REPOSITORY_URL)
+                                    }),
                             ),
                     ),
             )

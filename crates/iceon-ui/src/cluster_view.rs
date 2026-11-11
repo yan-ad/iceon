@@ -2081,24 +2081,16 @@ impl IceonApp {
             .min_h_0()
             .overflow_hidden()
             .child(self.render_cluster_toolbar(&section, active_kind, window, cx))
-            .when_some(self.cluster_error.clone(), |el, err| {
-                el.child(
-                    div()
-                        .w_full()
-                        .px_4()
-                        .py_2()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(err),
-                )
-            })
             .child(
                 v_flex()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
                     .w_full()
-                    .child(self.render_cluster_section_body(&section, active_kind, window, cx)),
+                    .child(self.render_cluster_section_body(&section, active_kind, window, cx))
+                    .when_some(self.cluster_error.clone(), |el, error| {
+                        el.child(crate::empty_state::error_state(error))
+                    }),
             )
             .into_any_element()
     }
@@ -2365,12 +2357,12 @@ impl IceonApp {
         if let Some(kind) = active_kind {
             return self.render_resource_table_body(kind, cx).into_any_element();
         }
-        div()
-            .p_6()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child("Select a resource section from the sidebar.")
-            .into_any_element()
+        crate::empty_state::empty_state(
+            IconName::LayoutDashboard,
+            "No resource section selected",
+            "Select a resource section from the sidebar.",
+        )
+        .into_any_element()
     }
 
     fn render_create_resource_panel(
@@ -2706,17 +2698,11 @@ impl IceonApp {
                     .child(format!("Active Local Port Forwards ({})", forwards.len())),
             )
             .when(forwards.is_empty(), |el| {
-                el.child(
-                    div()
-                        .p_4()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("No active port-forwards. Start one from a Service row or Pod container port."),
-                )
+                el.child(crate::empty_state::empty_state(
+                    IconName::Network,
+                    "No active port-forwards",
+                    "Start one from a Service row or Pod container port.",
+                ))
             })
             .children(forwards.into_iter().enumerate().map(|(idx, fwd)| {
                 let fid = fwd.id.clone();
@@ -2737,12 +2723,12 @@ impl IceonApp {
                             .min_w_0()
                             .gap_2()
                             .items_center()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format!("127.0.0.1:{} → {}:{}", fwd.local_port, fwd.name, fwd.remote_port)),
-                            )
+                            .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                                format!(
+                                    "127.0.0.1:{} → {}:{}",
+                                    fwd.local_port, fwd.name, fwd.remote_port
+                                ),
+                            ))
                             .child(Tag::secondary().small().child(fwd.namespace))
                             .child(row_status_tag(fwd.status)),
                     )
