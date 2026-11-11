@@ -2,6 +2,7 @@
 //! Uses fresh stores, a fabricated UI lease, and a disconnected engine. No kubeconfig,
 //! real cluster, PTY, or shell is opened. NotConnected reads are expected; editor
 //! buffers are set through the production EditorState (no private tab injection).
+use crate::pod_dock_view::PodTarget;
 use crate::{IceonApp, terminal_surface};
 use gpui_kit::{
     component::{WindowExt as _, dock::DockPlacement},
@@ -192,9 +193,11 @@ impl Probe {
                     );
                     window.close_dialog(cx); // cancel: no discard/apply callback
                     app.open_pod_stream(
-                        "fixture".into(),
-                        "offline-terminal".into(),
-                        "uid-terminal".into(),
+                        PodTarget {
+                            namespace: "fixture".into(),
+                            name: "offline-terminal".into(),
+                            uid: "uid-terminal".into(),
+                        },
                         "main".into(),
                         PodStreamMode::Shell,
                         window,

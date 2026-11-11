@@ -1,20 +1,109 @@
-name: Release Iceon Apple Silicon
+name: Native stable release
 
 on:
   push:
-    tags: ['v*', '!v*-*']
+    tags: ['0.1.2']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing immutable tag at this workflow commit (exactly 0.1.2)'
+        required: true
+        type: string
+        default: '0.1.2'
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-apple-silicon
+  group: native-release-0.1.2
   cancel-in-progress: false
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  CARGO_INCREMENTAL: 0
+
 jobs:
-  release:
-    runs-on: macos-15
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag_object: ${{ steps.guard.outputs.tag_object }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test native release helpers
+        run: python -m unittest discover -s .github/scripts -p 'test_native_release.py' -v
+      - name: Validate canonical source, immutable tag, versions, lock and changelog
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/native_release.py guard
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [validate, ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            package: mac
+          - os: windows-2022
+            target: i686-pc-windows-msvc
+            package: windows
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Recheck immutable tag before building
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_OBJECT: ${{ needs.validate.outputs.tag_object }}
+        run: python .github/scripts/native_release.py guard --tag-object "$TAG_OBJECT"
+        shell: bash
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x86
+      - uses: ./.github/actions/msvc-x86-linker
+        if: runner.os == 'Windows'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          key: native-release-${{ matrix.target }}
+      - name: Build native app (embedded GPUI icons and fonts)
+        run: cargo build --release --locked -p iceon-app --target ${{ matrix.target }}
+      - name: Package and validate native app
+        run: python .github/scripts/native_release.py package-${{ matrix.package }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [validate, ci, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
@@ -22,105 +111,18 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Validate runner
-        run: test "$(uname -m)" = arm64
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-python@v5
         with:
-          bun-version: '1.4.2'
-      - uses: dtolnay/rust-toolchain@stable
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
         with:
-          targets: aarch64-apple-darwin
-      - name: Validate exact tag and updater configuration
+          pattern: native-*
+          path: dist
+          merge-multiple: true
+      - name: Verify transferred artifacts and create checksum manifest
+        run: python .github/scripts/native_release.py checksums
+      - name: Create fresh draft, verify uploaded bytes, publish stable/latest
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: cargo xtask verify-release "$RELEASE_TAG"
-      - name: Validate required signing secrets
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          python3 - <<'PY'
-          import os, sys
-          required = ['TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD',
-                      'APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_SIGNING_IDENTITY',
-                      'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID']
-          missing = [name for name in required if not os.environ.get(name)]
-          if missing:
-              sys.exit('Missing required GitHub secrets: ' + ', '.join(missing))
-          if not os.environ['APPLE_SIGNING_IDENTITY'].startswith('Developer ID Application:'):
-              sys.exit('APPLE_SIGNING_IDENTITY must be a Developer ID Application identity')
-          PY
-      - name: Install frozen frontend dependencies
-        run: bun install --frozen-lockfile
-      - name: Test release tooling
-        run: cargo test --manifest-path xtask/Cargo.toml --locked
-      - name: Build signed notarized DMG and draft release
-        id: tauri
-        # v0 resolved to this commit on 2026-10-26. Intentionally not the newer v1 API.
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          tauriScript: bun run tauri
-          args: --target aarch64-apple-darwin --bundles dmg -- --locked
-          tagName: ${{ github.ref_name }}
-          releaseCommitish: ${{ github.sha }}
-          releaseName: 'Iceon ${{ github.ref_name }}'
-          releaseBody: 'Apple Silicon macOS DMG, with signed updater archive and manifest.'
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
-          uploadPlainBinary: false
-      - name: Verify uploaded assets before publishing
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
-        run: |
-          python3 - <<'PY'
-          import json, os, subprocess, sys
-          def gh(*args):
-              return subprocess.check_output(['gh', *args], timeout=60)
-          repo, tag, rid = (os.environ[x] for x in ['GH_REPO', 'RELEASE_TAG', 'RELEASE_ID'])
-          release = json.loads(gh('api', f'repos/{repo}/releases/{rid}'))
-          if release['tag_name'] != tag or not release['draft']:
-              sys.exit('Expected an exact-tag draft release; refusing to overwrite a published release')
-          assets = release['assets']
-          names = [a['name'] for a in assets]
-          for suffix in ['.dmg', '.app.tar.gz', '.app.tar.gz.sig']:
-              if sum(n.endswith(suffix) for n in names) != 1:
-                  sys.exit(f'Expected exactly one {suffix} asset')
-          if set(names) != {n for n in names if n.endswith(('.dmg', '.app.tar.gz', '.app.tar.gz.sig'))} | {'latest.json'}:
-              sys.exit('Unexpected release assets')
-          manifest_asset = next(a for a in assets if a['name'] == 'latest.json')
-          manifest = json.loads(gh('api', '-H', 'Accept: application/octet-stream', f"repos/{repo}/releases/assets/{manifest_asset['id']}"))
-          if manifest['version'].removeprefix('v') != tag.removeprefix('v') or set(manifest['platforms']) != {'darwin-aarch64', 'darwin-aarch64-app'}:
-              sys.exit('Updater manifest version/platform mismatch')
-          platform = manifest['platforms']['darwin-aarch64']
-          if manifest['platforms']['darwin-aarch64-app'] != platform:
-              sys.exit('Updater app platform entry differs from legacy platform entry')
-          archive = next(n for n in names if n.endswith('.app.tar.gz'))
-          from urllib.parse import unquote
-          if unquote(platform['url']) != f'https://github.com/{repo}/releases/download/{tag}/{archive}':
-              sys.exit('Updater URL does not point at this exact release archive')
-          signature_asset = next(a for a in assets if a['name'] == archive + '.sig')
-          signature = gh('api', '-H', 'Accept: application/octet-stream', f"repos/{repo}/releases/assets/{signature_asset['id']}").decode().strip()
-          if not signature or platform['signature'].strip() != signature:
-              sys.exit('Updater signature differs from uploaded signature')
-          gh('release', 'edit', tag, '--draft=false', '--latest')
-          PY
+          GH_TOKEN: ${{ github.token }}
+          TAG_OBJECT: ${{ needs.validate.outputs.tag_object }}
+        run: python .github/scripts/native_release.py publish --tag-object "$TAG_OBJECT"

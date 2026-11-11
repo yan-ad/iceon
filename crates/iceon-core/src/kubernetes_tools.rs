@@ -265,16 +265,16 @@ pub async fn resolve_kubectl(
         && fs::metadata(&cached_hash)?.len() <= MAX_HASH_BYTES
     {
         let hash = fs::read(&cached_hash)?;
-        if let Some(expected) = parse_hash(&hash) {
-            if fs::metadata(&destination)?.len() <= MAX_BINARY_BYTES {
-                let existing = fs::read(&destination)?;
-                if <[u8; 32]>::from(Sha256::digest(&existing)) == expected {
-                    return Ok(ResolvedKubectl {
-                        path: destination,
-                        downloaded: false,
-                        version: Some(release),
-                    });
-                }
+        if let Some(expected) = parse_hash(&hash)
+            && fs::metadata(&destination)?.len() <= MAX_BINARY_BYTES
+        {
+            let existing = fs::read(&destination)?;
+            if <[u8; 32]>::from(Sha256::digest(&existing)) == expected {
+                return Ok(ResolvedKubectl {
+                    path: destination,
+                    downloaded: false,
+                    version: Some(release),
+                });
             }
         }
     }

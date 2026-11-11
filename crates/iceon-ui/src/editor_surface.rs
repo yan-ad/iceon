@@ -22,7 +22,9 @@ fn line_label(mode: LineNumbers, line: usize, cursor: usize) -> Option<usize> {
         LineNumbers::On => Some(line + 1),
         LineNumbers::Relative if line != cursor => Some(line.abs_diff(cursor)),
         LineNumbers::Relative => Some(line + 1),
-        LineNumbers::Interval if line == cursor || line == 0 || (line + 1) % INTERVAL == 0 => {
+        LineNumbers::Interval
+            if line == cursor || line == 0 || (line + 1).is_multiple_of(INTERVAL) =>
+        {
             Some(line + 1)
         }
         LineNumbers::Interval => None,

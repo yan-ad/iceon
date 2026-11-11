@@ -112,8 +112,10 @@ mod tests {
         )
         .await;
         let before = calls.load(Ordering::SeqCst);
-        let mut prefs = KubernetesPreferences::default();
-        prefs.kubectl_auto_download = false;
+        let prefs = KubernetesPreferences {
+            kubectl_auto_download: false,
+            ..Default::default()
+        };
         let destination = root.path().join("not-created");
         let result = engine
             .prepare_kubectl(
@@ -145,9 +147,11 @@ mod tests {
         // Any further HTTP request fails; the explicit override must win.
         engine.session.lock().unwrap().as_mut().unwrap().client =
             Some(fake(|_| panic!("unexpected API request")));
-        let mut prefs = KubernetesPreferences::default();
-        prefs.kubectl_auto_download = true;
-        prefs.kubectl_binary_path = path.to_string_lossy().into_owned();
+        let prefs = KubernetesPreferences {
+            kubectl_auto_download: true,
+            kubectl_binary_path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         let result = engine
             .prepare_kubectl(
                 &identity(&session),
@@ -187,9 +191,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let mut prefs = KubernetesPreferences::default();
-        prefs.kubectl_auto_download = true;
-        prefs.binaries_directory = directory.to_string_lossy().into_owned();
+        let prefs = KubernetesPreferences {
+            kubectl_auto_download: true,
+            binaries_directory: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
         let destination = root.path().join("not-created");
         let result = engine
             .prepare_kubectl(
@@ -233,10 +239,12 @@ mod tests {
         let destination = root.path().join("tools");
         let target = destination.clone();
         let task = tokio::spawn(async move {
-            let mut prefs = KubernetesPreferences::default();
-            prefs.kubectl_auto_download = true;
-            prefs.kubectl_download_mirror = DownloadMirror::Custom;
-            prefs.kubectl_mirror_url = url;
+            let prefs = KubernetesPreferences {
+                kubectl_auto_download: true,
+                kubectl_download_mirror: DownloadMirror::Custom,
+                kubectl_mirror_url: url,
+                ..Default::default()
+            };
             worker
                 .prepare_kubectl(
                     &identity(&session),

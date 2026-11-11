@@ -3128,14 +3128,14 @@ dependencies = [
 
 [[package]]
 name = "iceon-app"
-version = "0.1.8"
+version = "0.1.2"
 dependencies = [
  "iceon-ui",
 ]
 
 [[package]]
 name = "iceon-core"
-version = "0.1.8"
+version = "0.1.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3182,7 +3182,7 @@ dependencies = [
 
 [[package]]
 name = "iceon-ui"
-version = "0.1.8"
+version = "0.1.2"
 dependencies = [
  "gpui-kit",
  "gpui-kit-assets",
@@ -3197,7 +3197,7 @@ dependencies = [
 
 [[package]]
 name = "iceon-xtask"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "json5",

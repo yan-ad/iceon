@@ -28,7 +28,7 @@ pub(crate) struct YamlDockTab {
 }
 impl YamlDockTab {
     pub fn dirty(&self, cx: &App) -> bool {
-        dirty(&self.baseline, &self.editor.read(cx).value().to_string())
+        dirty(&self.baseline, self.editor.read(cx).value().as_ref())
     }
 }
 fn dirty(baseline: &str, buffer: &str) -> bool {
@@ -231,7 +231,7 @@ impl IceonApp {
             let _ = owner.update_in(cx, |app, window, cx| {
                 let Some(index) = app.yaml_dock_tabs.iter().position(|t| response_is_current(t.key, key, t.operation, operation_id, refresh_id, app.yaml_lease_valid(t))) else { return; };
                 let tab = &mut app.yaml_dock_tabs[index]; tab.operation = None;
-                let unchanged = tab.editor.read(cx).value().to_string() == submitted;
+                let unchanged = tab.editor.read(cx).value() == submitted;
                 let mut close_now = false;
                 match result {
                     Ok(result) if mode == EditMode::Read || result.accepted => match mode {

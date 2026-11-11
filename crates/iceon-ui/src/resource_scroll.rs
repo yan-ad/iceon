@@ -28,6 +28,15 @@ impl ResourceScrollState {
     }
 }
 
+impl Default for ResourceScrollState {
+    fn default() -> Self {
+        Self {
+            handle: VirtualListScrollHandle::new(),
+            scope: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ResourceScrollScope, ResourceScrollState};
@@ -73,15 +82,6 @@ mod tests {
                 .for_scope(pods_scope())
                 .set_offset(point(px(0.), px(-420.)));
             assert_eq!(state.for_scope(changed).offset(), point(px(0.), px(0.)));
-        }
-    }
-}
-
-impl Default for ResourceScrollState {
-    fn default() -> Self {
-        Self {
-            handle: VirtualListScrollHandle::new(),
-            scope: None,
         }
     }
 }

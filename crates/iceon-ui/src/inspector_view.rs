@@ -31,7 +31,7 @@ use iceon_core::connection::{
     workload_actions::{WorkflowRequest, WorkloadAction},
 };
 
-use crate::{IceonApp, selectable_text::selectable_text};
+use crate::{IceonApp, pod_dock_view::PodTarget, selectable_text::selectable_text};
 
 #[path = "editor_surface.rs"]
 pub(crate) mod editor_surface;
@@ -462,34 +462,38 @@ impl IceonApp {
 
     fn confirm_inspector_pod_mutation(
         &self,
-        namespace: String,
-        name: String,
-        uid: String,
+        target: PodTarget,
         resource_version: Option<String>,
         action: PodAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let PodTarget {
+            namespace, name, ..
+        } = &target;
         self.confirm_destructive_action(
             "Confirm destructive Pod action",
             format!("{action:?} {namespace}/{name}? This bypasses normal Pod cleanup and may leave workloads or resources running."),
             "Confirm", window, cx,
             move |this, window, cx| this.run_pod_mutation(
-                namespace.clone(), name.clone(), uid.clone(), resource_version.clone(), action, window, cx,
+                target.clone(), resource_version.clone(), action, window, cx,
             ),
         );
     }
 
     pub(crate) fn run_pod_mutation(
         &mut self,
-        namespace: String,
-        name: String,
-        uid: String,
+        target: PodTarget,
         resource_version: Option<String>,
         action: PodAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let PodTarget {
+            namespace,
+            name,
+            uid,
+        } = target;
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -1436,9 +1440,11 @@ impl IceonApp {
                             .accessibility_label("Logs")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_pod_stream(
-                                    ns_logs.clone(),
-                                    name_logs.clone(),
-                                    uid_logs.clone(),
+                                    PodTarget {
+                                        namespace: ns_logs.clone(),
+                                        name: name_logs.clone(),
+                                        uid: uid_logs.clone(),
+                                    },
                                     c_logs.clone(),
                                     PodStreamMode::Logs,
                                     window,
@@ -1455,9 +1461,11 @@ impl IceonApp {
                             .accessibility_label("Shell")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_pod_stream(
-                                    ns_shell.clone(),
-                                    name_shell.clone(),
-                                    uid_shell.clone(),
+                                    PodTarget {
+                                        namespace: ns_shell.clone(),
+                                        name: name_shell.clone(),
+                                        uid: uid_shell.clone(),
+                                    },
                                     c_shell.clone(),
                                     PodStreamMode::Shell,
                                     window,
@@ -1474,9 +1482,11 @@ impl IceonApp {
                             .accessibility_label("Attach")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_pod_stream(
-                                    ns_attach.clone(),
-                                    name_attach.clone(),
-                                    uid_attach.clone(),
+                                    PodTarget {
+                                        namespace: ns_attach.clone(),
+                                        name: name_attach.clone(),
+                                        uid: uid_attach.clone(),
+                                    },
                                     c_attach.clone(),
                                     PodStreamMode::Attach,
                                     window,
@@ -1494,9 +1504,11 @@ impl IceonApp {
                         .accessibility_label("Force Delete (0s)")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.confirm_inspector_pod_mutation(
-                                ns_force.clone(),
-                                name_force.clone(),
-                                uid_force.clone(),
+                                PodTarget {
+                                    namespace: ns_force.clone(),
+                                    name: name_force.clone(),
+                                    uid: uid_force.clone(),
+                                },
                                 rv_force.clone(),
                                 PodAction::ForceDelete,
                                 window,
@@ -1514,9 +1526,11 @@ impl IceonApp {
                             .accessibility_label("Strip Finalizers")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_inspector_pod_mutation(
-                                    ns_fin.clone(),
-                                    name_fin.clone(),
-                                    uid_fin.clone(),
+                                    PodTarget {
+                                        namespace: ns_fin.clone(),
+                                        name: name_fin.clone(),
+                                        uid: uid_fin.clone(),
+                                    },
                                     rv_fin.clone(),
                                     PodAction::Finalize,
                                     window,
@@ -2386,9 +2400,11 @@ impl IceonApp {
                                                 .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
-                                                            ns.clone(),
-                                                            pname.clone(),
-                                                            puid.clone(),
+                                                            PodTarget {
+                                                                namespace: ns.clone(),
+                                                                name: pname.clone(),
+                                                                uid: puid.clone(),
+                                                            },
                                                             cname.clone(),
                                                             PodStreamMode::Logs,
                                                             window,
@@ -2408,9 +2424,11 @@ impl IceonApp {
                                                 .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
-                                                            ns_shell.clone(),
-                                                            pname_shell.clone(),
-                                                            puid_shell.clone(),
+                                                            PodTarget {
+                                                                namespace: ns_shell.clone(),
+                                                                name: pname_shell.clone(),
+                                                                uid: puid_shell.clone(),
+                                                            },
                                                             cname_shell.clone(),
                                                             PodStreamMode::Shell,
                                                             window,
@@ -2430,9 +2448,11 @@ impl IceonApp {
                                                 .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
-                                                            ns_attach.clone(),
-                                                            pname_attach.clone(),
-                                                            puid_attach.clone(),
+                                                            PodTarget {
+                                                                namespace: ns_attach.clone(),
+                                                                name: pname_attach.clone(),
+                                                                uid: puid_attach.clone(),
+                                                            },
                                                             cname_attach.clone(),
                                                             PodStreamMode::Attach,
                                                             window,

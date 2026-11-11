@@ -647,10 +647,10 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
 ];
 
 pub fn normalize_destination(section: &str) -> String {
-    if let Some(rest) = section.strip_prefix("crd:") {
-        if !rest.is_empty() {
-            return section.to_string();
-        }
+    if let Some(rest) = section.strip_prefix("crd:")
+        && !rest.is_empty()
+    {
+        return section.to_string();
     }
     for group in CLUSTER_SECTIONS {
         if group.id == section {

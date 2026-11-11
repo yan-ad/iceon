@@ -371,10 +371,8 @@ impl TerminalSurface {
         let copy_on_select = cx
             .try_global::<crate::preferences_view::GlobalPreferencesState>()
             .is_some_and(|state| state.preferences.terminal.copy_on_select);
-        if copy_on_select {
-            if let Some(text) = self.selected_text() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-            }
+        if copy_on_select && let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
         cx.notify();
     }
@@ -388,11 +386,11 @@ impl TerminalSurface {
 
     pub(crate) fn paste(&mut self, cx: &mut Context<Self>) {
         // Clipboard access is only reachable from explicit Paste actions/gestures.
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            if !text.is_empty() {
-                let input = encode_paste(&text, self.parser.screen().bracketed_paste());
-                self.send_input(input, cx);
-            }
+        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+            && !text.is_empty()
+        {
+            let input = encode_paste(&text, self.parser.screen().bracketed_paste());
+            self.send_input(input, cx);
         }
     }
 
@@ -537,16 +535,15 @@ fn ansi_color(color: vt100::Color, foreground: bool, bold: bool) -> u32 {
 }
 
 fn push_text_run(runs: &mut Vec<TextRun>, run: TextRun) {
-    if let Some(last) = runs.last_mut() {
-        if last.font == run.font
-            && last.color == run.color
-            && last.background_color == run.background_color
-            && last.underline == run.underline
-            && last.strikethrough == run.strikethrough
-        {
-            last.len += run.len;
-            return;
-        }
+    if let Some(last) = runs.last_mut()
+        && last.font == run.font
+        && last.color == run.color
+        && last.background_color == run.background_color
+        && last.underline == run.underline
+        && last.strikethrough == run.strikethrough
+    {
+        last.len += run.len;
+        return;
     }
     runs.push(run);
 }

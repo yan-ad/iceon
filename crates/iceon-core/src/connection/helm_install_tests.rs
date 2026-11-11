@@ -17,8 +17,10 @@ fn request() -> HelmInstallRequest {
 #[test]
 fn server_side_is_explicit_and_force_conflicts_implies_it() {
     let mut args = vec!["install".into()];
-    let mut preferences = HelmPreferences::default();
-    preferences.server_side = true;
+    let preferences = HelmPreferences {
+        server_side: true,
+        ..Default::default()
+    };
     apply_preference_arguments(&mut args, b"v4.0.0", &preferences, false).unwrap();
     assert!(args.contains(&"--server-side=true".into()));
     let mut args = vec!["upgrade".into()];

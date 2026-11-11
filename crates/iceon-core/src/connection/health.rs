@@ -63,16 +63,14 @@ impl HealthRuntime {
         if let Some(old) = entries.remove(&id) {
             old.cancel.cancel();
         }
-        if entries.len() >= MAX_CLUSTERS {
-            if let Some(oldest) = entries
+        if entries.len() >= MAX_CLUSTERS
+            && let Some(oldest) = entries
                 .iter()
                 .min_by_key(|(_, e)| e.generation)
                 .map(|(id, _)| id.clone())
-            {
-                if let Some(old) = entries.remove(&oldest) {
-                    old.cancel.cancel();
-                }
-            }
+            && let Some(old) = entries.remove(&oldest)
+        {
+            old.cancel.cancel();
         }
         entries.insert(
             id.clone(),
@@ -207,34 +205,31 @@ impl ConnectionEngine {
                 // Source and generation are checked again after the response. Reconnect, eviction,
                 // explicit clear and shutdown cannot resurrect a stale entry.
                 if !self.health_source_matches(&id, &entry) {
-                    if let Ok(mut entries) = self.health.entries.lock() {
-                        if entries
+                    if let Ok(mut entries) = self.health.entries.lock()
+                        && entries
                             .get(&id)
                             .is_some_and(|e| e.generation == entry.generation)
-                        {
-                            if let Some(old) = entries.remove(&id) {
-                                old.cancel.cancel();
-                            }
-                        }
+                        && let Some(old) = entries.remove(&id)
+                    {
+                        old.cancel.cancel();
                     }
                     return;
                 }
-                if let Ok(mut entries) = self.health.entries.lock() {
-                    if let Some(current) = entries
+                if let Ok(mut entries) = self.health.entries.lock()
+                    && let Some(current) = entries
                         .get_mut(&id)
                         .filter(|e| e.generation == entry.generation && !e.cancel.is_cancelled())
-                    {
-                        match result {
-                            Ok(version) => {
-                                current.snapshot.status = "connected";
-                                current.snapshot.api_version = Some(version);
-                                current.snapshot.error = None;
-                            }
-                            Err(error) => {
-                                current.snapshot.status = "error";
-                                current.snapshot.api_version = None;
-                                current.snapshot.error = Some(error);
-                            }
+                {
+                    match result {
+                        Ok(version) => {
+                            current.snapshot.status = "connected";
+                            current.snapshot.api_version = Some(version);
+                            current.snapshot.error = None;
+                        }
+                        Err(error) => {
+                            current.snapshot.status = "error";
+                            current.snapshot.api_version = None;
+                            current.snapshot.error = Some(error);
                         }
                     }
                 }

@@ -202,6 +202,8 @@ fn section_icon(section: &str) -> IconName {
     }
 }
 
+type SidebarClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
 /// SidebarMenuItem 0.9 supplies tree-item semantics but its row is mouse-only.
 /// A standard ghost Button suffix provides Tab / Enter / Space activation and
 /// optional section pin toggling without forking the library's sidebar control.
@@ -212,7 +214,7 @@ fn menu_item_with_pin(
     icon: Option<IconName>,
     active: bool,
     action_icon: Option<IconName>,
-    pin_state: Option<(bool, Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>)>,
+    pin_state: Option<(bool, SidebarClickHandler)>,
     handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> SidebarMenuItem {
     let id_key = id_key.into();
@@ -344,7 +346,7 @@ impl IceonApp {
                 let cid = cluster_id.to_owned();
                 let unpin_cid = cluster_id.to_owned();
                 let unpin_dest = destination.clone();
-                let unpin_handler: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+                let unpin_handler: SidebarClickHandler =
                     Rc::new(cx.listener(move |this, _, _, cx| {
                         this.toggle_section_pin(unpin_cid.clone(), unpin_dest.clone(), false, cx);
                     }));
@@ -384,10 +386,9 @@ impl IceonApp {
                 let pinned = is_section_pinned(group.default_child);
                 let pin_cid = cluster_id.to_owned();
                 let pin_sec = group.default_child.to_owned();
-                let handler: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
-                    Rc::new(cx.listener(move |this, _, _, cx| {
-                        this.toggle_section_pin(pin_cid.clone(), pin_sec.clone(), !pinned, cx);
-                    }));
+                let handler: SidebarClickHandler = Rc::new(cx.listener(move |this, _, _, cx| {
+                    this.toggle_section_pin(pin_cid.clone(), pin_sec.clone(), !pinned, cx);
+                }));
                 Some((pinned, handler))
             } else {
                 None
@@ -441,7 +442,7 @@ impl IceonApp {
                     let pinned = is_section_pinned(destination);
                     let pin_cid = cluster_id.to_owned();
                     let pin_sec = destination.to_owned();
-                    let pin_handler: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)> =
+                    let pin_handler: SidebarClickHandler =
                         Rc::new(cx.listener(move |this, _, _, cx| {
                             this.toggle_section_pin(pin_cid.clone(), pin_sec.clone(), !pinned, cx);
                         }));

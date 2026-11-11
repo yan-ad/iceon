@@ -1,10 +1,6 @@
 use super::*;
 use tempfile::tempdir;
 
-// Compile resolver tests before its public module is wired by the application.
-#[path = "kubernetes_tools.rs"]
-mod kubernetes_tools;
-
 #[test]
 fn legacy_kubernetes_preferences_migrate_with_safe_defaults() {
     let dir = tempdir().unwrap();

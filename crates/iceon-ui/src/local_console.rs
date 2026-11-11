@@ -205,8 +205,8 @@ impl IceonApp {
                 );
                 // Feed the terminal independently: raw PTY output must not take a mutable
                 // workspace borrow (device-query reply events may update the owner).
-                if output_changed {
-                    if cx
+                if output_changed
+                    && cx
                         .update(|_, cx| {
                             terminal.update(cx, |surface, cx| {
                                 if snapshot.dropped {
@@ -218,10 +218,9 @@ impl IceonApp {
                             });
                         })
                         .is_err()
-                    {
-                        process.close();
-                        break;
-                    }
+                {
+                    process.close();
+                    break;
                 }
                 if status_changed {
                     last_status = status.clone();

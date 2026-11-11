@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.2
+
+### Native Rust desktop
+
+- Replace the Tauri/web frontend with a pure-Rust GPUI desktop application and
+  Cargo workspace. Add native themes, settings, a welcome view, workspace
+  breadcrumbs, and resizable navigation and resource tables.
+- Improve cluster catalog import, metadata columns, namespace navigation,
+  search, cluster health probes, and explicit health refresh controls.
+- Add native local terminals, pod logs and console docks, kubectl/Helm tool
+  preferences, and YAML resource editing while preserving guarded mutations
+  and metadata-only handling of sensitive resources.
+
+### CI and distribution
+
+- Install Linux's required XKB/X11 development library so GPUI test binaries link.
+  Fix strict Rust/Clippy diagnostics across the core and native UI without
+  weakening warning enforcement.
+- Replace obsolete Tauri release packaging with same-commit CI-gated native
+  Apple Silicon DMG/application archives and a portable Windows x86 ZIP.
+  Validate package architecture, bundle metadata, immutable tag identity,
+  checksums, and uploaded/downloaded bytes before publication.
+- This is a manual-install native release. macOS packages are ad-hoc signed,
+  not notarized; the Windows ZIP is unsigned. The former Tauri automatic updater
+  is not supported, and no updater manifest is published. See `docs/releases.md`
+  for installation and verification instructions.
+
 ## 0.1.1 (pending CI)
 
 ### Startup and Secrets workspace

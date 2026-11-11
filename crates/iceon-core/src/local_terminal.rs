@@ -120,7 +120,7 @@ struct Permit;
 impl Permit {
     fn acquire() -> Result<Self, String> {
         ACTIVE
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < SESSION_LIMIT).then_some(active + 1)
             })
             .map(|_| Self)
@@ -292,11 +292,11 @@ impl LocalTerminal {
                         }
                         (state.input.pop_front(), state.resize.take())
                     };
-                    if let Some(size) = resize {
-                        if master.resize(size).is_err() {
-                            inner.fail();
-                            break;
-                        }
+                    if let Some(size) = resize
+                        && master.resize(size).is_err()
+                    {
+                        inner.fail();
+                        break;
                     }
                     if let Some(input) = input {
                         let result = writer.write_all(&input).and_then(|_| writer.flush());

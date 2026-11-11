@@ -24,84 +24,6 @@ pub(super) struct ClusterChoice {
     color: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::cluster_choices;
-    use gpui_kit::component::select::SelectItem as _;
-    use iceon_core::catalog::{CatalogSnapshot, ClusterSummary};
-
-    fn snapshot() -> CatalogSnapshot {
-        CatalogSnapshot {
-            revision: 1,
-            discovery_error: None,
-            pinned_items: vec![],
-            clusters: ["east", "west"]
-                .into_iter()
-                .map(|id| ClusterSummary {
-                    id: id.into(),
-                    name: "Production".into(),
-                    context_name: format!("{id}-context"),
-                    source: "kubeconfig".into(),
-                    status: "disconnected",
-                    pinned: false,
-                    pinned_sections: vec![],
-                    labels: vec![],
-                    color: "#4ba7a5".into(),
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn breadcrumbs_show_resource_path_and_track_cluster_color() {
-        assert_eq!(
-            super::opened_path("pods"),
-            vec![
-                ("Workloads".into(), "workloads-overview".into()),
-                ("Pods".into(), "pods".into())
-            ]
-        );
-        assert_eq!(
-            super::opened_path("nodes"),
-            vec![("Nodes".into(), "nodes".into())]
-        );
-        let mut catalog = snapshot();
-        let before = cluster_choices(&catalog);
-        catalog.clusters[0].color = "#ff0000".into();
-        assert_ne!(before, cluster_choices(&catalog));
-        assert_eq!(
-            super::cluster_dot("#ff0000"),
-            gpui_kit::Hsla::from(gpui_kit::rgb(0xff0000))
-        );
-    }
-
-    #[test]
-    fn duplicate_cluster_names_keep_distinct_selection_ids() {
-        let choices = cluster_choices(&snapshot());
-        assert_eq!(choices[0].title(), choices[1].title());
-        assert_ne!(choices[0].value(), choices[1].value());
-    }
-
-    #[test]
-    fn selector_searches_names_and_contexts_case_insensitively() {
-        let choices = cluster_choices(&snapshot());
-        assert!(choices[0].matches(" production "));
-        assert!(choices[0].matches("EAST-context"));
-        assert!(!choices[1].matches("east-context"));
-        assert!(!choices[0].matches("missing"));
-    }
-
-    #[test]
-    fn selector_choices_track_catalog_metadata_refreshes() {
-        let mut catalog = snapshot();
-        let initial = cluster_choices(&catalog);
-        catalog.clusters[0].name = "Renamed".into();
-        assert_ne!(initial, cluster_choices(&catalog));
-        catalog.clusters.remove(0);
-        assert_eq!(cluster_choices(&catalog)[0].value(), "west");
-    }
-}
-
 impl SelectItem for ClusterChoice {
     type Value = String;
 
@@ -528,5 +450,83 @@ impl IceonApp {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cluster_choices;
+    use gpui_kit::component::select::SelectItem as _;
+    use iceon_core::catalog::{CatalogSnapshot, ClusterSummary};
+
+    fn snapshot() -> CatalogSnapshot {
+        CatalogSnapshot {
+            revision: 1,
+            discovery_error: None,
+            pinned_items: vec![],
+            clusters: ["east", "west"]
+                .into_iter()
+                .map(|id| ClusterSummary {
+                    id: id.into(),
+                    name: "Production".into(),
+                    context_name: format!("{id}-context"),
+                    source: "kubeconfig".into(),
+                    status: "disconnected",
+                    pinned: false,
+                    pinned_sections: vec![],
+                    labels: vec![],
+                    color: "#4ba7a5".into(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn breadcrumbs_show_resource_path_and_track_cluster_color() {
+        assert_eq!(
+            super::opened_path("pods"),
+            vec![
+                ("Workloads".into(), "workloads-overview".into()),
+                ("Pods".into(), "pods".into())
+            ]
+        );
+        assert_eq!(
+            super::opened_path("nodes"),
+            vec![("Nodes".into(), "nodes".into())]
+        );
+        let mut catalog = snapshot();
+        let before = cluster_choices(&catalog);
+        catalog.clusters[0].color = "#ff0000".into();
+        assert_ne!(before, cluster_choices(&catalog));
+        assert_eq!(
+            super::cluster_dot("#ff0000"),
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xff0000))
+        );
+    }
+
+    #[test]
+    fn duplicate_cluster_names_keep_distinct_selection_ids() {
+        let choices = cluster_choices(&snapshot());
+        assert_eq!(choices[0].title(), choices[1].title());
+        assert_ne!(choices[0].value(), choices[1].value());
+    }
+
+    #[test]
+    fn selector_searches_names_and_contexts_case_insensitively() {
+        let choices = cluster_choices(&snapshot());
+        assert!(choices[0].matches(" production "));
+        assert!(choices[0].matches("EAST-context"));
+        assert!(!choices[1].matches("east-context"));
+        assert!(!choices[0].matches("missing"));
+    }
+
+    #[test]
+    fn selector_choices_track_catalog_metadata_refreshes() {
+        let mut catalog = snapshot();
+        let initial = cluster_choices(&catalog);
+        catalog.clusters[0].name = "Renamed".into();
+        assert_ne!(initial, cluster_choices(&catalog));
+        catalog.clusters.remove(0);
+        assert_eq!(cluster_choices(&catalog)[0].value(), "west");
     }
 }

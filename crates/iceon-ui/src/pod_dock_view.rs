@@ -28,6 +28,13 @@ use iceon_core::connection::{
 use crate::IceonApp;
 use crate::terminal_surface::{TerminalEvent, TerminalSurface};
 
+#[derive(Clone)]
+pub(crate) struct PodTarget {
+    pub namespace: String,
+    pub name: String,
+    pub uid: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ContainerChoice(String);
 impl SelectItem for ContainerChoice {
@@ -260,14 +267,17 @@ impl IceonApp {
 
     pub(crate) fn open_pod_stream(
         &mut self,
-        namespace: String,
-        pod_name: String,
-        uid: String,
+        target: PodTarget,
         container: String,
         mode: PodStreamMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let PodTarget {
+            namespace,
+            name: pod_name,
+            uid,
+        } = target;
         let mut available_containers = self
             .inspector
             .pod_detail
@@ -442,10 +452,10 @@ impl IceonApp {
         self.active_yaml_tab = None;
         self.local_terminal_active = false;
         self.pod_dock_open = true;
-        if mode != PodStreamMode::Logs {
-            if let Some(terminal) = &self.pod_dock_tabs[tab_index].terminal {
-                window.focus(&terminal.focus_handle(cx), cx);
-            }
+        if mode != PodStreamMode::Logs
+            && let Some(terminal) = &self.pod_dock_tabs[tab_index].terminal
+        {
+            window.focus(&terminal.focus_handle(cx), cx);
         }
         cx.notify();
 
@@ -1163,47 +1173,42 @@ impl IceonApp {
         }
         let active_idx = self.active_pod_tab.unwrap_or(0);
         // Each tab owns a persistent standard searchable Select. Identity lookup survives closes.
-        if let Some(tab) = self.pod_dock_tabs.get(active_idx) {
-            if tab.container_select.is_none() {
-                let items = tab
-                    .available_containers
-                    .iter()
-                    .cloned()
-                    .map(ContainerChoice)
-                    .collect::<Vec<_>>();
-                let selected = tab.container.clone();
-                let select = cx.new(|cx| {
-                    SelectState::new(SearchableVec::new(items), None, window, cx).searchable(true)
-                });
-                select.update(cx, |state, cx| {
-                    state.set_selected_value(&selected, window, cx)
-                });
-                cx.subscribe_in(
-                    &select,
-                    window,
-                    |this,
-                     entity,
-                     event: &SelectEvent<SearchableVec<ContainerChoice>>,
-                     window,
-                     cx| {
-                        let SelectEvent::Confirm(Some(value)) = event else {
-                            return;
-                        };
-                        if let Some(index) = this
-                            .pod_dock_tabs
-                            .iter()
-                            .position(|tab| tab.container_select.as_ref() == Some(entity))
-                        {
-                            if this.pod_dock_tabs[index].container != *value {
-                                this.pod_dock_tabs[index].container = value.clone();
-                                this.reopen_pod_tab(index, window, cx);
-                            }
-                        }
-                    },
-                )
-                .detach();
-                self.pod_dock_tabs[active_idx].container_select = Some(select);
-            }
+        if let Some(tab) = self.pod_dock_tabs.get(active_idx)
+            && tab.container_select.is_none()
+        {
+            let items = tab
+                .available_containers
+                .iter()
+                .cloned()
+                .map(ContainerChoice)
+                .collect::<Vec<_>>();
+            let selected = tab.container.clone();
+            let select = cx.new(|cx| {
+                SelectState::new(SearchableVec::new(items), None, window, cx).searchable(true)
+            });
+            select.update(cx, |state, cx| {
+                state.set_selected_value(&selected, window, cx)
+            });
+            cx.subscribe_in(
+                &select,
+                window,
+                |this, entity, event: &SelectEvent<SearchableVec<ContainerChoice>>, window, cx| {
+                    let SelectEvent::Confirm(Some(value)) = event else {
+                        return;
+                    };
+                    if let Some(index) = this
+                        .pod_dock_tabs
+                        .iter()
+                        .position(|tab| tab.container_select.as_ref() == Some(entity))
+                        && this.pod_dock_tabs[index].container != *value
+                    {
+                        this.pod_dock_tabs[index].container = value.clone();
+                        this.reopen_pod_tab(index, window, cx);
+                    }
+                },
+            )
+            .detach();
+            self.pod_dock_tabs[active_idx].container_select = Some(select);
         }
         let filter = self.pod_log_filter_input.read(cx).value().to_lowercase();
         let timezone = self.preferences_draft.app.timezone.clone();
@@ -1395,11 +1400,11 @@ impl IceonApp {
                                 else {
                                     return;
                                 };
-                                if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx) {
-                                    if tab.follow {
-                                        tab.follow = false;
-                                        cx.notify();
-                                    }
+                                if let Some(tab) = this.pod_dock_tabs.get_mut(active_idx)
+                                    && tab.follow
+                                {
+                                    tab.follow = false;
+                                    cx.notify();
                                 }
                             }))
                         })
@@ -1454,12 +1459,11 @@ impl IceonApp {
                                                         .pod_dock_tabs
                                                         .iter_mut()
                                                         .find(|tab| tab.key == active_key)
+                                                        && tab.log_columns != measured
                                                     {
-                                                        if tab.log_columns != measured {
-                                                            tab.log_columns = measured;
-                                                            if tab.word_wrap {
-                                                                cx.notify();
-                                                            }
+                                                        tab.log_columns = measured;
+                                                        if tab.word_wrap {
+                                                            cx.notify();
                                                         }
                                                     }
                                                 });

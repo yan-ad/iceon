@@ -357,6 +357,17 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
     }
 }
 
+/// Preview roles use the same palette source as the live theme.
+pub(crate) fn preview_colors(theme: AppTheme) -> [u32; 4] {
+    let [background, surface, elevated, _, _, _, _, primary] =
+        theme.palette_colors().unwrap_or_else(|| {
+            let mut colors = AppTheme::Light.palette_colors().expect("Light palette");
+            colors[1] = AppTheme::Dark.palette_colors().expect("Dark palette")[1];
+            colors
+        });
+    [background, surface, elevated, primary]
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -569,15 +580,4 @@ mod tests {
         super::custom_colors(&mut fresh, AppTheme::SolarizedDark);
         assert_eq!(changed, fresh);
     }
-}
-
-/// Preview roles use the same palette source as the live theme.
-pub(crate) fn preview_colors(theme: AppTheme) -> [u32; 4] {
-    let [background, surface, elevated, _, _, _, _, primary] =
-        theme.palette_colors().unwrap_or_else(|| {
-            let mut colors = AppTheme::Light.palette_colors().expect("Light palette");
-            colors[1] = AppTheme::Dark.palette_colors().expect("Dark palette")[1];
-            colors
-        });
-    [background, surface, elevated, primary]
 }
