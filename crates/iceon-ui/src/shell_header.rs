@@ -3,6 +3,7 @@
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _, TitleBar,
+    breadcrumb::BreadcrumbItem,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::DropdownMenu as _,
@@ -53,8 +54,17 @@ mod tests {
 
     #[test]
     fn breadcrumbs_show_resource_path_and_track_cluster_color() {
-        assert_eq!(super::opened_path("pods"), "Workloads / Pods");
-        assert_eq!(super::opened_path("nodes"), "Nodes");
+        assert_eq!(
+            super::opened_path("pods"),
+            vec![
+                ("Workloads".into(), "workloads-overview".into()),
+                ("Pods".into(), "pods".into())
+            ]
+        );
+        assert_eq!(
+            super::opened_path("nodes"),
+            vec![("Nodes".into(), "nodes".into())]
+        );
         let mut catalog = snapshot();
         let before = cluster_choices(&catalog);
         catalog.clusters[0].color = "#ff0000".into();
@@ -140,8 +150,37 @@ fn cluster_choices(snapshot: &CatalogSnapshot) -> Vec<ClusterChoice> {
         .collect()
 }
 
-fn opened_path(section: &str) -> String {
-    crate::navigation::destination_label(section).replace(" · ", " / ")
+fn opened_path(section: &str) -> Vec<(String, String)> {
+    if let Some(name) = section.strip_prefix("crd:") {
+        return vec![
+            (
+                "Custom Resources".into(),
+                "custom-resource-definitions".into(),
+            ),
+            (name.into(), section.into()),
+        ];
+    }
+    for group in crate::navigation::CLUSTER_SECTIONS {
+        if let Some(child) = group.children.iter().find(|child| child.id == section) {
+            return vec![
+                (group.label.into(), group.default_child.into()),
+                (child.label.into(), child.id.into()),
+            ];
+        }
+        if group.id == section {
+            return vec![(group.label.into(), group.default_child.into())];
+        }
+    }
+    vec![("Overview".into(), "overview".into())]
+}
+
+fn breadcrumb_separator(cx: &App) -> impl IntoElement {
+    div()
+        .flex_shrink_0()
+        .mx_1()
+        .size(px(4.0))
+        .rounded_full()
+        .bg(cx.theme().muted_foreground)
 }
 
 fn cluster_dot(color: &str) -> Hsla {
@@ -305,6 +344,9 @@ impl IceonApp {
                                     .accessibility_label("Go back")
                                     .tooltip("Go back")
                                     .disabled(!self.history.can_go_back())
+                                    .when(!self.history.can_go_back(), |button| {
+                                        button.opacity(0.4).cursor_not_allowed()
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if let Some(route) = this.history.go_back() {
                                             this.navigate(route, false, window, cx);
@@ -320,6 +362,9 @@ impl IceonApp {
                                     .accessibility_label("Go forward")
                                     .tooltip("Go forward")
                                     .disabled(!self.history.can_go_forward())
+                                    .when(!self.history.can_go_forward(), |button| {
+                                        button.opacity(0.4).cursor_not_allowed()
+                                    })
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if let Some(route) = this.history.go_forward() {
                                             this.navigate(route, false, window, cx);
@@ -335,6 +380,9 @@ impl IceonApp {
                                     .when_some(selected_cluster, |bar, cluster| {
                                         bar.child(
                                             h_flex()
+                                                .id("workspace-breadcrumb")
+                                                .role(gpui_kit::accesskit::Role::Navigation)
+                                                .aria_label("Workspace breadcrumb")
                                                 .items_center()
                                                 .gap_1p5()
                                                 .child(
@@ -356,25 +404,17 @@ impl IceonApp {
                                                             cx.notify();
                                                         })),
                                                 )
-                                                .child(
-                                                    div()
-                                                        .text_sm()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child("/"),
-                                                )
-                                                .child(
-                                                    Button::new("titlebar-opened-path")
-                                                        .ghost().xsmall()
-                                                        .text_color(cx.theme().sidebar_foreground)
-                                                        .label(opened_path(&self.active_cluster_section))
-                                                        .tooltip("Current resource path · Quick jump")
-                                                        .accessibility_label(format!("Current path: {}", opened_path(&self.active_cluster_section)))
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.search_modal_open = !this.search_modal_open;
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("/"))
+                                                .children(opened_path(&self.active_cluster_section).into_iter().enumerate().map(|(index, (label, section))| {
+                                                    let cluster_id = cluster.id.clone();
+                                                    h_flex().id(("breadcrumb-path", index)).items_center()
+                                                        .child(breadcrumb_separator(cx))
+                                                        .child(BreadcrumbItem::new(label)
+                                                            .text_color(cx.theme().sidebar_foreground)
+                                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                                this.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: section.clone() }, true, window, cx);
+                                                            })))
+                                                }))
+                                                .child(breadcrumb_separator(cx))
                                                 .child(
                                                     Button::new("titlebar-namespace-select-btn")
                                                         .ghost()
@@ -416,12 +456,7 @@ impl IceonApp {
                                             h_flex()
                                                 .items_center()
                                                 .gap_1p5()
-                                                .child(
-                                                    div()
-                                                        .text_sm()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child("/"),
-                                                )
+                                                .child(breadcrumb_separator(cx))
                                                 .child(
                                                     Button::new("titlebar-section-label-btn")
                                                         .ghost()
