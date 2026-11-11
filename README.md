@@ -1,124 +1,81 @@
 <div align="center">
-<img src="./assets/icons/128x128.png" alt="" width="60" height="60">
+<img src="./assets/icons/128x128.png" alt="Iceon" width="60" height="60">
+
+# Iceon
+### A native Kubernetes workspace, built entirely in Rust.
+Explore clusters. Debug workloads. Stay in context.
 
 [![Build](https://img.shields.io/github/actions/workflow/status/yan-ad/iceon/release.yml?style=flat-square&label=build)](https://github.com/yan-ad/iceon/actions/workflows/release.yml)
-[![License](https://img.shields.io/github/license/yan-ad/iceon?style=flat-square&label=license&cacheSeconds=3600)](./COPYING)
+[![License](https://img.shields.io/github/license/yan-ad/iceon?style=flat-square&label=license&cacheSeconds=3600)](./LICENSE)
 ![Installs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fad.yan.iceon%2Fcount&query=%24.count&label=Installs&color=blue&style=flat-square)
-# Iceon
-
-### A native Kubernetes IDE, built entirely in Rust.
-Understand your clusters. Manage your workloads. Stay in control.
+![Rust](https://img.shields.io/badge/Rust-2024-f74c00?style=flat-square&logo=rust)
+![GPUI](https://img.shields.io/badge/GPUI-native_UI-1a43bf?style=flat-square)
+![Status](https://img.shields.io/badge/status-early_development-e9a23b?style=flat-square)
+[![Release](https://img.shields.io/github/v/release/yan-ad/iceon?style=flat-square)](https://github.com/yan-ad/iceon/releases)
 
 </div>
 
----
+## Already built
 
-## Why Iceon?
+Iceon is past the native-foundation stage: the Rust/GPUI app has working cluster
+and resource workflows, not just a shell. It is still early software; implementation
+is not a claim of production readiness or complete provider/platform validation.
 
-Kubernetes is powerful, but working with it doesn't always have to mean switching between terminals, YAML files, dashboards, and scattered tools.
+- **Clusters:** kubeconfig discovery/import, pinned destinations, namespace navigation,
+  search, connection lifecycle and health checks.
+- **Resources:** tables, details/events, YAML inspection/editing, server dry-run and
+  confirmed mutations; custom-resource discovery and metadata browsing.
+- **Debugging:** Pod logs, exec/attach, port forwards, local PTY terminals and a resizable console dock.
+- **Operations:** Helm inventory/install and guarded RBAC management; some core APIs
+  still need fuller native UI exposure and live-cluster acceptance coverage.
+- **Desktop & secrets:** themes/preferences, native macOS menus/tray, and read-only
+  Vault KV v2 browsing with explicit, time-limited reveal and OS credential storage.
 
-Iceon aims to bring the Kubernetes development experience into one cohesive desktop environment.
+## OS roadmap
 
-Instead of being another graphical wrapper around `kubectl`, Iceon is designed as a dedicated Kubernetes IDE — a place where developers can explore clusters, understand workloads, inspect resources, and manage their infrastructure through a unified interface.
+| Platform | Current target | Next |
+| --- | --- | --- |
+| macOS · Apple Silicon | CI + DMG/app archive packaging | Packaged smoke tests, Developer ID signing/notarization |
+| Windows · x86 | Compile CI + unsigned portable ZIP | Native smoke tests, signing and installer experience |
+| Windows · x64/ARM64 | No release target yet | Dedicated builds and validation |
+| macOS · Intel | No release target yet | Build and hardware validation |
+| Linux | Rust source; CI/builds currently deferred | Restore platform CI, desktop validation and packages |
 
-## Design Philosophy
+Download from [Releases](https://github.com/yan-ad/iceon/releases).
+macOS packages are ad-hoc signed, **not notarized**; Windows packages are unsigned.
+Install manually—automatic updates are not integrated. See [installation details](docs/releases.md).
 
-- **Native by design** — Built entirely with Rust, without Tauri, Electron, or a JavaScript-based frontend.
-- **Developer-first** — Designed around real Kubernetes workflows rather than simplified abstractions.
-- **Clarity over complexity** — Make complex cluster states easier to understand and navigate.
-- **Performance matters** — A lightweight desktop experience that feels responsive even when working with large clusters.
-- **Open and extensible** — Built with an architecture that can grow alongside the Kubernetes ecosystem.
+## Feature roadmap
 
-## Vision & Roadmap
+| Area | Status | Next |
+| --- | --- | --- |
+| Native shell, catalog, resource explorer | Implemented | Accessibility, polish and large-cluster performance |
+| YAML, logs, terminals, forwarding | Implemented | Broader integration and reconnect/cancellation testing |
+| Helm, RBAC and node operations | Core services; native coverage varies | Complete UI workflows and live safety validation |
+| Metrics and custom resources | Bounded reads/browsing | Richer observability and custom-resource workflows |
+| Secrets | Vault userpass + read-only KV v2 | More providers and authentication methods |
+| Extensions | No extension host | Evaluate a native extension model and Freelens workflow portability |
+| Distribution | macOS/Windows packaging | Trusted signing, automatic updates and more architectures |
 
-Iceon is being developed as a comprehensive Kubernetes workspace.
+## Develop
 
-### Cluster Management
-- Connect to multiple Kubernetes clusters.
-- Manage kubeconfig contexts.
-- Switch between clusters and namespaces.
-- Monitor cluster health and resource utilization.
-- Inspect nodes and cluster-level resources.
+Requires Rust stable and the platform's native build tools (Xcode tools on macOS;
+MSVC on Windows). No JavaScript toolchain or browser runtime is required.
 
-### Workload Explorer
-- Browse Pods, Deployments, StatefulSets, DaemonSets, and Jobs.
-- Inspect workload details and lifecycle events.
-- View container logs in real time.
-- Access interactive terminal sessions.
-- Monitor resource consumption.
+```sh
+cargo run -p iceon-app
+cargo test --workspace --all-features --locked
+```
 
-### Kubernetes Resource Management
-- Explore Kubernetes resources through a structured interface.
-- Inspect and edit YAML manifests.
-- Apply and manage resource configurations.
-- View relationships between resources.
-- Track resource status and events.
+Architecture and safety contracts: [DESIGN.md](DESIGN.md). Contributions and
+real-world bug reports are welcome; use trusted kubeconfigs and a test cluster first.
 
-### Developer Experience
-- Integrated terminal.
-- Resource search and filtering.
-- Real-time status updates.
-- Context-aware resource inspection.
-- Streamlined workflows for debugging and troubleshooting.
+## Inspiration & license
 
-### Observability
-- Cluster and workload monitoring.
-- Event exploration.
-- Log inspection.
-- Resource utilization insights.
-- A unified view of operational health.
+Inspired by [Freelens](https://github.com/freelensapp/freelens) and its Kubernetes
+exploration workflows, with a separate native Rust/GPUI implementation.
+**Freelens extensions cannot currently run in Iceon**; compatibility is research,
+not a promised API or feature-parity claim.
 
-*These are project goals, not a representation that every feature is already implemented.*
-
-## Built with Rust
-
-Iceon started with a Tauri + React architecture. As the project evolved, the direction changed toward a fully native Rust implementation.
-
-The goal is to keep the entire application stack within Rust, from its core application logic to its desktop interface.
-
-This means:
-- No React frontend.
-- No Tauri runtime.
-- No Electron.
-- No Node.js application runtime.
-
-A native architecture gives Iceon greater control over performance, resource usage, application lifecycle, and integration with the underlying operating system.
-
-## Project Status
-
-<em>Early development — actively evolving.</em>
-
-Iceon is still under development. APIs, architecture, interfaces, and features may change as the project matures.
-
-The current priority is establishing a solid native foundation before expanding the feature set.
-
-## Roadmap
-
-- [ ] Establish the native Rust desktop architecture.
-- [ ] Build the core application interface.
-- [ ] Implement Kubernetes connectivity.
-- [ ] Introduce cluster and namespace navigation.
-- [ ] Build workload exploration.
-- [ ] Add YAML inspection and editing.
-- [ ] Integrate logs and terminal workflows.
-- [ ] Expand monitoring and observability capabilities.
-- [ ] Improve multi-cluster workflows.
-
-## Contributing
-
-Iceon is intended to grow as an open-source project.
-
-Contributions, discussions, feature proposals, and architectural feedback are welcome.
-
-Whether you're a Rust developer, Kubernetes enthusiast, or someone who wants a better desktop Kubernetes experience, there's room to contribute.
-
-## License
-
-License information will be added as the project evolves.
-
----
-
-<p align="center">
-  <strong>Iceon</strong><br/>
-  A better way to work with Kubernetes.
-</p>
+Iceon is licensed under the [MIT License](LICENSE). Third-party dependencies and
+assets retain their respective licenses and notices.

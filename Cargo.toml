@@ -11,7 +11,7 @@ default-members = ["crates/iceon-app"]
 [workspace.package]
 version = "0.1.2"
 edition = "2024"
-license = "Apache-2.0"
+license = "MIT"
 authors = ["you"]
 
 # Optimize layout (taffy), text shaping (cosmic-text), SVG rasterization (resvg),

@@ -27,7 +27,8 @@ HTTP(S) proxy and Allow Untrusted Certificate Authorities apply to the dedicated
 kubectl download client and Helm chart/repository traffic. The certificate switch
 skips certificate validation for those requests and should normally remain off.
 It does **not** disable Kubernetes API certificate verification. No process-wide
-proxy environment is mutated. There is currently no local host-terminal workflow.
+proxy environment is mutated. Local device terminals are separate from Kubernetes
+and Helm transports; see [Pod console](pod-console.md).
 
 ## Kubernetes
 

@@ -310,7 +310,7 @@ impl Store {
 
 mod storage;
 
-// Home is injected by Tauri. Constructors never read it or infer a host HOME.
+// Home is injected by the application runtime. Constructors never read it or infer a host HOME.
 // Discovery is a bounded metadata import on list, not a watcher or connection.
 pub struct CatalogEngine {
     directory: PathBuf,

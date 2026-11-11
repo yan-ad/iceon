@@ -1,4 +1,4 @@
-//! Opt-in debug transport. Domain work stays in the same Rust engines as Tauri.
+//! Opt-in debug transport. Domain work stays in the same Rust engines as the native app.
 use crate::{catalog::CatalogEngine, connection::ConnectionEngine, preferences::PreferencesEngine};
 use axum::{
     Router,

@@ -9,10 +9,8 @@ use std::{
 };
 use toml_edit::{DocumentMut, value};
 
-mod verify_update;
-
 type Result<T> = std::result::Result<T, String>;
-const HELP: &str = "Usage: cargo xtask release <X.Y.Z|patch|minor|major> [--dry-run] [--branch main] [--remote origin]\n       cargo xtask verify-release <vX.Y.Z>\n       cargo xtask verify-update <CONFIG.json> <FILE.sig> <FILE> <X.Y.Z>\nDry run performs local validation only, never fetches, writes, commits, tags or pushes.";
+const HELP: &str = "Usage: cargo xtask release <X.Y.Z|patch|minor|major> [--dry-run] [--branch main] [--remote origin]\n       cargo xtask verify-release <vX.Y.Z>\nDry run performs local validation only, never fetches, writes, commits, tags or pushes.";
 
 #[derive(Debug)]
 struct Options {
@@ -37,27 +35,6 @@ fn entry() -> Result<()> {
         println!("{HELP}");
         return Ok(());
     }
-    if args.first().map(String::as_str) == Some("verify-update") {
-        if args.len() != 5 {
-            return Err(HELP.into());
-        }
-        verify_update::run(
-            Path::new(&args[1]),
-            Path::new(&args[2]),
-            Path::new(&args[3]),
-            &args[4],
-        )
-        .map_err(|error| error.to_string())?;
-        println!(
-            "Verified update {}: {}",
-            args[4],
-            Path::new(&args[3])
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-        );
-        return Ok(());
-    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
@@ -68,7 +45,6 @@ fn entry() -> Result<()> {
         if plan.old != version {
             return Err("tag does not match the application version".into());
         }
-        verify_updater(root)?;
         let tag_ref = format!("refs/tags/{}", args[1]);
         if git(root, &["cat-file", "-t", &tag_ref])? != "tag"
             || git(root, &["rev-parse", &format!("{tag_ref}^{{commit}}")])?
@@ -244,10 +220,6 @@ fn version_plan(root: &Path, bump: &str, allow_equal: bool) -> Result<VersionPla
     Ok(VersionPlan { old, new, changes })
 }
 
-fn verify_updater(_root: &Path) -> Result<()> {
-    Ok(())
-}
-
 // Drain both pipes concurrently: a noisy child must not deadlock or fill memory.
 fn command(root: &Path, program: &str, args: &[&str]) -> Result<String> {
     let mut child = Command::new(program)
@@ -382,7 +354,7 @@ fn release(root: &Path, o: &Options) -> Result<()> {
         println!("  version file: {}", change.path);
     }
     println!(
-        "  commit: chore(release): {tag}\n  annotated tag: {tag}\n  atomic push: HEAD:refs/heads/{} + refs/tags/{tag}\n  GitHub Actions: signed Apple Silicon DMG + updater artifacts",
+        "  commit: chore(release): {tag}\n  annotated tag: {tag}\n  atomic push: HEAD:refs/heads/{} + refs/tags/{tag}\n  Publication: follow docs/releases.md for the current native workflow and exact tag contract",
         o.branch
     );
     if o.dry_run {
@@ -391,7 +363,6 @@ fn release(root: &Path, o: &Options) -> Result<()> {
         );
         return Ok(());
     }
-    verify_updater(root)?;
     let url = git(root, &["remote", "get-url", &o.remote])?;
     if ![
         "git@github.com:yan-ad/iceon.git",

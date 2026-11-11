@@ -222,7 +222,7 @@ def publish(root, directory, tag_object):
     no_release()
     with tempfile.TemporaryDirectory() as temporary:
         notes = Path(temporary) / "notes.md"
-        notes.write_text(changelog(root) + "\n\nNative GPUI manual-install packages. macOS is ad-hoc signed, not notarized. Windows ZIP is unsigned. No Tauri updater feed or automatic update support.\n", encoding="utf-8")
+        notes.write_text(changelog(root) + "\n\nNative GPUI manual-install packages. macOS is ad-hoc signed, not notarized. Windows ZIP is unsigned. No updater feed or automatic update support.\n", encoding="utf-8")
         # The tag endpoint does not reliably expose unpublished drafts. Keep the
         # ID from creation, and pin provenance to the same commit as reusable CI.
         draft = api("releases", "--method", "POST", "-f", "tag_name=" + VERSION,

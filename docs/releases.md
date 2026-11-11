@@ -1,7 +1,7 @@
 # Native Iceon 0.1.2 release
 
 `.github/workflows/release.yml` packages the pure-Rust GPUI application in
-[yan-ad/iceon](https://github.com/yan-ad/iceon), not the historical Tauri app.
+[yan-ad/iceon](https://github.com/yan-ad/iceon).
 It accepts only the exact tag `0.1.2` (no `v`). Manual dispatch requires that
 existing remote tag to point to the dispatch's Actions commit. The workflow
 never creates, moves or pushes a tag and never resumes/overwrites a release.
@@ -17,8 +17,10 @@ helper fails closed on any mismatch. The workspace and local packages are aligne
 to `0.1.2`, following the latest published release, `0.1.1`; the previously
 unpublished workspace version `0.1.8` was corrected during release preparation.
 
-The reusable `ci.yml` runs at the workflow commit before packaging; both platform
-builds and publication depend on its success. Only publication has
+The reusable `ci.yml` runs macOS checks and Windows x86 compilation at the workflow
+commit before packaging; Linux Rust builds are deferred. Fast validation/publication
+helpers still use Ubuntu runners. Both platform builds and publication depend
+on CI success. Only publication has
 `contents: write`. Checkout is the Actions commit, not a separately resolved tag.
 
 Native build commands use `cargo build --release --locked -p iceon-app --target`:
@@ -46,7 +48,7 @@ embedded by `console_font.rs`; GPUI kit supplies its own bundled component asset
 The locked GPUI Apple renderer also embeds `shaders.metallib` via `include_bytes!`
 in gpui-pre-apple 0.3.11, rather than loading a sidecar Metal library.
 The normal existing app build includes these assets: no Rust/manifest changes or
-Tauri resource-copy step are necessary. Existing Rust asset tests run in reusable
+frontend resource-copy step are necessary. Existing Rust asset tests run in reusable
 CI. The optional `.icns` is the native bundle icon, separate from embedded UI assets.
 
 ## Publication and installation
@@ -79,9 +81,8 @@ installation, Gatekeeper/SmartScreen, graphical startup and credential/cluster
 integration require manual smoke tests on the supported platforms.
 
 There is **no native updater integration**, no `latest.json`, no updater signatures,
-and **no claim of Tauri updater compatibility**. Existing Tauri installations
-cannot use these archives as an automatic update. Install manually. Historical
-release workflows and updater documentation are not the native release contract.
+and **no automatic-update compatibility claim**. Install these packages manually.
+This document and the native workflow are the distribution contract.
 
 ## Helper tests and API references
 
