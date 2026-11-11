@@ -15,6 +15,7 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import time
 import tomllib
 
 REPOSITORY = "yan-ad/iceon"
@@ -37,6 +38,27 @@ def require(ok, message):
 
 def run(*args):
     return subprocess.check_output(args, text=True, timeout=300).strip()
+
+
+def verify_dmg(path):
+    # DiskImages/Spotlight can briefly retain a newly created image on CI hosts.
+    # Retry only explicit transient locks, never malformed images or bad checksums.
+    for attempt in range(5):
+        try:
+            return subprocess.check_output(
+                ("hdiutil", "verify", str(path)), text=True,
+                stderr=subprocess.STDOUT, timeout=300,
+            ).strip()
+        except subprocess.CalledProcessError as error:
+            output = error.output or ""
+            print(output.rstrip(), flush=True)
+            transient = any(message in output.lower() for message in
+                            ("resource temporarily unavailable", "resource busy"))
+            if not transient or attempt == 4:
+                raise
+            delay = 2 ** (attempt + 1)
+            print(f"DMG temporarily busy; retrying verification in {delay}s", flush=True)
+            time.sleep(delay)
 
 
 def changelog(root):
@@ -155,7 +177,7 @@ def package(root, out, platform):
             archive.add(app, arcname="Iceon.app")
         (stage / "Applications").symlink_to("/Applications")
         run("hdiutil", "create", "-volname", "Iceon " + VERSION, "-srcfolder", str(stage), "-format", "UDZO", str(out / DMG))
-        run("hdiutil", "verify", str(out / DMG))
+        verify_dmg(out / DMG)
         mounted = Path(temporary) / "mounted"
         run("hdiutil", "attach", "-readonly", "-nobrowse", "-mountpoint", str(mounted), str(out / DMG))
         try:

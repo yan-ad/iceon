@@ -283,6 +283,30 @@ class NativeReleaseTests(unittest.TestCase):
             n.sign_updates(self.out)
         run.assert_not_called()
 
+    def test_dmg_verification_recovers_from_transient_lock(self):
+        busy = subprocess.CalledProcessError(1, "hdiutil", output="Resource temporarily unavailable")
+        with patch.object(n.subprocess, "check_output", side_effect=[busy, "verified\n"]) as command, patch.object(n.time, "sleep") as sleep:
+            self.assertEqual(n.verify_dmg(self.out / n.DMG), "verified")
+        self.assertEqual(command.call_count, 2)
+        sleep.assert_called_once_with(2)
+
+    def test_dmg_verification_bounds_persistent_lock_retries(self):
+        busy = subprocess.CalledProcessError(1, "hdiutil", output="Resource busy")
+        with patch.object(n.subprocess, "check_output", side_effect=busy) as command, patch.object(n.time, "sleep") as sleep:
+            with self.assertRaises(subprocess.CalledProcessError):
+                n.verify_dmg(self.out / n.DMG)
+        self.assertEqual(command.call_count, 5)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4, 8, 16])
+
+    def test_dmg_verification_does_not_retry_corruption_or_timeout(self):
+        for error in (subprocess.CalledProcessError(1, "hdiutil", output="image checksum is invalid"),
+                      subprocess.TimeoutExpired("hdiutil", 300)):
+            with patch.object(n.subprocess, "check_output", side_effect=error) as command, patch.object(n.time, "sleep") as sleep:
+                with self.assertRaises(type(error)):
+                    n.verify_dmg(self.out / n.DMG)
+                command.assert_called_once()
+                sleep.assert_not_called()
+
     def test_dmg_trailer_checked(self):
         self.assets()
         (self.out / n.DMG).write_bytes(b"not a dmg" * 100)
