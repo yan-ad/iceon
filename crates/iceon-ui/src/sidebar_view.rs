@@ -286,71 +286,61 @@ fn menu_item_with_pin(
     let id_key = id_key.into();
     let label = label.into();
     let handler = Rc::new(handler);
-    SidebarMenuItem::new(if action_icon.is_some() {
-        label.clone()
-    } else {
-        "".into()
-    })
-    .accessibility_label(label.clone())
-    .active(active)
-    .when_some(icon, |item, icon| item.icon(icon))
-    .on_click({
-        let handler = handler.clone();
-        move |event, window, cx| handler(event, window, cx)
-    })
-    .suffix(move |_, cx| {
-        let foreground = cx.theme().sidebar_foreground;
-        let muted = cx.theme().muted_foreground;
-        let handler = handler.clone();
-        let pin_state = pin_state.clone();
-        let id_key = id_key.clone();
-        let label = label.clone();
-        h_flex()
-            .items_center()
-            .w_full()
-            .justify_between()
-            .child(
-                Button::new(SharedString::from(format!("activate-{id_key}")))
-                    .ghost()
-                    .text_color(foreground)
-                    .xsmall()
-                    .when_some(action_icon.clone(), |button, icon| button.icon(icon))
-                    .when(action_icon.is_none(), |button| {
-                        button
-                            .label(label.clone())
-                            .flex_1()
-                            .justify_start()
-                            .text_left()
-                    })
-                    .accessibility_label(label.clone())
-                    .tooltip(label.clone())
-                    .on_click(move |event, window, cx| {
-                        cx.stop_propagation();
-                        handler(event, window, cx);
-                    }),
-            )
-            .when_some(pin_state, |row, (pinned, pin_handler)| {
-                let pin_tooltip: SharedString = if pinned {
-                    format!("Unpin {label} from Favorites").into()
-                } else {
-                    format!("Pin {label} to Favorites").into()
-                };
-                row.child(
-                    Button::new(SharedString::from(format!("pin-{id_key}")))
-                        .ghost()
-                        .xsmall()
-                        .selected(pinned)
-                        .text_color(if pinned { foreground } else { muted })
-                        .icon(IconName::Star)
-                        .accessibility_label(pin_tooltip.clone())
-                        .tooltip(pin_tooltip)
-                        .on_click(move |event, window, cx| {
-                            cx.stop_propagation();
-                            pin_handler(event, window, cx);
-                        }),
-                )
-            })
-    })
+    SidebarMenuItem::new(label.clone())
+        .accessibility_label(label.clone())
+        .active(active)
+        .when_some(icon, |item, icon| item.icon(icon))
+        .on_click({
+            let handler = handler.clone();
+            move |event, window, cx| handler(event, window, cx)
+        })
+        .suffix(move |_, cx| {
+            let foreground = cx.theme().sidebar_foreground;
+            let muted = cx.theme().muted_foreground;
+            let handler = handler.clone();
+            let pin_state = pin_state.clone();
+            let id_key = id_key.clone();
+            let label = label.clone();
+            h_flex()
+                .items_center()
+                .justify_end()
+                .when_some(action_icon.clone(), |row, icon| {
+                    row.child(
+                        Button::new(SharedString::from(format!("activate-{id_key}")))
+                            .ghost()
+                            .text_color(foreground)
+                            .xsmall()
+                            .icon(icon)
+                            .accessibility_label(label.clone())
+                            .tooltip(label.clone())
+                            .on_click(move |event, window, cx| {
+                                cx.stop_propagation();
+                                handler(event, window, cx);
+                            }),
+                    )
+                })
+                .when_some(pin_state, |row, (pinned, pin_handler)| {
+                    let pin_tooltip: SharedString = if pinned {
+                        format!("Unpin {label} from Favorites").into()
+                    } else {
+                        format!("Pin {label} to Favorites").into()
+                    };
+                    row.child(
+                        Button::new(SharedString::from(format!("pin-{id_key}")))
+                            .ghost()
+                            .xsmall()
+                            .selected(pinned)
+                            .text_color(if pinned { foreground } else { muted })
+                            .icon(IconName::Star)
+                            .accessibility_label(pin_tooltip.clone())
+                            .tooltip(pin_tooltip)
+                            .on_click(move |event, window, cx| {
+                                cx.stop_propagation();
+                                pin_handler(event, window, cx);
+                            }),
+                    )
+                })
+        })
 }
 
 impl IceonApp {
