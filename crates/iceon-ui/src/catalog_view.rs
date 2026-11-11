@@ -1,8 +1,9 @@
 //! Catalog view: cluster contexts table, search filter, kubeconfig import via GPUI file dialog,
 //! pin/unpin actions, and remove confirmation modal.
 
+use gpui_kit::component::Selectable as _;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -13,8 +14,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::IceonApp;
 use crate::navigation::{Route, catalog_error_message};
+use crate::{IceonApp, selectable_text::selectable_text};
 use iceon_core::catalog::{CatalogSnapshot, ClusterSummary, PinRequest, RemoveRequest};
 
 // Shared geometry keeps column boundaries identical for the header and every row.
@@ -27,39 +28,94 @@ struct CatalogColumn {
     separator: bool,
 }
 
-const CATALOG_COLUMNS: [CatalogColumn; 4] = [
+const CATALOG_COLUMNS: [CatalogColumn; 7] = [
     CatalogColumn {
-        title: "Name / Context",
-        width: 260.0,
+        title: "Name",
+        width: 240.0,
         flexible: false,
-        separator: true,
+        separator: false,
     },
     CatalogColumn {
         title: "Source",
-        width: 220.0,
+        width: 160.0,
         flexible: true,
-        separator: true,
+        separator: false,
+    },
+    CatalogColumn {
+        title: "Labels",
+        width: 160.0,
+        flexible: false,
+        separator: false,
+    },
+    CatalogColumn {
+        title: "Version",
+        width: 150.0,
+        flexible: false,
+        separator: false,
+    },
+    CatalogColumn {
+        title: "Distro",
+        width: 90.0,
+        flexible: false,
+        separator: false,
     },
     CatalogColumn {
         title: "Status",
-        width: 150.0,
+        width: 130.0,
         flexible: false,
-        separator: true,
+        separator: false,
     },
     CatalogColumn {
         title: "Actions",
-        width: 220.0,
+        width: 112.0,
         flexible: false,
         separator: false,
     },
 ];
-const CATALOG_TABLE_MIN_WIDTH: f32 = 850.0;
+const CATALOG_TABLE_MIN_WIDTH: f32 = 1042.0;
+
+// Only explicit vendor suffixes in an observed server version are evidence.
+fn catalog_distro(version: &str) -> &'static str {
+    let suffix = version
+        .find(['-', '+'])
+        .map(|at| &version[at + 1..])
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    for (marker, name) in [
+        ("gke", "GKE"),
+        ("eks", "EKS"),
+        ("k3s", "K3s"),
+        ("rke2", "RKE2"),
+        ("microk8s", "MicroK8s"),
+    ] {
+        if suffix.strip_prefix(marker).is_some_and(|tail| {
+            tail.is_empty()
+                || (marker == "rke2"
+                    && tail
+                        .strip_prefix('r')
+                        .is_some_and(|revision| revision.starts_with(|c: char| c.is_ascii_digit())))
+                || tail.starts_with(['-', '+', '.'])
+                || tail.starts_with(|c: char| c.is_ascii_digit())
+        }) {
+            return name;
+        }
+    }
+    "—"
+}
+
+fn catalog_version<'a>(cluster_id: &str, session: Option<(&str, &'a str)>) -> &'a str {
+    session
+        .filter(|(id, _)| *id == cluster_id)
+        .map(|(_, version)| version.trim())
+        .filter(|version| !version.is_empty())
+        .unwrap_or("—")
+}
 
 fn catalog_cell(column: CatalogColumn, border: Hsla) -> Div {
     h_flex()
         .items_center()
-        .px_4()
-        .py_2p5()
+        .px_3()
+        .py_2()
         .flex_shrink_0()
         .when(column.flexible, |cell| {
             cell.flex_1().min_w(px(column.width))
@@ -71,6 +127,43 @@ fn catalog_cell(column: CatalogColumn, border: Hsla) -> Div {
 }
 
 impl IceonApp {
+    pub(crate) fn render_welcome_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .id("welcome-page")
+            .size_full().min_h_0().min_w_0().overflow_y_scrollbar()
+            .bg(cx.theme().background)
+            .child(v_flex().w_full().min_h_full().items_center().justify_center().p_8()
+                .child(v_flex().w_full().max_w(px(560.0)).items_center().gap_6()
+                    .child(img("iceon/app-icon.png").size(px(220.0)).flex_shrink_0())
+                    .child(div().text_3xl().font_semibold().text_center().child("Welcome to Iceon!"))
+                    .child(div().w_full().text_base().text_center().text_color(cx.theme().muted_foreground)
+                        .child("Your kubeconfig contexts are discovered automatically and collected in the cluster catalog—one place to explore your Kubernetes clusters and manage their resources."))
+                    .child(v_flex().w_full().items_center().gap_1()
+                        .child(div().text_base().text_center().text_color(cx.theme().muted_foreground)
+                            .child("Have a question, found an issue, or want to share feedback?"))
+                        .child(Button::new("welcome-github").ghost()
+                            .text_color(cx.theme().link).label("Join us on GitHub")
+                            .accessibility_label("Open Iceon GitHub repository")
+                            .on_click(|_, _, cx| cx.open_url(iceon_core::project::REPOSITORY_URL))))
+                    .child(v_flex().w_full().gap_2()
+                        .child(Button::new("welcome-browse-clusters").w_full().h(px(44.0))
+                            .child(h_flex().w_full().items_center().gap_3()
+                                .child(Icon::new(IconName::LayoutDashboard).small())
+                                .child(div().flex_1().text_left().child("Browse Clusters in Catalog"))
+                                .child(Icon::new(IconName::ChevronRight).small()))
+                            .accessibility_label("Browse all clusters in catalog")
+                            .on_click(cx.listener(|this, _, _, cx| { this.home_catalog_visible = true; cx.notify(); })))
+                        .child(Button::new("welcome-open-terminal").w_full().h(px(44.0))
+                            .child(h_flex().w_full().items_center().gap_3()
+                                .child(Icon::new(IconName::SquareTerminal).small())
+                                .child(div().flex_1().text_left().child("Open a Terminal"))
+                                .child(Icon::new(IconName::ChevronRight).small()))
+                            .accessibility_label("Open a local terminal")
+                            .on_click(cx.listener(|this, _, window, cx| this.open_device_terminal(window, cx)))))
+                ))
+            .into_any_element()
+    }
+
     pub(crate) fn render_catalog_view(
         &mut self,
         window: &mut Window,
@@ -108,23 +201,14 @@ impl IceonApp {
         let catalog_error = self.catalog_error.clone();
 
         v_flex()
+            .relative()
             .size_full()
+            .min_h_0()
             .min_w_0()
-            .p_5()
-            .gap_4()
+            .p_4()
+            .gap_3()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(
-                h_flex().w_full().items_center().justify_between().gap_4().flex_wrap()
-                    .child(v_flex().gap_1()
-                        .child(div().text_2xl().font_semibold().child("Welcome to Iceon"))
-                        .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                            .child("Open a cluster below to explore its resources, or start a local terminal.")))
-                    .child(Button::new("home-open-terminal")
-                        .small().outline().icon(IconName::SquareTerminal)
-                        .label("Open a terminal").accessibility_label("Open a local terminal")
-                        .on_click(cx.listener(|this, _, window, cx| this.open_device_terminal(window, cx)))),
-            )
             .child(
                 h_flex()
                     .w_full()
@@ -132,23 +216,12 @@ impl IceonApp {
                     .justify_between()
                     .gap_4()
                     .child(
-                        v_flex()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_lg()
-                                    .font_semibold()
-                                    .child("Kubernetes Clusters"),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!(
-                                        "{} imported context(s) · metadata-only discovery",
-                                        self.catalog_snapshot.clusters.len()
-                                    )),
-                            ),
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().font_semibold().child(selectable_text("Clusters")))
+                            .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                                .child(selectable_text(format!("{}", clusters.len())))),
                     )
                     .child(
                         h_flex()
@@ -173,16 +246,6 @@ impl IceonApp {
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.refresh_catalog(cx);
                                     })),
-                            )
-                            .child(
-                                Button::new("catalog-import-btn")
-                                    .small()
-                                    .primary()
-                                    .icon(IconName::FolderOpen)
-                                    .label("Add Kubeconfig")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.prompt_import_kubeconfig(window, cx);
-                                    })),
                             ),
                     ),
             )
@@ -201,7 +264,7 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().warning)
-                                .child(format!("Default kubeconfig discovery warning: {msg}")),
+                                .child(selectable_text(format!("Default kubeconfig discovery warning: {msg}"))),
                         ),
                 )
             })
@@ -220,13 +283,15 @@ impl IceonApp {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().danger)
-                                .child(msg),
+                                .child(selectable_text(msg)),
                         )
                         .child(
                             Button::new("dismiss-catalog-error")
                                 .xsmall()
                                 .ghost()
                                 .icon(IconName::Close)
+                                .tooltip("Dismiss catalog error")
+                                .accessibility_label("Dismiss catalog error")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.catalog_error = None;
                                     cx.notify();
@@ -247,10 +312,10 @@ impl IceonApp {
                     .child(
                         v_flex()
                             .w_full()
-                            .min_w(px(CATALOG_TABLE_MIN_WIDTH))
+                            .when(!clusters.is_empty(), |table| table.min_w(px(CATALOG_TABLE_MIN_WIDTH)))
                             .min_h_full()
                             .flex_none()
-                            .child(
+                            .when(!clusters.is_empty(), |table| table.child(
                                 h_flex()
                                     .w_full()
                                     .flex_shrink_0()
@@ -259,32 +324,15 @@ impl IceonApp {
                                     .font_semibold()
                                     .text_color(cx.theme().muted_foreground)
                                     .children(CATALOG_COLUMNS.into_iter().map(|column| {
-                                        catalog_cell(column, cx.theme().border).child(column.title)
+                                        catalog_cell(column, cx.theme().border).child(selectable_text(column.title))
                                     })),
-                            )
+                            ))
                             .child(if clusters.is_empty() {
-                                v_flex()
-                                    .flex_1()
-                                    .w_full()
-                                    .items_center()
-                                    .justify_center()
-                                    .p_8()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_medium()
-                                            .child("No clusters match the current view"),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(
-                                                "Import a kubeconfig file or place one at ~/.kube/config to get started.",
-                                            ),
-                                    )
-                                    .into_any_element()
+                                crate::empty_state::empty_state(
+                                    IconName::LayoutDashboard,
+                                    "No clusters match the current view",
+                                    if query.is_empty() { "Import a kubeconfig using + or place one at ~/.kube/config to get started." } else { "Try another name, context, or label, or clear the search." },
+                                ).into_any_element()
                             } else {
                                 v_flex()
                                     .flex_1()
@@ -296,16 +344,15 @@ impl IceonApp {
                                         let pin_id = cluster.id.clone();
                                         let is_pinned = cluster.pinned;
                                         let remove_target = cluster.clone();
-                                        let source = cluster
-                                            .labels
-                                            .first()
-                                            .cloned()
-                                            .unwrap_or_else(|| cluster.source.clone());
+                                        let source = cluster.source.clone();
+                                        let version = catalog_version(&cluster.id, self.cluster_session.as_ref().and_then(|session| session.api_version.as_deref().map(|version| (session.cluster_id.as_str(), version)))).to_owned();
+                                        let distro = catalog_distro(&version);
+                                        let row_id = cluster.id.clone();
                                         let status_badge = match cluster.status {
-                                            "connected" => Tag::success().child("Connected"),
-                                            "connecting" => Tag::warning().child("Connecting"),
-                                            "error" => Tag::danger().child("Error"),
-                                            _ => Tag::secondary().child("Disconnected"),
+                                            "connected" => Tag::success().child(selectable_text("Connected")),
+                                            "connecting" => Tag::warning().child(selectable_text("Connecting")),
+                                            "error" => Tag::danger().child(selectable_text("Error")),
+                                            _ => Tag::secondary().child(selectable_text("Disconnected")),
                                         };
                                         let badge_color = crate::sidebar_view::cluster_badge_color(
                                             &cluster.color,
@@ -318,6 +365,11 @@ impl IceonApp {
                                             .w_full()
                                             .flex_shrink_0()
                                             .items_stretch()
+                                            .cursor_pointer()
+                                            .hover(|row| row.bg(cx.theme().secondary))
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.navigate(Route::Cluster { cluster_id: row_id.clone(), section: "overview".into() }, true, window, cx);
+                                            }))
                                             .child(
                                                 catalog_cell(CATALOG_COLUMNS[0], cx.theme().border)
                                                     .gap_2()
@@ -338,7 +390,7 @@ impl IceonApp {
                                                                     .text_sm()
                                                                     .font_medium()
                                                                     .truncate()
-                                                                    .child(cluster.name.clone()),
+                                                                    .child(selectable_text(cluster.name.clone())),
                                                             )
                                                             .child(
                                                                 div()
@@ -347,7 +399,7 @@ impl IceonApp {
                                                                         cx.theme().muted_foreground,
                                                                     )
                                                                     .truncate()
-                                                                    .child(cluster.context_name.clone()),
+                                                                    .child(selectable_text(cluster.context_name.clone())),
                                                             ),
                                                     ),
                                             )
@@ -355,24 +407,33 @@ impl IceonApp {
                                                 catalog_cell(CATALOG_COLUMNS[1], cx.theme().border)
                                                     .text_xs()
                                                     .text_color(cx.theme().muted_foreground)
-                                                    .child(div().min_w_0().truncate().child(source)),
+                                                    .child(div().min_w_0().truncate().child(selectable_text(source))),
                                             )
                                             .child(
                                                 catalog_cell(CATALOG_COLUMNS[2], cx.theme().border)
+                                                    .text_xs().child(selectable_text(if cluster.labels.is_empty() { "—".to_owned() } else { cluster.labels.join(", ") })),
+                                            )
+                                            .child(catalog_cell(CATALOG_COLUMNS[3], cx.theme().border).text_xs().child(selectable_text(version)))
+                                            .child(catalog_cell(CATALOG_COLUMNS[4], cx.theme().border).text_xs().child(selectable_text(distro)))
+                                            .child(
+                                                catalog_cell(CATALOG_COLUMNS[5], cx.theme().border)
                                                     .child(status_badge),
                                             )
                                             .child(
-                                                catalog_cell(CATALOG_COLUMNS[3], cx.theme().border)
-                                                    .gap_1p5()
+                                                catalog_cell(CATALOG_COLUMNS[6], cx.theme().border)
+                                                    .gap_1()
                                                     .child(
                                                         Button::new(SharedString::from(format!(
                                                             "open-cluster-{cluster_id}"
                                                         )))
                                                         .xsmall()
-                                                        .primary()
-                                                        .label("Open")
+                                                        .ghost()
+                                                        .icon(IconName::ChevronRight)
+                                                        .tooltip("Open cluster")
+                                                        .accessibility_label("Open cluster")
                                                         .on_click(cx.listener(
                                                             move |this, _, window, cx| {
+                                                                cx.stop_propagation();
                                                                 this.navigate(
                                                                     Route::Cluster {
                                                                         cluster_id: open_id.clone(),
@@ -390,10 +451,13 @@ impl IceonApp {
                                                             "pin-cluster-{cluster_id}"
                                                         )))
                                                         .xsmall()
-                                                        .outline()
+                                                        .ghost()
                                                         .icon(IconName::Star)
-                                                        .label(if is_pinned { "Unpin" } else { "Pin" })
+                                                        .selected(is_pinned)
+                                                        .tooltip(if is_pinned { "Unpin cluster" } else { "Pin cluster" })
+                                                        .accessibility_label(if is_pinned { "Unpin cluster" } else { "Pin cluster" })
                                                         .on_click(cx.listener(move |this, _, _, cx| {
+                                                            cx.stop_propagation();
                                                             this.toggle_cluster_pin(
                                                                 pin_id.clone(),
                                                                 !is_pinned,
@@ -411,6 +475,7 @@ impl IceonApp {
                                                         .tooltip("Remove cluster context")
                                                         .accessibility_label("Remove cluster context")
                                                         .on_click(cx.listener(move |this, _, window, cx| {
+                                                            cx.stop_propagation();
                                                             this.prompt_remove_cluster(remove_target.clone(), window, cx);
                                                         })),
                                                     ),
@@ -420,6 +485,12 @@ impl IceonApp {
                             }),
                     ),
             )
+            .child(div().absolute().right_4().bottom_4().child(
+                Button::new("catalog-import-fab")
+                    .primary().icon(IconName::Plus).size(px(48.0)).rounded_full()
+                    .tooltip("Add kubeconfig").accessibility_label("Add kubeconfig")
+                    .on_click(cx.listener(|this, _, window, cx| this.prompt_import_kubeconfig(window, cx))),
+            ))
     }
 
     pub(crate) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
@@ -590,7 +661,51 @@ impl IceonApp {
 
 #[cfg(test)]
 mod catalog_table_tests {
-    use super::{CATALOG_COLUMNS, CATALOG_TABLE_MIN_WIDTH};
+    use super::{CATALOG_COLUMNS, CATALOG_TABLE_MIN_WIDTH, catalog_distro, catalog_version};
+
+    #[test]
+    fn reference_columns_are_in_order() {
+        assert_eq!(
+            CATALOG_COLUMNS.map(|column| column.title),
+            [
+                "Name", "Source", "Labels", "Version", "Distro", "Status", "Actions"
+            ]
+        );
+    }
+
+    #[test]
+    fn version_is_only_from_the_matching_current_session() {
+        assert_eq!(
+            catalog_version("a", Some(("a", "v1.31.1-gke.100"))),
+            "v1.31.1-gke.100"
+        );
+        assert_eq!(catalog_version("b", Some(("a", "v1.31.1-gke.100"))), "—");
+        assert_eq!(catalog_version("a", None), "—");
+        assert_eq!(catalog_version("a", Some(("a", "  "))), "—");
+    }
+
+    #[test]
+    fn distro_requires_an_explicit_known_version_suffix() {
+        for (version, distro) in [
+            ("v1.31.1-gke.100", "GKE"),
+            ("v1.30.0-eks-abcd", "EKS"),
+            ("v1.31.1+k3s1", "K3s"),
+            ("v1.31.1+rke2r1", "RKE2"),
+            ("v1.31.1-microk8s", "MicroK8s"),
+        ] {
+            assert_eq!(catalog_distro(version), distro);
+        }
+        for version in [
+            "—",
+            "",
+            "v1.31.1",
+            "gke-context",
+            "v1.31.1-gkexample",
+            "v1.31.1-custom.eks",
+        ] {
+            assert_eq!(catalog_distro(version), "—");
+        }
+    }
 
     #[test]
     fn table_minimum_fits_all_columns() {
@@ -600,15 +715,12 @@ mod catalog_table_tests {
     }
 
     #[test]
-    fn only_source_expands_and_only_internal_edges_have_separators() {
+    fn only_source_expands_and_columns_remain_compact() {
         assert_eq!(
             CATALOG_COLUMNS.map(|column| column.flexible),
-            [false, true, false, false]
+            [false, true, false, false, false, false, false]
         );
-        assert_eq!(
-            CATALOG_COLUMNS.map(|column| column.separator),
-            [true, true, true, false]
-        );
+        assert_eq!(CATALOG_COLUMNS.map(|column| column.separator), [false; 7]);
         assert_eq!(CATALOG_COLUMNS[1].title, "Source");
     }
 }

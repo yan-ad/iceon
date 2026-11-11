@@ -84,6 +84,7 @@ pub struct IceonApp {
     pub(crate) catalog_snapshot: CatalogSnapshot,
     pub(crate) catalog_error: Option<String>,
     pub(crate) catalog_refresh_pending: bool,
+    pub(crate) home_catalog_visible: bool,
     pub(crate) pending_remove_cluster: Option<ClusterSummary>,
 
     pub(crate) history: NavigationHistory,
@@ -339,6 +340,7 @@ impl IceonApp {
             catalog_snapshot,
             catalog_error: None,
             catalog_refresh_pending: false,
+            home_catalog_visible: false,
             pending_remove_cluster: None,
             history: NavigationHistory::new(initial_route.clone()),
             cluster_order,
@@ -542,6 +544,7 @@ impl IceonApp {
                 // Home has no console chrome until explicitly opened. Keep
                 // sessions alive so returning to their tabs preserves buffers.
                 self.pod_dock_open = false;
+                self.home_catalog_visible = false;
                 self.refresh_catalog(cx);
             }
             Route::Secrets => {
@@ -683,7 +686,10 @@ impl Render for IceonApp {
             .flex_col()
             .size_full()
             .text_color(cx.theme().foreground)
-            .child(self.render_title_bar(window, cx))
+            .when(
+                !matches!(self.history.current(), Route::Catalog) || self.home_catalog_visible,
+                |shell| shell.child(self.render_title_bar(window, cx)),
+            )
             .child(
                 h_flex()
                     .flex_1()

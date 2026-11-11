@@ -326,7 +326,7 @@ impl IceonApp {
                                         }
                                     })),
                             )
-                            .child(
+                            .when(!matches!(self.history.current(), Route::Catalog), |navigation| navigation.child(
                                 h_flex()
                                     .id("titlebar-cluster-switcher")
                                     .ml_3()
@@ -437,7 +437,7 @@ impl IceonApp {
                                                 ),
                                         )
                                     }),
-                            ),
+                            ))
                     )
                     .child(
                         h_flex()
