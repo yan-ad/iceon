@@ -468,40 +468,109 @@ impl IceonApp {
                     .pl(px(32.0))
                 }));
 
-                // Dynamically append discovered Custom Resource Definitions under Custom Resources
-                if group_id == "custom-resources"
-                    && let Some(defs_page) = &self.custom_definitions_page
-                {
-                    resources.extend(defs_page.items.iter().take(25).map(|crd| {
-                        let cid = cluster_id.to_owned();
-                        let crd_dest = format!("crd:{}", crd.name);
-                        let is_active = *active == crd_dest;
-                        let label = crd
-                            .columns
-                            .get("kind")
-                            .cloned()
-                            .unwrap_or_else(|| crd.name.clone());
-                        menu_item_with_pin(
-                            format!("crd-nav-{}", crd.name),
-                            label,
-                            None,
-                            is_active,
-                            None,
-                            None,
-                            cx.listener(move |this, _, window, cx| {
-                                this.navigate(
-                                    Route::Cluster {
-                                        cluster_id: cid.clone(),
-                                        section: crd_dest.clone(),
-                                    },
-                                    true,
-                                    window,
-                                    cx,
-                                );
-                            }),
+                if group_id == "custom-resources" {
+                    for (api_group, definitions) in
+                        crate::custom_resource_navigation::grouped_definitions(
+                            self.custom_definitions_page.as_ref(),
                         )
-                        .pl(px(32.0))
-                    }));
+                    {
+                        let contains_active = definitions
+                            .iter()
+                            .any(|definition| *active == format!("crd:{}", definition.name));
+                        let expanded = self.expanded_custom_groups.contains(&api_group);
+                        let toggle = api_group.clone();
+                        resources.push(
+                            menu_item_with_pin(
+                                format!("crd-group-{api_group}"),
+                                api_group,
+                                None,
+                                contains_active,
+                                Some(if expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                }),
+                                None,
+                                cx.listener(move |app, _, _, cx| {
+                                    if let Some(index) = app
+                                        .expanded_custom_groups
+                                        .iter()
+                                        .position(|group| group == &toggle)
+                                    {
+                                        app.expanded_custom_groups.remove(index);
+                                    } else {
+                                        app.expanded_custom_groups.push(toggle.clone());
+                                    }
+                                    cx.notify();
+                                }),
+                            )
+                            .pl(px(32.0)),
+                        );
+                        if expanded {
+                            for definition in definitions {
+                                let cid = cluster_id.to_owned();
+                                let destination = format!("crd:{}", definition.name);
+                                let selected = *active == destination;
+                                let label = definition
+                                    .columns
+                                    .get("kind")
+                                    .cloned()
+                                    .unwrap_or_else(|| definition.name.clone());
+                                resources.push(
+                                    menu_item_with_pin(
+                                        format!("crd-nav-{}", definition.name),
+                                        label,
+                                        None,
+                                        selected,
+                                        None,
+                                        None,
+                                        cx.listener(move |app, _, window, cx| {
+                                            app.navigate(
+                                                Route::Cluster {
+                                                    cluster_id: cid.clone(),
+                                                    section: destination.clone(),
+                                                },
+                                                true,
+                                                window,
+                                                cx,
+                                            )
+                                        }),
+                                    )
+                                    .pl(px(48.0)),
+                                );
+                            }
+                        }
+                    }
+                    if self.custom_discovery_loading {
+                        resources.push(
+                            menu_item_with_pin(
+                                "crd-loading",
+                                "Discovering resource types…",
+                                None,
+                                false,
+                                None,
+                                None,
+                                |_, _, _| {},
+                            )
+                            .pl(px(32.0)),
+                        );
+                    }
+                    if self.custom_discovery_error.is_some() {
+                        resources.push(
+                            menu_item_with_pin(
+                                "crd-retry",
+                                "Discovery failed / incomplete · Retry",
+                                None,
+                                false,
+                                None,
+                                None,
+                                cx.listener(|app, _, window, cx| {
+                                    app.discover_custom_resources(window, cx)
+                                }),
+                            )
+                            .pl(px(32.0)),
+                        );
+                    }
                 }
             }
         }

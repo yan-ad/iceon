@@ -75,7 +75,11 @@ impl ColumnLayout {
     fn new(kind: ResourceKind) -> Self {
         let mut columns = vec![TableColumn {
             key: "name",
-            label: "Name",
+            label: if kind == ResourceKind::CustomResourceDefinitions {
+                "Resource"
+            } else {
+                "Name"
+            },
             width: RESOURCE_NAME_WIDTH,
             min: 180.0,
         }];
@@ -862,9 +866,18 @@ impl ResourceTable {
                     )
                     .into_any_element()
                 } else {
-                    crate::selectable_text::selectable_text(item.name.clone())
-                        .text_color(cx.theme().sidebar_accent_foreground)
-                        .into_any_element()
+                    crate::selectable_text::selectable_text(
+                        if kind == ResourceKind::CustomResourceDefinitions {
+                            item.columns
+                                .get("kind")
+                                .cloned()
+                                .unwrap_or_else(|| item.name.clone())
+                        } else {
+                            item.name.clone()
+                        },
+                    )
+                    .text_color(cx.theme().sidebar_accent_foreground)
+                    .into_any_element()
                 }),
             )
             .when(show_ns, |el| {

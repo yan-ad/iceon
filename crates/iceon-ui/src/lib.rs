@@ -10,6 +10,7 @@ mod command_palette;
 mod console_font;
 #[cfg(debug_assertions)]
 mod console_probe;
+mod custom_resource_navigation;
 mod empty_state;
 mod selectable_text;
 mod theme_picker;
@@ -127,6 +128,12 @@ pub struct IceonApp {
     pub(crate) helm_install_message: Option<String>,
 
     pub(crate) custom_definitions_page: Option<ResourcePage>,
+    pub(crate) custom_discovery_generation: u64,
+    pub(crate) custom_discovery_loading: bool,
+    pub(crate) custom_discovery_error: Option<String>,
+    pub(crate) expanded_custom_groups: Vec<String>,
+    pub(crate) custom_instance_operation: u64,
+    pub(crate) custom_definition_group: Option<String>,
     pub(crate) custom_instances_page: Option<CustomResourcePage>,
 
     pub(crate) rbac_users_response: Option<RbacUsersResponse>,
@@ -371,6 +378,12 @@ impl IceonApp {
             helm_install_version: None,
             helm_install_message: None,
             custom_definitions_page: None,
+            custom_discovery_generation: 0,
+            custom_discovery_loading: false,
+            custom_discovery_error: None,
+            expanded_custom_groups: Vec::new(),
+            custom_instance_operation: 0,
+            custom_definition_group: None,
             custom_instances_page: None,
             rbac_users_response: None,
             rbac_management_snapshot: None,

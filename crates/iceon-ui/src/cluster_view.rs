@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::inspector_view::editor_surface::EditorSurface;
 use crate::navigation::resource_view_by_kind;
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, ColorName, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -285,7 +286,9 @@ pub fn section_to_resource_kind(section: &str) -> Option<ResourceKind> {
     }
 }
 
-pub fn parse_custom_resource_target(section: &str) -> Option<(Option<String>, Option<String>)> {
+pub(crate) fn parse_custom_resource_target(
+    section: &str,
+) -> Option<(Option<String>, Option<String>)> {
     if let Some(def) = section.strip_prefix("crd:")
         && !def.is_empty()
     {
@@ -907,21 +910,21 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
             ColumnDef {
                 header: "Group",
                 key: "group",
-                width: 180.0,
+                width: 220.0,
             },
             ColumnDef {
-                header: "Kind",
-                key: "kind",
+                header: "Versions",
+                key: "versions",
+                width: 140.0,
+            },
+            ColumnDef {
+                header: "Short Names",
+                key: "shortNames",
                 width: 140.0,
             },
             ColumnDef {
                 header: "Scope",
                 key: "scope",
-                width: 100.0,
-            },
-            ColumnDef {
-                header: "Versions",
-                key: "versions",
                 width: 120.0,
             },
         ],
@@ -996,6 +999,11 @@ impl IceonApp {
         self.namespaces.clear();
         self.resource_page = None;
         self.helm_page = None;
+        self.custom_discovery_generation = self.next_operation_id();
+        self.custom_discovery_loading = false;
+        self.custom_discovery_error = None;
+        self.expanded_custom_groups.clear();
+        self.custom_definition_group = None;
         self.custom_definitions_page = None;
         self.custom_instances_page = None;
         self.rbac_users_response = None;
@@ -1061,6 +1069,7 @@ impl IceonApp {
                         this.namespaces = ns_list;
                         this.refresh_catalog(cx);
                         if status == "connected" {
+                            this.discover_custom_resources(window, cx);
                             this.load_active_cluster_section(window, cx);
                         } else if let Some(e) = err {
                             this.cluster_error = Some(format!("Connection error: {e:?}"));
@@ -1286,6 +1295,8 @@ impl IceonApp {
                 .as_ref()
                 .filter(|_| namespaced_kind(req.kind))
                 == req.namespace.as_ref()
+            && (req.kind != ResourceKind::CustomResourceDefinitions
+                || self.custom_definition_group == req.group)
             && self.selected_status_filter == req.status
             && self.resource_filter_input.read(cx).value().trim()
                 == req.query.as_deref().unwrap_or_default()
@@ -1325,7 +1336,9 @@ impl IceonApp {
             continue_token: token,
             query: (!query.is_empty()).then_some(query),
             status: self.selected_status_filter.clone(),
-            group: None,
+            group: (kind == ResourceKind::CustomResourceDefinitions)
+                .then(|| self.custom_definition_group.clone())
+                .flatten(),
         };
         self.resource_pagination.request = Some(req.clone());
         self.resource_pagination.loading = true;
@@ -1534,81 +1547,104 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let read_id = self.next_operation_id();
-        let def_req = ResourceRequest {
-            cluster_id: session.cluster_id.clone(),
-            session_id: session.session_id.clone(),
-            kind: ResourceKind::CustomResourceDefinitions,
-            read_id,
-            namespace: None,
-            continue_token: None,
-            query: None,
-            status: None,
-            group,
-        };
-        let connection = self.connection.clone();
-        self.cluster_loading = true;
+        self.custom_instances_page = None;
+        self.cluster_error = None;
+        let selected = self
+            .custom_definitions_page
+            .as_ref()
+            .and_then(|page| {
+                page.items.iter().find(|item| {
+                    crd_name.as_ref().is_some_and(|name| name == &item.name)
+                        && group
+                            .as_ref()
+                            .is_none_or(|group| item.columns.get("group") == Some(group))
+                })
+            })
+            .cloned();
+        if let Some(definition) = selected {
+            if let Some(group) = definition.columns.get("group")
+                && !self.expanded_custom_groups.contains(group)
+            {
+                self.expanded_custom_groups.push(group.clone());
+            }
+            if let Some(uid) = definition.uid {
+                let namespace = if definition
+                    .columns
+                    .get("scope")
+                    .is_some_and(|scope| scope == "Namespaced")
+                {
+                    self.selected_namespace.clone()
+                } else {
+                    None
+                };
+                self.load_crd_instances_only(definition.name, uid, namespace, window, cx);
+            } else {
+                self.cluster_loading = false;
+                self.cluster_error = Some("Definition has no UID; reload discovery.".into());
+            }
+        } else {
+            self.cluster_loading = self.custom_discovery_loading;
+            if !self.custom_discovery_loading {
+                self.cluster_error =
+                    Some(self.custom_discovery_error.clone().unwrap_or_else(|| {
+                        "Selected custom resource definition is unavailable. Refresh discovery."
+                            .into()
+                    }));
+            }
+        }
         cx.notify();
-
-        cx.spawn_in(window, async move |this, cx| {
-            let defs = connection.resources(def_req).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.cluster_loading = false;
-                if let Ok(page) = defs {
-                    let selected_crd = if let Some(ref target_name) = crd_name {
-                        page.items
-                            .iter()
-                            .find(|item| &item.name == target_name)
-                            .or_else(|| page.items.first())
-                            .and_then(|item| item.uid.clone().map(|uid| (item.name.clone(), uid)))
-                    } else {
-                        page.items
-                            .first()
-                            .and_then(|item| item.uid.clone().map(|uid| (item.name.clone(), uid)))
-                    };
-                    this.custom_definitions_page = Some(page);
-                    if let Some((def_name, def_uid)) = selected_crd {
-                        this.load_crd_instances_only(def_name, def_uid, window, cx);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     fn load_crd_instances_only(
         &mut self,
         definition_name: String,
         definition_uid: String,
+        namespace: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
+        let operation = self.next_operation_id();
+        self.custom_instance_operation = operation;
+        self.cluster_loading = true;
+        let section = self.active_cluster_section.clone();
+        let selected_namespace = self.selected_namespace.clone();
         let req = CustomResourceRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
-            read_id: self.next_operation_id(),
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
+            read_id: operation,
             target: CustomResourceTarget {
                 definition_name,
                 definition_uid,
             },
-            namespace: self.selected_namespace.clone(),
+            namespace,
             continue_token: None,
         };
         let connection = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(page) = connection.custom_resources(req).await {
-                let _ = this.update_in(cx, |this, _, cx| {
-                    this.custom_instances_page = Some(page);
-                    cx.notify();
-                });
-            }
+        cx.spawn_in(window, async move |owner, cx| {
+            let result = connection.custom_resources(req).await;
+            let _ = owner.update_in(cx, |app, _, cx| {
+                if app.custom_instance_operation != operation
+                    || app.active_cluster_section != section
+                    || app.selected_namespace != selected_namespace
+                    || !app.cluster_session.as_ref().is_some_and(|s| {
+                        s.cluster_id == session.cluster_id && s.session_id == session.session_id
+                    })
+                {
+                    return;
+                }
+                app.cluster_loading = false;
+                match result {
+                    Ok(page) => app.custom_instances_page = Some(page),
+                    Err(error) => {
+                        app.cluster_error =
+                            Some(format!("Custom resources query failed: {error:?}"))
+                    }
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -2237,6 +2273,22 @@ impl IceonApp {
                                             .cleanable(true),
                                     ),
                                 )
+                            })
+                            .when(active_kind == Some(ResourceKind::CustomResourceDefinitions), |el| {
+                                let groups = crate::custom_resource_navigation::grouped_definitions(self.custom_definitions_page.as_ref());
+                                let owner = cx.entity().downgrade();
+                                el.child(Button::new("crd-group-filter").small().outline()
+                                    .label(self.custom_definition_group.clone().unwrap_or_else(|| "All groups".into()))
+                                    .dropdown_menu(move |mut menu, _, cx| {
+                                        let current = owner.upgrade().and_then(|app| app.read(cx).custom_definition_group.clone());
+                                        for group in std::iter::once(None).chain(groups.keys().cloned().map(Some)) {
+                                            let owner = owner.clone();
+                                            menu = menu.item(gpui_kit::component::menu::PopupMenuItem::new(group.clone().unwrap_or_else(|| "All groups".into())).checked(current == group).on_click(move |_, window, cx| {
+                                                let _ = owner.update(cx, |app, cx| { app.custom_definition_group = group.clone(); app.reload_active_section(window, cx); });
+                                            }));
+                                        }
+                                        menu
+                                    }))
                             })
                             .when(show_status_select, |el| {
                                 el.child(
@@ -2977,11 +3029,6 @@ impl IceonApp {
     }
 
     fn render_custom_resources_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let defs = self
-            .custom_definitions_page
-            .as_ref()
-            .map(|p| p.items.clone())
-            .unwrap_or_default();
         let instances = self.custom_instances_page.clone();
 
         v_flex()
@@ -2992,94 +3039,28 @@ impl IceonApp {
             .p_4()
             .gap_4()
             .overflow_y_scrollbar()
-            .child(
-                v_flex()
-                    .w_full()
-                    .p_3()
-                    .gap_2()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Custom Resource Definitions ({})", defs.len())),
-                    )
-                    .child(
-                        v_flex()
-                            .w_full()
-                            .gap_1p5()
-                            .children(defs.into_iter().enumerate().map(|(idx, def)| {
-                                let crd_name = def.name.clone();
-                                let crd_uid = def.uid.clone();
-                                let inspect_ref = ResourceReference {
-                                    kind: ResourceKind::CustomResourceDefinitions,
-                                    name: def.name.clone(),
-                                    namespace: None,
-                                    uid: def.uid.clone(),
-                                };
-                                h_flex()
-                                    .w_full()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_xs()
-                                            .truncate()
-                                            .child(def.name),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "crd-select-{idx}"
-                                        )))
-                                        .ml_auto()
-                                        .flex_shrink_0()
-                                        .xsmall()
-                                        .ghost()
-                                        .icon(IconName::GalleryVerticalEnd)
-                                        .tooltip("View custom resource instances")
-                                        .accessibility_label("View custom resource instances")
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| {
-                                                if let Some(uid) = crd_uid.clone() {
-                                                    this.load_crd_instances_only(
-                                                        crd_name.clone(),
-                                                        uid,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "crd-inspect-{idx}"
-                                        )))
-                                        .flex_shrink_0()
-                                        .xsmall()
-                                        .ghost()
-                                        .icon(IconName::FileText)
-                                        .tooltip("Inspect custom resource definition")
-                                        .accessibility_label("Inspect custom resource definition")
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| {
-                                                this.open_resource_inspector(
-                                                    inspect_ref.clone(),
-                                                    window,
-                                                    cx,
-                                                );
-                                            }),
-                                        ),
-                                    )
-                            })),
-                    ),
-            )
+            .when(self.cluster_loading, |el| {
+                el.child(div().text_sm().child("Loading custom resources…"))
+            })
+            .when_some(self.cluster_error.clone(), |el, error| {
+                el.child(crate::empty_state::error_state(error))
+            })
             .when_some(instances, |el, page: CustomResourcePage| {
+                let el = el
+                    .when(page.items.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .text_sm()
+                                .child("No custom resources in this namespace scope."),
+                        )
+                    })
+                    .when(page.continue_token.is_some() || page.truncated, |el| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .child("Showing a partial page of custom resources."),
+                        )
+                    });
                 el.child(
                     v_flex()
                         .w_full()
