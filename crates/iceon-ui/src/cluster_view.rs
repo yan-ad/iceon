@@ -229,7 +229,7 @@ use iceon_core::connection::{
 
 use crate::{
     IceonApp,
-    navigation::{Route, destination_label, normalize_destination, resource_view},
+    navigation::{Route, normalize_destination, resource_view},
 };
 
 #[derive(Clone, Debug, Default)]
@@ -2365,7 +2365,6 @@ impl IceonApp {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .child(self.render_cluster_toolbar(&section, active_kind, window, cx))
             .child(
                 v_flex()
                     .relative()
@@ -2442,14 +2441,13 @@ impl IceonApp {
         }
     }
 
-    fn render_cluster_toolbar(
+    pub(crate) fn render_header_resource_controls(
         &mut self,
-        section: &str,
-        active_kind: Option<ResourceKind>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let session = self.cluster_session.clone();
+        let section = self.active_cluster_section.clone();
+        let active_kind = section_to_resource_kind(&section);
         let dock_count = self.pod_dock_tabs.len() + self.port_forwards.len();
         self.sync_namespace_select(window, cx);
 
@@ -2477,161 +2475,99 @@ impl IceonApp {
             });
         }
 
-        v_flex()
-            .w_full()
-            .px_4()
-            .py_2p5()
+        h_flex()
             .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .w_full()
-                    .justify_between()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .gap_0p5()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(destination_label(section)),
-                                    )
-                                    .when_some(session.clone(), |el, s| {
-                                        el.child(
-                                            match s.status {
-                                                "connected" => Tag::success().small(),
-                                                "connecting" => Tag::warning().small(),
-                                                "error" => Tag::danger().small(),
-                                                _ => Tag::secondary().small(),
-                                            }
-                                            .child(s.status),
-                                        )
-                                        .when_some(
-                                            s.api_version.filter(|version| !version.is_empty()),
-                                            |el, version| {
-                                                el.child(
-                                                    Tag::info().outline().small().child(version),
-                                                )
-                                            },
-                                        )
-                                    })
-                                    .when(self.active_pod_sync_id.is_some(), |el| {
-                                        el.child(Tag::success().small().child("LIVE WATCH"))
-                                    }),
+            .items_center()
+            .flex_shrink_0()
+            .when(active_kind.is_some(), |el| {
+                el.child(
+                    div().w(px(200.0)).child(
+                        Input::new(&self.resource_filter_input)
+                            .xsmall()
+                            .cleanable(true),
+                    ),
+                )
+            })
+            .when(
+                active_kind == Some(ResourceKind::CustomResourceDefinitions),
+                |el| {
+                    let groups = crate::custom_resource_navigation::grouped_definitions(
+                        self.custom_definitions_page.as_ref(),
+                    );
+                    let owner = cx.entity().downgrade();
+                    el.child(
+                        Button::new("crd-group-filter")
+                            .xsmall()
+                            .outline()
+                            .label(
+                                self.custom_definition_group
+                                    .clone()
+                                    .unwrap_or_else(|| "All groups".into()),
                             )
-                            .when_some(active_kind, |el, kind| {
-                                let count = self.filtered_resource_items(kind, cx).len();
-                                el.child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "{count} {kind:?} loaded{}",
-                                            if self.resource_pagination.loading {
-                                                if self.selected_status_filter.is_some()
-                                                    || !self
-                                                        .resource_filter_input
-                                                        .read(cx)
-                                                        .value()
-                                                        .trim()
-                                                        .is_empty()
-                                                {
-                                                    " · searching…"
-                                                } else {
-                                                    " · loading…"
-                                                }
-                                            } else if self.cluster_error.is_some() {
-                                                " · incomplete"
-                                            } else if self
-                                                .resource_page
-                                                .as_ref()
-                                                .is_some_and(|p| p.continue_token.is_some())
-                                            {
-                                                " · scroll for more"
-                                            } else {
-                                                " · complete"
-                                            }
-                                        )),
-                                )
+                            .dropdown_menu(move |mut menu, _, cx| {
+                                let current = owner
+                                    .upgrade()
+                                    .and_then(|app| app.read(cx).custom_definition_group.clone());
+                                for group in
+                                    std::iter::once(None).chain(groups.keys().cloned().map(Some))
+                                {
+                                    let owner = owner.clone();
+                                    menu = menu.item(
+                                        gpui_kit::component::menu::PopupMenuItem::new(
+                                            group.clone().unwrap_or_else(|| "All groups".into()),
+                                        )
+                                        .checked(current == group)
+                                        .on_click(
+                                            move |_, window, cx| {
+                                                let _ = owner.update(cx, |app, cx| {
+                                                    app.custom_definition_group = group.clone();
+                                                    app.reload_active_section(window, cx);
+                                                });
+                                            },
+                                        ),
+                                    );
+                                }
+                                menu
                             }),
                     )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .flex_wrap()
-                            .when(active_kind.is_some(), |el| {
-                                el.child(
-                                    div().w(px(210.0)).child(
-                                        Input::new(&self.resource_filter_input)
-                                            .small()
-                                            .cleanable(true),
-                                    ),
-                                )
-                            })
-                            .when(active_kind == Some(ResourceKind::CustomResourceDefinitions), |el| {
-                                let groups = crate::custom_resource_navigation::grouped_definitions(self.custom_definitions_page.as_ref());
-                                let owner = cx.entity().downgrade();
-                                el.child(Button::new("crd-group-filter").small().outline()
-                                    .label(self.custom_definition_group.clone().unwrap_or_else(|| "All groups".into()))
-                                    .dropdown_menu(move |mut menu, _, cx| {
-                                        let current = owner.upgrade().and_then(|app| app.read(cx).custom_definition_group.clone());
-                                        for group in std::iter::once(None).chain(groups.keys().cloned().map(Some)) {
-                                            let owner = owner.clone();
-                                            menu = menu.item(gpui_kit::component::menu::PopupMenuItem::new(group.clone().unwrap_or_else(|| "All groups".into())).checked(current == group).on_click(move |_, window, cx| {
-                                                let _ = owner.update(cx, |app, cx| { app.custom_definition_group = group.clone(); app.reload_active_section(window, cx); });
-                                            }));
-                                        }
-                                        menu
-                                    }))
-                            })
-                            .when(show_status_select, |el| {
-                                el.child(
-                                    div().w(px(150.0)).child(
-                                        Select::new(&self.status_select)
-                                            .id("status-select")
-                                            .small()
-                                            .w_full()
-                                            .placeholder("Status")
-                                            .search_placeholder("Filter statuses…")
-                                            .menu_width(px(190.0)),
-                                    ),
-                                )
-                            })
-                            .when(dock_count > 0, |el| {
-                                el.child(
-                                    Button::new("toggle-pod-dock-btn")
-                                        .xsmall()
-                                        .outline()
-                                        .selected(self.pod_dock_open)
-                                        .label(format!("Dock ({dock_count})"))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.pod_dock_open = !this.pod_dock_open;
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .child(
-                                Button::new("reload-cluster-section-btn")
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::RefreshCw)
-                                    .tooltip("Refresh")
-                                    .accessibility_label("Refresh")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.reload_active_section(window, cx);
-                                    })),
-                            ),
+                },
+            )
+            .when(show_status_select, |el| {
+                el.child(
+                    div().w(px(120.0)).child(
+                        Select::new(&self.status_select)
+                            .id("status-select")
+                            .xsmall()
+                            .w_full()
+                            .placeholder("Status")
+                            .search_placeholder("Filter statuses…")
+                            .menu_width(px(190.0)),
                     ),
+                )
+            })
+            .when(dock_count > 0, |el| {
+                el.child(
+                    Button::new("toggle-pod-dock-btn")
+                        .xsmall()
+                        .outline()
+                        .selected(self.pod_dock_open)
+                        .label(format!("Dock ({dock_count})"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pod_dock_open = !this.pod_dock_open;
+                            cx.notify();
+                        })),
+                )
+            })
+            .child(
+                Button::new("reload-cluster-section-btn")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::RefreshCw)
+                    .tooltip("Refresh")
+                    .accessibility_label("Refresh")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.reload_active_section(window, cx);
+                    })),
             )
     }
 

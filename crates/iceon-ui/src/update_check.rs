@@ -25,6 +25,11 @@ impl IceonApp {
             let result = task.await;
             let _ = owner.update_in(cx, |app, _, cx| {
                 app.update_check_running = false;
+                app.update_status = match &result {
+                    Ok(Ok(result)) if result.available => crate::shell_footer::UpdateStatus::Available(result.latest.clone()),
+                    Ok(Ok(_)) => crate::shell_footer::UpdateStatus::Current,
+                    _ => crate::shell_footer::UpdateStatus::Failed,
+                };
                 let message = match result {
                     Ok(Ok(result)) if result.available => format!("Iceon {} is available. You have {}. Open Releases to download and install it manually.", result.latest,result.current),
                     Ok(Ok(result)) => format!("You’re up to date. Iceon {} is installed (latest stable: {}).",result.current,result.latest),

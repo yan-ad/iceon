@@ -401,7 +401,7 @@ impl IceonApp {
             .text_color(cx.theme().sidebar_foreground)
             .child(
                 h_flex()
-                    .w_full()
+                    .w_full().h_full()
                     .min_w_0()
                     .pr_3()
                     .gap_3()
@@ -418,7 +418,7 @@ impl IceonApp {
                     .text_color(cx.theme().sidebar_foreground)
                     .child(
                         h_flex()
-                            .flex_1()
+                            .flex_1().h_full()
                             .min_w_0()
                             .items_center()
                             .gap_0()
@@ -472,6 +472,19 @@ impl IceonApp {
                                         if let Some(route) = this.history.go_forward() {
                                             this.navigate(route, false, window, cx);
                                         }
+                                    })),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                Button::new("open-search-palette-btn")
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .xsmall()
+                                    .ghost()
+                                    .icon(IconName::Search)
+                                    .accessibility_label("Quick jump")
+                                    .tooltip("Quick jump")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_command_palette(window, cx);
                                     })),
                             )
                             )
@@ -593,63 +606,10 @@ impl IceonApp {
                     )
                     .child(
                         h_flex()
-                            .flex_shrink_0()
+                            .flex_shrink_0().h_full()
                             .items_center()
                             .gap_1p5()
-                            .child(
-                                Button::new("open-search-palette-btn")
-                                    .text_color(cx.theme().sidebar_foreground)
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Search)
-                                    .accessibility_label("Quick jump")
-                                    .tooltip("Quick jump")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_command_palette(window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("check-for-updates-btn")
-                                    .xsmall().ghost().icon(gpui_kit_assets::IconName::Download)
-                                    .disabled(self.update_check_running)
-                                    .accessibility_label("Check for Updates")
-                                    .tooltip("Check for Updates")
-                                    .on_click(cx.listener(|app, _, window, cx| app.check_for_updates(window, cx))),
-                            )
-                            .child(
-                                Button::new("titlebar-preferences-btn")
-                                    .text_color(cx.theme().sidebar_foreground)
-                                    .xsmall()
-                                    .ghost()
-                                    .child(gpui_kit::component::Icon::new(IconName::Settings).small())
-                                    .accessibility_label("Settings")
-                                    .tooltip("Settings")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_preferences(window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("titlebar-theme-btn")
-                                    .text_color(cx.theme().sidebar_foreground)
-                                    .xsmall()
-                                    .ghost()
-                                    .child(gpui_kit::component::Icon::new(if cx.theme().mode.is_dark() { IconName::Moon } else { IconName::Sun }).small())
-                                    .accessibility_label("Theme options")
-                                    .tooltip("Theme options")
-                                    .dropdown_menu(|menu, _, cx| crate::theme_picker::menu(menu, cx)),
-                            )
-                            .child(
-                                Button::new("titlebar-github-btn")
-                                    .text_color(cx.theme().sidebar_foreground)
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(gpui_kit_assets::IconName::Github)
-                                    .accessibility_label("GitHub")
-                                    .tooltip("GitHub")
-                                    .on_click(|_, _, cx| {
-                                        cx.open_url(iceon_core::project::REPOSITORY_URL)
-                                    }),
-                            ),
+                            .child(self.render_header_resource_controls(window, cx)),
                     ),
             )
     }

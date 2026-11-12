@@ -38,6 +38,7 @@ mod resource_table;
 #[cfg(debug_assertions)]
 pub use render_performance_probe::run as run_render_performance_probe;
 pub mod secrets_view;
+mod shell_footer;
 mod shell_header;
 mod shell_theme;
 mod sidebar_view;
@@ -76,6 +77,7 @@ use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
     pub(crate) update_check_running: bool,
+    pub(crate) update_status: shell_footer::UpdateStatus,
     pub(crate) bulk_delete: bulk_delete::BulkDeleteState,
     pub(crate) yaml_dock_tabs: Vec<yaml_dock::YamlDockTab>,
     pub(crate) active_yaml_tab: Option<u64>,
@@ -334,6 +336,7 @@ impl IceonApp {
 
         let mut app = Self {
             update_check_running: false,
+            update_status: shell_footer::UpdateStatus::default(),
             bulk_delete: bulk_delete::BulkDeleteState::default(),
             yaml_dock_tabs: vec![],
             active_yaml_tab: None,
@@ -639,6 +642,7 @@ impl Render for IceonApp {
                             .child(self.render_cluster_workspace(window, cx)),
                     ),
             )
+            .child(self.render_shell_footer(cx))
             .when(self.search_modal_open, |el| {
                 el.child(
                     v_flex()
