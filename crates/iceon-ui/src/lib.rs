@@ -53,7 +53,7 @@ use gpui_kit::*;
 use cluster_view::OverviewSnapshot;
 use iceon_core::catalog::{CatalogEngine, CatalogSnapshot, ClusterSummary};
 use iceon_core::connection::{
-    ConnectionEngine, ConnectionSnapshot, ResourceKind, ResourcePage,
+    ConnectionEngine, ConnectionSnapshot, ResourcePage,
     custom_resources::CustomResourcePage,
     helm::HelmPage,
     pod_runtime::PodForward,
@@ -120,8 +120,6 @@ pub struct IceonApp {
     pub(crate) current_continue_token: Option<String>,
     pub(crate) continue_token_history: Vec<Option<String>>,
     pub(crate) active_pod_sync_id: Option<String>,
-    pub(crate) creating_resource_kind: Option<ResourceKind>,
-    pub(crate) create_modal_message: Option<String>,
 
     pub(crate) helm_page: Option<HelmPage>,
     pub(crate) helm_install_chart: Option<String>,
@@ -162,7 +160,6 @@ pub struct IceonApp {
     pub(crate) helm_namespace_input: Entity<InputState>,
     pub(crate) rbac_new_user_input: Entity<InputState>,
 
-    pub(crate) create_yaml_editor: Entity<EditorState>,
     pub(crate) inspector_yaml_editor: Entity<EditorState>,
     pub(crate) helm_values_editor: Entity<EditorState>,
 
@@ -279,11 +276,6 @@ impl IceonApp {
         let rbac_new_user_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("new-service-account"));
 
-        let create_yaml_editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language("yaml")
-                .line_number(true)
-        });
         let inspector_yaml_editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("yaml")
@@ -373,8 +365,6 @@ impl IceonApp {
             current_continue_token: None,
             continue_token_history: vec![],
             active_pod_sync_id: None,
-            creating_resource_kind: None,
-            create_modal_message: None,
             helm_page: None,
             helm_install_chart: None,
             helm_install_version: None,
@@ -408,7 +398,6 @@ impl IceonApp {
             helm_release_name_input,
             helm_namespace_input,
             rbac_new_user_input,
-            create_yaml_editor,
             inspector_yaml_editor,
             helm_values_editor,
             pref_editor_font_size_input,
@@ -514,11 +503,7 @@ impl IceonApp {
             });
         }
         if self.runtime_editor_preferences.as_ref() != Some(&editor) {
-            for state in [
-                &self.create_yaml_editor,
-                &self.inspector_yaml_editor,
-                &self.helm_values_editor,
-            ] {
+            for state in [&self.inspector_yaml_editor, &self.helm_values_editor] {
                 state.update(cx, |state, cx| {
                     state.set_line_number(
                         editor.line_numbers == iceon_core::preferences::LineNumbers::On,

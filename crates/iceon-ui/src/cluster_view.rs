@@ -208,7 +208,6 @@ use gpui_kit::*;
 
 use iceon_core::connection::{
     OpenRequest, ResourceItem, ResourceKind, ResourcePage, ResourceRequest, SessionRequest,
-    create::{CreateRequest, CreateResult},
     custom_resources::{CustomResourcePage, CustomResourceRequest, CustomResourceTarget},
     details::ResourceReference,
     helm::{
@@ -1652,77 +1651,6 @@ impl IceonApp {
         .detach();
     }
 
-    pub(crate) fn open_create_resource_modal(
-        &mut self,
-        kind: ResourceKind,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.creating_resource_kind = Some(kind);
-        self.create_modal_message = None;
-        let ns = self.selected_namespace.as_deref().unwrap_or("default");
-        let template = default_yaml_template(kind, ns);
-        self.create_yaml_editor.update(cx, |editor, cx| {
-            editor.set_value(template, window, cx);
-        });
-        cx.notify();
-    }
-
-    fn submit_create_resource(
-        &mut self,
-        dry_run: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(kind) = self.creating_resource_kind else {
-            return;
-        };
-        let Some(session) = self.cluster_session.clone() else {
-            return;
-        };
-        let yaml = self.create_yaml_editor.read(cx).value().to_string();
-        let req = CreateRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
-            read_id: self.next_operation_id(),
-            kind,
-            namespace: if namespaced_kind(kind) {
-                Some(
-                    self.selected_namespace
-                        .clone()
-                        .unwrap_or_else(|| "default".into()),
-                )
-            } else {
-                None
-            },
-            yaml,
-            dry_run,
-        };
-        let connection = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let result: std::result::Result<CreateResult, _> = connection.create(req).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok(res) => {
-                        if !res.created {
-                            this.create_modal_message =
-                                Some(format!("Dry-run valid for {}", res.name));
-                        } else {
-                            this.creating_resource_kind = None;
-                            this.create_modal_message = None;
-                            this.reload_active_section(window, cx);
-                        }
-                    }
-                    Err(err) => {
-                        this.create_modal_message = Some(format!("Create failed: {err:?}"));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
     fn submit_helm_install(&mut self, dry_run: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(chart), Some(version)) = (
             self.helm_install_chart.clone(),
@@ -2105,19 +2033,25 @@ impl IceonApp {
                     )
                     .when_some(active_kind, |el, kind| {
                         el.child(
-                            div().absolute().right(px(20.0)).bottom(px(20.0)).child(
-                                Button::new("open-create-yaml-btn")
-                                    .primary()
-                                    .rounded_full()
-                                    .shadow_lg()
-                                    .icon(IconName::Plus)
-                                    .label("Create YAML")
-                                    .tooltip("Create a resource from YAML")
-                                    .accessibility_label("Create a resource from YAML")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_create_resource_modal(kind, window, cx);
-                                    })),
-                            ),
+                            div()
+                                .absolute()
+                                .right(px(20.0))
+                                .bottom(px(20.0))
+                                .occlude()
+                                .child(
+                                    Button::new("open-create-yaml-btn")
+                                        .primary()
+                                        .rounded_full()
+                                        .shadow_lg()
+                                        .icon(IconName::Plus)
+                                        .label("Create YAML")
+                                        .tooltip("Create a resource from YAML")
+                                        .accessibility_label("Create a resource from YAML")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            cx.stop_propagation();
+                                            this.open_create_yaml_tab(kind, window, cx);
+                                        })),
+                                ),
                         )
                     }),
             )
@@ -2347,11 +2281,6 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if let Some(create_kind) = self.creating_resource_kind {
-            return self
-                .render_create_resource_panel(create_kind, window, cx)
-                .into_any_element();
-        }
         if section == "overview"
             || section == "workloads-overview"
             || section == "workloads/overview"
@@ -2383,86 +2312,6 @@ impl IceonApp {
             "Select a resource section from the sidebar.",
         )
         .into_any_element()
-    }
-
-    fn render_create_resource_panel(
-        &self,
-        kind: ResourceKind,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        v_flex()
-            .w_full()
-            .h(px(520.0))
-            .p_4()
-            .gap_3()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Create {:?} from YAML", kind)),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("create-dry-run-btn")
-                                    .xsmall()
-                                    .outline()
-                                    .label("Dry-Run")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.submit_create_resource(true, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("create-submit-btn")
-                                    .xsmall()
-                                    .primary()
-                                    .label("Create")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.submit_create_resource(false, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("create-cancel-btn")
-                                    .xsmall()
-                                    .ghost()
-                                    .label("Cancel")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.creating_resource_kind = None;
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            )
-            .when_some(self.create_modal_message.clone(), |el, msg| {
-                el.child(
-                    div()
-                        .px_3()
-                        .py_1p5()
-                        .rounded(px(6.0))
-                        .bg(cx.theme().secondary)
-                        .text_xs()
-                        .child(msg),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .w_full()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(px(6.0))
-                    .overflow_hidden()
-                    .child(EditorSurface::new(
-                        &self.create_yaml_editor,
-                        &self.preferences_draft.editor,
-                    )),
-            )
     }
 
     fn render_overview_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3737,7 +3586,7 @@ pub(crate) fn row_status_tag(status: &str) -> Tag {
     tag.small().child(status.to_owned())
 }
 
-pub fn default_yaml_template(kind: ResourceKind, namespace: &str) -> String {
+pub(crate) fn default_yaml_template(kind: ResourceKind, namespace: &str) -> String {
     let (api_version, kind_name) = iceon_core::connection::create::creation_info(kind);
     if namespaced_kind(kind) {
         format!(

@@ -983,13 +983,13 @@ impl IceonApp {
             let title = format!(
                 "{}{}.yaml",
                 if tab.dirty(cx) { "● " } else { "" },
-                tab.reference.name
+                tab.name()
             );
             let tooltip = format!(
                 "{:?} / {} / {} — {}",
-                tab.reference.kind,
-                tab.reference.namespace.as_deref().unwrap_or("cluster"),
-                tab.reference.name,
+                tab.kind(),
+                tab.namespace().unwrap_or("cluster"),
+                tab.name(),
                 tab.message
             );
             Tab::new()

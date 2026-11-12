@@ -32,8 +32,6 @@ struct ResourceProjection {
     status: Option<String>,
     loading: bool,
     error: Option<String>,
-    creating: bool,
-    create_message: Option<String>,
     sync_id: Option<String>,
     preferences_revision: u64,
 }
@@ -58,8 +56,6 @@ fn resource_projection(app: &IceonApp, cx: &App) -> Option<ResourceProjection> {
         status: app.selected_status_filter.clone(),
         loading: app.cluster_loading,
         error: app.cluster_error.clone(),
-        creating: app.creating_resource_kind.is_some(),
-        create_message: app.create_modal_message.clone(),
         sync_id: app.active_pod_sync_id.clone(),
         preferences_revision: app.preferences_revision,
     })

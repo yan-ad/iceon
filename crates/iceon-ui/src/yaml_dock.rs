@@ -1,5 +1,7 @@
-//! Session-bound reviewed-field YAML buffers. Rendering never starts network work.
-use crate::{IceonApp, inspector_view::editor_surface::EditorSurface};
+//! Session-bound create and reviewed-field YAML buffers. Rendering never starts network work.
+use crate::{
+    IceonApp, cluster_view::namespaced_kind, inspector_view::editor_surface::EditorSurface,
+};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -10,13 +12,24 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use iceon_core::connection::{
+    ResourceKind,
+    create::{CreateCancelRequest, CreateRequest},
     details::ResourceReference,
     resource_edit::{EditCancelRequest, EditMode, EditRequest, EditResult},
 };
 
+#[derive(Debug, PartialEq, Eq)]
+enum YamlTarget {
+    Edit(ResourceReference),
+    Create {
+        kind: ResourceKind,
+        namespace: Option<String>,
+    },
+}
+
 pub(crate) struct YamlDockTab {
     pub key: u64,
-    pub reference: ResourceReference,
+    target: YamlTarget,
     cluster_id: String,
     session_id: String,
     pub editor: Entity<EditorState>,
@@ -27,6 +40,25 @@ pub(crate) struct YamlDockTab {
     _observer: Subscription,
 }
 impl YamlDockTab {
+    pub fn kind(&self) -> ResourceKind {
+        match &self.target {
+            YamlTarget::Edit(r) => r.kind,
+            YamlTarget::Create { kind, .. } => *kind,
+        }
+    }
+    pub fn namespace(&self) -> Option<&str> {
+        match &self.target {
+            YamlTarget::Edit(r) => r.namespace.as_deref(),
+            YamlTarget::Create { namespace, .. } => namespace.as_deref(),
+        }
+    }
+    pub fn name(&self) -> String {
+        match &self.target {
+            YamlTarget::Edit(r) => r.name.clone(),
+            YamlTarget::Create { kind, .. } => format!("Create {kind:?}"),
+        }
+    }
+
     pub fn dirty(&self, cx: &App) -> bool {
         dirty(&self.baseline, self.editor.read(cx).value().as_ref())
     }
@@ -70,7 +102,7 @@ impl IceonApp {
             .yaml_dock_tabs
             .iter()
             .find(|t| {
-                t.reference == reference
+                matches!(&t.target, YamlTarget::Edit(r) if *r == reference)
                     && t.cluster_id == session.cluster_id
                     && t.session_id == session.session_id
             })
@@ -94,7 +126,7 @@ impl IceonApp {
         let observer = cx.observe(&editor, |_, _, cx| cx.notify());
         self.yaml_dock_tabs.push(YamlDockTab {
             key,
-            reference,
+            target: YamlTarget::Edit(reference),
             cluster_id: session.cluster_id,
             session_id: session.session_id,
             editor,
@@ -106,6 +138,69 @@ impl IceonApp {
         });
         self.select_yaml_tab(key, window, cx);
         self.run_yaml_operation(key, EditMode::Read, false, window, cx);
+    }
+    pub(crate) fn open_create_yaml_tab(
+        &mut self,
+        kind: ResourceKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let namespace = namespaced_kind(kind).then(|| {
+            self.selected_namespace
+                .clone()
+                .unwrap_or_else(|| "default".into())
+        });
+        let target = YamlTarget::Create { kind, namespace };
+        if let Some(key) = self
+            .yaml_dock_tabs
+            .iter()
+            .find(|tab| {
+                tab.cluster_id == session.cluster_id
+                    && tab.session_id == session.session_id
+                    && tab.target == target
+            })
+            .map(|tab| tab.key)
+        {
+            self.select_yaml_tab(key, window, cx);
+            return;
+        }
+        if self.yaml_dock_tabs.len() + self.pod_dock_tabs.len() + self.device_terminals.len() >= 12
+        {
+            self.cluster_error = Some("Console tab limit reached (12). Close a tab first.".into());
+            cx.notify();
+            return;
+        }
+        let key = self.next_operation_id();
+        let editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("yaml")
+                .line_number(true)
+        });
+        let observer = cx.observe(&editor, |_, _, cx| cx.notify());
+        let template = crate::cluster_view::default_yaml_template(
+            kind,
+            match &target {
+                YamlTarget::Create { namespace, .. } => namespace.as_deref().unwrap_or("default"),
+                YamlTarget::Edit(_) => unreachable!(),
+            },
+        );
+        editor.update(cx, |editor, cx| editor.set_value(template, window, cx));
+        self.yaml_dock_tabs.push(YamlDockTab {
+            key,
+            target,
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            editor,
+            baseline: String::new(),
+            loaded: None,
+            operation: None,
+            message: "New resource YAML. Validate with server dry-run before creating.".into(),
+            _observer: observer,
+        });
+        self.select_yaml_tab(key, window, cx);
     }
     pub(crate) fn select_yaml_tab(
         &mut self,
@@ -130,7 +225,7 @@ impl IceonApp {
             return;
         };
         if tab.dirty(cx) {
-            self.confirm_destructive_action("Discard YAML changes?", "This buffer has unsaved changes. Closing discards only this tab. Use Save & Close to apply first.", "Discard", window, cx, move |app, _, cx| app.close_yaml_tab(key, cx));
+            self.confirm_destructive_action("Discard YAML changes?", "This buffer has unsaved changes. Closing discards only this tab. Use Save & Close to save first.", "Discard", window, cx, move |app, _, cx| app.close_yaml_tab(key, cx));
         } else {
             self.close_yaml_tab(key, cx);
         }
@@ -139,11 +234,20 @@ impl IceonApp {
         if let Some(index) = self.yaml_dock_tabs.iter().position(|t| t.key == key) {
             let tab = self.yaml_dock_tabs.remove(index);
             if let Some(operation_id) = tab.operation {
-                let _ = self.connection.cancel_resource_edit(EditCancelRequest {
-                    cluster_id: tab.cluster_id,
-                    session_id: tab.session_id,
-                    operation_id,
-                });
+                if matches!(tab.target, YamlTarget::Create { .. }) {
+                    let _ = self.connection.cancel_create(CreateCancelRequest {
+                        cluster_id: tab.cluster_id.clone(),
+                        session_id: tab.session_id.clone(),
+                        kind: tab.kind(),
+                        read_id: operation_id,
+                    });
+                } else {
+                    let _ = self.connection.cancel_resource_edit(EditCancelRequest {
+                        cluster_id: tab.cluster_id,
+                        session_id: tab.session_id,
+                        operation_id,
+                    });
+                }
             }
             if self.active_yaml_tab == Some(key) {
                 self.active_yaml_tab = self
@@ -171,8 +275,17 @@ impl IceonApp {
         if self.yaml_dock_tabs[index].operation.is_some() {
             return;
         }
+        if matches!(self.yaml_dock_tabs[index].target, YamlTarget::Create { .. }) {
+            if mode != EditMode::Read {
+                self.run_create_yaml_operation(key, mode == EditMode::DryRun, close, window, cx);
+            }
+            return;
+        }
         let tab = &self.yaml_dock_tabs[index];
-        if tab.reference.uid.as_deref().is_none_or(str::is_empty) {
+        let YamlTarget::Edit(reference) = &tab.target else {
+            return;
+        };
+        if reference.uid.as_deref().is_none_or(str::is_empty) {
             self.yaml_dock_tabs[index].message =
                 "Missing resource UID. Refresh the resource and reopen YAML.".into();
             cx.notify();
@@ -187,7 +300,7 @@ impl IceonApp {
             return;
         }
         let submitted = tab.editor.read(cx).value().to_string();
-        let request_reference = tab.reference.clone();
+        let request_reference = reference.clone();
         let cluster_id = tab.cluster_id.clone();
         let session_id = tab.session_id.clone();
         let resource_version = if mode == EditMode::Read {
@@ -256,6 +369,98 @@ impl IceonApp {
             });
         }).detach();
     }
+    fn run_create_yaml_operation(
+        &mut self,
+        key: u64,
+        dry_run: bool,
+        close: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.yaml_dock_tabs.iter().position(|tab| tab.key == key) else {
+            return;
+        };
+        if !self.yaml_lease_valid(&self.yaml_dock_tabs[index])
+            || self
+                .yaml_dock_tabs
+                .iter()
+                .any(|tab| tab.operation.is_some() && self.yaml_lease_valid(tab))
+        {
+            return;
+        }
+        let operation_id = self.next_operation_id();
+        let tab = &self.yaml_dock_tabs[index];
+        let YamlTarget::Create { kind, namespace } = &tab.target else {
+            return;
+        };
+        let submitted = tab.editor.read(cx).value().to_string();
+        let request = CreateRequest {
+            cluster_id: tab.cluster_id.clone(),
+            session_id: tab.session_id.clone(),
+            kind: *kind,
+            namespace: namespace.clone(),
+            yaml: submitted.clone(),
+            dry_run,
+            read_id: operation_id,
+        };
+        self.yaml_dock_tabs[index].operation = Some(operation_id);
+        self.yaml_dock_tabs[index].message = if dry_run {
+            "Validating…"
+        } else {
+            "Creating…"
+        }
+        .into();
+        let connection = self.connection.clone();
+        cx.notify();
+        cx.spawn_in(window, async move |owner, cx| {
+            let result = connection.create(request).await;
+            let _ = owner.update_in(cx, |app, window, cx| {
+                let Some(index) = app.yaml_dock_tabs.iter().position(|tab| {
+                    response_is_current(
+                        tab.key,
+                        key,
+                        tab.operation,
+                        operation_id,
+                        operation_id,
+                        app.yaml_lease_valid(tab),
+                    )
+                }) else {
+                    return;
+                };
+                let tab = &mut app.yaml_dock_tabs[index];
+                tab.operation = None;
+                let unchanged = tab.editor.read(cx).value() == submitted;
+                let mut created = false;
+                match result {
+                    Ok(result) if result.created => {
+                        created = true;
+                        tab.baseline = submitted;
+                        tab.message = format!(
+                            "Created {} successfully. Newer edits, if any, are preserved.",
+                            result.name
+                        );
+                    }
+                    Ok(result) => {
+                        tab.message = format!(
+                            "Server dry-run validated for {}. No resource created.",
+                            result.name
+                        )
+                    }
+                    Err(error) => {
+                        tab.message = format!("Create failed: {error:?}. Buffer preserved.")
+                    }
+                }
+                if created {
+                    if close && unchanged {
+                        app.close_yaml_tab(key, cx);
+                    }
+                    app.reload_active_section(window, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
     pub(crate) fn render_yaml_dock(
         &mut self,
         _window: &mut Window,
@@ -275,8 +480,9 @@ impl IceonApp {
             .yaml_dock_tabs
             .iter()
             .any(|t| t.operation.is_some() && self.yaml_lease_valid(t));
-        let save_disabled = !valid || busy || tab.loaded.is_none() || !is_dirty;
-        let close_disabled = !valid || busy || (is_dirty && tab.loaded.is_none());
+        let creating = matches!(tab.target, YamlTarget::Create { .. });
+        let save_disabled = !valid || busy || (!creating && tab.loaded.is_none()) || !is_dirty;
+        let close_disabled = !valid || busy || (is_dirty && !creating && tab.loaded.is_none());
         let editor = tab.editor.clone();
         let message = if valid {
             tab.message.clone()
@@ -284,14 +490,14 @@ impl IceonApp {
             "Session ended or changed. Buffer retained; saving is disabled.".into()
         };
         v_flex().size_full().min_h_0().min_w_0()
-            .child(div().px_2().py_1().text_xs().child(format!("{:?} · {} · {}", tab.reference.kind, tab.reference.name, tab.reference.namespace.as_deref().unwrap_or("cluster-scoped"))))
+            .child(div().px_2().py_1().text_xs().child(format!("{:?} · {} · {}", tab.kind(), tab.name(), tab.namespace().unwrap_or("cluster-scoped"))))
             .child(h_flex().gap_2().px_2().py_1().flex_wrap()
-                .child(Button::new("yaml-reload").small().icon(IconName::RefreshCw).accessibility_label("Reload YAML").ghost().label("Reload").disabled(!valid || busy).on_click(cx.listener(move |app, _, window, cx| {
+                .when(!creating, |toolbar| toolbar.child(Button::new("yaml-reload").small().icon(IconName::RefreshCw).accessibility_label("Reload YAML").ghost().label("Reload").disabled(!valid || busy).on_click(cx.listener(move |app, _, window, cx| {
                     if is_dirty { app.confirm_destructive_action("Reload YAML?", "Discard this buffer and read current reviewed fields from the server?", "Reload", window, cx, move |app, window, cx| app.run_yaml_operation(key, EditMode::Read, false, window, cx)); }
                     else { app.run_yaml_operation(key, EditMode::Read, false, window, cx); }
-                })))
+                }))))
                 .child(Button::new("yaml-dry-run").small().icon(IconName::Check).accessibility_label("Server dry-run").ghost().label("Dry-run").disabled(save_disabled).on_click(cx.listener(move |app, _, window, cx| app.run_yaml_operation(key, EditMode::DryRun, false, window, cx))))
-                .child(Button::new("yaml-apply").small().icon(IconName::Check).accessibility_label("Apply reviewed YAML changes").label("Apply").disabled(save_disabled).on_click(cx.listener(move |app, _, window, cx| app.run_yaml_operation(key, EditMode::Apply, false, window, cx))))
+                .child(Button::new("yaml-apply").small().icon(IconName::Check).accessibility_label(if creating { "Create resource from YAML" } else { "Apply reviewed YAML changes" }).label(if creating { "Create" } else { "Apply" }).disabled(save_disabled).on_click(cx.listener(move |app, _, window, cx| app.run_yaml_operation(key, EditMode::Apply, false, window, cx))))
                 .child(Button::new("yaml-save-close").small().icon(IconName::Check).accessibility_label("Save YAML and close tab").label("Save & Close").disabled(close_disabled).on_click(cx.listener(move |app, _, window, cx| {
                     let dirty = app.yaml_dock_tabs.iter().find(|t| t.key == key).is_some_and(|t| t.dirty(cx));
                     if dirty { app.run_yaml_operation(key, EditMode::Apply, true, window, cx); } else { app.close_yaml_tab(key, cx); }
@@ -303,7 +509,41 @@ impl IceonApp {
 }
 #[cfg(test)]
 mod tests {
-    use super::{dirty, response_is_current, same_lease};
+    use super::{YamlTarget, dirty, response_is_current, same_lease};
+    use iceon_core::connection::{ResourceKind, details::ResourceReference};
+    #[test]
+    fn creation_targets_are_distinct_from_edits_and_other_namespaces() {
+        let create = |namespace: &str| YamlTarget::Create {
+            kind: ResourceKind::Pods,
+            namespace: Some(namespace.into()),
+        };
+        assert_eq!(create("default"), create("default"));
+        assert_ne!(create("default"), create("production"));
+        assert_ne!(
+            create("default"),
+            YamlTarget::Create {
+                kind: ResourceKind::Deployments,
+                namespace: Some("default".into()),
+            }
+        );
+        assert_ne!(
+            create("default"),
+            YamlTarget::Edit(ResourceReference {
+                kind: ResourceKind::Pods,
+                namespace: Some("default".into()),
+                name: "existing".into(),
+                uid: Some("uid".into()),
+            })
+        );
+    }
+    #[test]
+    fn new_templates_remain_unsaved_and_created_baseline_preserves_newer_edits() {
+        let template = crate::cluster_view::default_yaml_template(ResourceKind::Pods, "fixture");
+        assert!(dirty("", &template));
+        assert!(template.contains("namespace: fixture"));
+        assert!(!dirty(&template, &template));
+        assert!(dirty(&template, &format!("{template}\n# newer changes")));
+    }
     #[test]
     fn late_responses_require_tab_operation_and_lease_identity() {
         assert!(response_is_current(4, 4, Some(8), 8, 9, true));
