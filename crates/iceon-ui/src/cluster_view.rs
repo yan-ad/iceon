@@ -2058,23 +2058,12 @@ impl IceonApp {
             .into_any_element()
     }
 
-    fn render_cluster_toolbar(
-        &mut self,
-        section: &str,
-        active_kind: Option<ResourceKind>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let session = self.cluster_session.clone();
-        let namespaces = self.namespaces.clone();
-        let selected_ns = self.selected_namespace.clone();
-        let show_ns_selector = active_kind.is_none_or(namespaced_kind);
-        let dock_count = self.pod_dock_tabs.len() + self.port_forwards.len();
+    pub(crate) fn sync_namespace_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let namespace_items = std::iter::once(NamespaceChoice {
             name: "All Namespaces".into(),
         })
         .chain(
-            namespaces
+            self.namespaces
                 .iter()
                 .cloned()
                 .map(|name| NamespaceChoice { name }),
@@ -2086,7 +2075,8 @@ impl IceonApp {
             });
             self.namespace_select_items = namespace_items.clone();
         }
-        let namespace_value = selected_ns
+        let namespace_value = self
+            .selected_namespace
             .clone()
             .unwrap_or_else(|| "All Namespaces".into());
         if self.namespace_select.read(cx).selected_value() != Some(&namespace_value) {
@@ -2094,6 +2084,18 @@ impl IceonApp {
                 state.set_selected_value(&namespace_value, window, cx);
             });
         }
+    }
+
+    fn render_cluster_toolbar(
+        &mut self,
+        section: &str,
+        active_kind: Option<ResourceKind>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let session = self.cluster_session.clone();
+        let dock_count = self.pod_dock_tabs.len() + self.port_forwards.len();
+        self.sync_namespace_select(window, cx);
 
         let statuses = active_kind
             .and_then(|kind| resource_view_by_kind(kind).map(|view| view.statuses))
@@ -2230,19 +2232,6 @@ impl IceonApp {
                                             .placeholder("Status")
                                             .search_placeholder("Filter statuses…")
                                             .menu_width(px(190.0)),
-                                    ),
-                                )
-                            })
-                            .when(show_ns_selector && !namespaces.is_empty(), |el| {
-                                el.child(
-                                    div().w(px(190.0)).child(
-                                        Select::new(&self.namespace_select)
-                                            .id("namespace-select")
-                                            .small()
-                                            .w_full()
-                                            .placeholder("Namespace")
-                                            .search_placeholder("Search namespaces…")
-                                            .menu_width(px(240.0)),
                                     ),
                                 )
                             })

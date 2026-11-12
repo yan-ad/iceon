@@ -202,9 +202,8 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(Welcome, |this, _: &Welcome, window, cx| {
         this.navigate(Route::Catalog, true, window, cx);
     });
-    register!(CommandPalette, |this, _: &CommandPalette, _, cx| {
-        this.search_modal_open = !this.search_modal_open;
-        cx.notify();
+    register!(CommandPalette, |this, _: &CommandPalette, window, cx| {
+        this.toggle_command_palette(window, cx);
     });
     register!(Reload, |this, _: &Reload, window, cx| {
         this.navigate(this.history.current().clone(), false, window, cx);
@@ -377,9 +376,8 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &Welcome, window, cx| {
                 this.navigate(Route::Catalog, true, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &CommandPalette, _, cx| {
-                this.search_modal_open = !this.search_modal_open;
-                cx.notify();
+            .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
+                this.toggle_command_palette(window, cx);
             }))
             .on_action(cx.listener(|this, _: &Reload, window, cx| {
                 this.navigate(this.history.current().clone(), false, window, cx);

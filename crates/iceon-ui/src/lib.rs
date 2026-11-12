@@ -5,6 +5,7 @@ mod app_assets;
 pub mod badge;
 pub mod catalog_view;
 pub mod cluster_view;
+mod command_palette;
 mod console_font;
 #[cfg(debug_assertions)]
 mod console_probe;
@@ -40,11 +41,8 @@ mod yaml_dock;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, TitleBar,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    input::{EditorState, Input, InputState},
-    scroll::ScrollableElement as _,
+    ActiveTheme as _, TitleBar, h_flex,
+    input::{EditorState, InputState},
     v_flex,
 };
 use gpui_kit::prelude::*;
@@ -63,7 +61,7 @@ use iceon_core::connection::{
 use iceon_core::preferences::{Preferences, PreferencesEngine};
 use iceon_core::secrets;
 use inspector_view::InspectorState;
-use navigation::{NavigationHistory, Route, active_group_id, destination_label};
+use navigation::{NavigationHistory, Route, active_group_id};
 use pod_dock_view::PodDockTab;
 use secrets_view::SecretsWorkspaceState;
 
@@ -146,7 +144,7 @@ pub struct IceonApp {
     pub(crate) secrets_state: SecretsWorkspaceState,
 
     // GPUI input & editor entities
-    pub(crate) global_search_input: Entity<InputState>,
+    pub(crate) command_state: Entity<gpui_kit::component::command::CommandState>,
     pub(crate) catalog_search_input: Entity<InputState>,
     pub(crate) resource_filter_input: Entity<InputState>,
     pub(crate) namespace_select: Entity<cluster_view::NamespaceSelectState>,
@@ -237,8 +235,8 @@ impl IceonApp {
             _ => vec!["workloads".into(), "config".into()],
         };
 
-        let global_search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Jump to cluster or section..."));
+        let command_state =
+            cx.new(|cx| gpui_kit::component::command::CommandState::new(window, cx));
         let catalog_search_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter clusters..."));
         let resource_filter_input =
@@ -385,7 +383,7 @@ impl IceonApp {
             active_pod_tab: None,
             port_forwards: vec![],
             secrets_state: SecretsWorkspaceState::default(),
-            global_search_input,
+            command_state,
             catalog_search_input,
             resource_filter_input,
             namespace_select,
@@ -569,118 +567,6 @@ impl IceonApp {
         }
         cx.notify();
     }
-
-    fn render_search_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self
-            .global_search_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_lowercase();
-        let clusters = self.catalog_snapshot.clusters.clone();
-        let current_cid = match self.history.current() {
-            Route::Cluster { cluster_id, .. } => Some(cluster_id.clone()),
-            _ => clusters.first().map(|c| c.id.clone()),
-        };
-
-        v_flex()
-            .w(px(520.0))
-            .max_h(px(420.0))
-            .p_3()
-            .gap_2()
-            .rounded(px(10.0))
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
-            .text_color(cx.theme().popover_foreground)
-            .overflow_hidden()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div().flex_1().child(
-                            Input::new(&self.global_search_input)
-                                .small()
-                                .cleanable(true),
-                        ),
-                    )
-                    .child(
-                        Button::new("close-search-modal-btn")
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.search_modal_open = false;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .gap_1()
-                    .overflow_y_scrollbar()
-                    .children(
-                        clusters
-                            .into_iter()
-                            .filter(|c| query.is_empty() || c.name.to_lowercase().contains(&query))
-                            .map(|c| {
-                                let cid = c.id.clone();
-                                Button::new(SharedString::from(format!("jump-cluster-{cid}")))
-                                    .xsmall()
-                                    .ghost()
-                                    .label(format!("Cluster · {}", c.name))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.search_modal_open = false;
-                                        this.navigate(
-                                            Route::Cluster {
-                                                cluster_id: cid.clone(),
-                                                section: "overview".into(),
-                                            },
-                                            true,
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                            }),
-                    )
-                    .when_some(current_cid, |el, cid| {
-                        el.children(
-                            iceon_core::catalog::SECTIONS
-                                .iter()
-                                .filter(|sec| {
-                                    query.is_empty()
-                                        || sec.contains(&query)
-                                        || destination_label(sec).to_lowercase().contains(&query)
-                                })
-                                .take(25)
-                                .map(|sec| {
-                                    let target_cid = cid.clone();
-                                    let target_sec = (*sec).to_string();
-                                    Button::new(SharedString::from(format!(
-                                        "jump-sec-{target_sec}"
-                                    )))
-                                    .xsmall()
-                                    .ghost()
-                                    .label(format!("Section · {}", destination_label(&target_sec)))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.search_modal_open = false;
-                                        this.navigate(
-                                            Route::Cluster {
-                                                cluster_id: target_cid.clone(),
-                                                section: target_sec.clone(),
-                                            },
-                                            true,
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                                }),
-                        )
-                    }),
-            )
-    }
 }
 
 impl Render for IceonApp {
@@ -688,6 +574,7 @@ impl Render for IceonApp {
         self.sync_runtime_preferences(window, cx);
         self.sync_menus(window, cx);
         self.menu_action_surface(cx)
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -717,9 +604,25 @@ impl Render for IceonApp {
                     v_flex()
                         .occlude()
                         .absolute()
-                        .top(px(44.0))
-                        .left(px(180.0))
-                        .child(self.render_search_modal(cx)),
+                        .inset_0()
+                        .size_full()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui_kit::black().opacity(0.35))
+                        .on_mouse_down(
+                            gpui_kit::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.close_command_palette(window, cx);
+                            }),
+                        )
+                        .child(
+                            div()
+                                .occlude()
+                                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                                    cx.stop_propagation()
+                                })
+                                .child(self.render_search_modal(cx)),
+                        ),
                 )
             })
     }

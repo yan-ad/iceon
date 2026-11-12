@@ -6,7 +6,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::DropdownMenu as _,
-    select::{SearchableVec, SelectEvent, SelectItem, SelectState},
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -32,6 +32,24 @@ impl SelectItem for ClusterChoice {
 
     fn value(&self) -> &Self::Value {
         &self.id
+    }
+
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .size(px(10.0))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(cluster_dot(&self.color)),
+                )
+                .child(div().truncate().child(self.name.clone()))
+                .into_any_element(),
+        )
     }
 
     fn matches(&self, query: &str) -> bool {
@@ -171,6 +189,7 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.sync_namespace_select(window, cx);
         let items = cluster_choices(&self.catalog_snapshot);
         let selected_id = match self.history.current() {
             Route::Cluster { cluster_id, .. } => items
@@ -305,23 +324,14 @@ impl IceonApp {
                                                 .items_center()
                                                 .gap_2()
                                                 .child(
-                                                    Button::new("titlebar-cluster-select-btn")
-                                                        .ghost()
+                                                    Select::new(&self.cluster_select)
+                                                        .id("titlebar-cluster-select")
                                                         .xsmall()
-                                                        .text_color(cx.theme().sidebar_foreground)
-                                                        .child(h_flex().items_center().gap_2()
-                                                            .child(div().size(px(10.0)).flex_shrink_0().rounded_full().bg(cluster_dot(&cluster.color)))
-                                                            .child(div().truncate().child(cluster.name.clone())))
+                                                        .appearance(false)
+                                                        .w(px((cluster.name.chars().count() as f32 * 7.0 + 52.0).clamp(160.0, 460.0)))
                                                         .accessibility_label(format!("Switch cluster: {}", cluster.name))
-                                                        .tooltip(format!(
-                                                            "Cluster: {} ({}) · Click to switch",
-                                                            cluster.name, cluster.context_name
-                                                        ))
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.search_modal_open =
-                                                                !this.search_modal_open;
-                                                            cx.notify();
-                                                        })),
+                                                        .search_placeholder("Search clusters…")
+                                                        .menu_width(px(360.0)),
                                                 )
                                                 .children(opened_path(&self.active_cluster_section).into_iter().enumerate().map(|(index, (label, section))| {
                                                     let cluster_id = cluster.id.clone();
@@ -339,36 +349,18 @@ impl IceonApp {
                                                             })))
                                                 }))
                                                 .child(breadcrumb_separator(cx))
-                                                .child(
-                                                    Button::new("titlebar-namespace-select-btn")
-                                                        .ghost()
-                                                        .xsmall()
-                                                        .text_color(cx.theme().sidebar_foreground)
-                                                        .icon(IconName::Folder)
-                                                        .label(current_namespace.clone())
-                                                        .tooltip(format!(
-                                                            "Namespace: {} · Click to view namespaces",
-                                                            current_namespace
-                                                        ))
-                                                        .on_click(cx.listener(
-                                                            |this, _, window, cx| {
-                                                                if let Route::Cluster {
-                                                                    cluster_id,
-                                                                    ..
-                                                                } = this.history.current().clone() {
-                                                                    this.navigate(
-                                                                        Route::Cluster {
-                                                                            cluster_id,
-                                                                            section: "namespaces".into(),
-                                                                        },
-                                                                        true,
-                                                                        window,
-                                                                        cx,
-                                                                    );
-                                                                }
-                                                            },
-                                                        )),
-                                                ),
+                                                 .child(
+                                                     div().w(px(190.0)).child(
+                                                         Select::new(&self.namespace_select)
+                                                             .id("titlebar-namespace-select")
+                                                             .xsmall()
+                                                             .appearance(false)
+                                                             .w_full()
+                                                             .placeholder(current_namespace.clone())
+                                                             .search_placeholder("Search namespaces…")
+                                                             .menu_width(px(240.0)),
+                                                     ),
+                                                 ),
                                         )
                                     })
                                     .when(selected_id.is_none(), |bar| {
@@ -388,10 +380,8 @@ impl IceonApp {
                                                         .text_color(cx.theme().sidebar_foreground)
                                                         .label(section_name)
                                                         .tooltip("Quick jump to cluster or section")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.search_modal_open =
-                                                                !this.search_modal_open;
-                                                            cx.notify();
+                                                        .on_click(cx.listener(|this, _, window, cx| {
+                                                            this.toggle_command_palette(window, cx);
                                                         })),
                                                 ),
                                         )
@@ -411,9 +401,8 @@ impl IceonApp {
                                     .icon(IconName::Search)
                                     .accessibility_label("Quick jump")
                                     .tooltip("Quick jump")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.search_modal_open = !this.search_modal_open;
-                                        cx.notify();
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_command_palette(window, cx);
                                     })),
                             )
                             .child(
