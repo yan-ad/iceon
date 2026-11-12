@@ -1044,6 +1044,11 @@ impl ResourceTable {
             .when(layout.name_resized, |row| row.child(div().flex_1()))
             .child(
                 table_cell(layout.width("actions"), false, false, cx.theme().border)
+                    // Isolate real controls from the row and window text-selection
+                    // hitboxes, without swallowing wheel events used by the table.
+                    .id(SharedString::from(format!("resource-actions-{idx}")))
+                    .block_mouse_except_scroll()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .justify_end()
                     .gap_1()
                     .items_center()
