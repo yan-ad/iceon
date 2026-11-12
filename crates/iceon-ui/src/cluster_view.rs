@@ -1155,13 +1155,22 @@ impl IceonApp {
     }
 
     fn load_overview_snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.cluster_session.clone() else {
+        self.overview_generation = self.next_operation_id();
+        let generation = self.overview_generation;
+        self.overview_snapshot = OverviewSnapshot::default();
+        self.cluster_error = None;
+        self.cluster_loading = false;
+        cx.notify();
+
+        let Some(session) = self
+            .cluster_session
+            .clone()
+            .filter(|s| s.status == "connected")
+        else {
             return;
         };
-        if session.status != "connected" {
-            return;
-        }
         let namespace = self.selected_namespace.clone();
+        let section = self.active_cluster_section.clone();
         let connection = self.connection.clone();
         let kinds = [
             ResourceKind::Nodes,
@@ -1175,56 +1184,144 @@ impl IceonApp {
             ResourceKind::CronJobs,
             ResourceKind::Events,
         ];
-        let requests: Vec<(ResourceKind, ResourceRequest)> = kinds
-            .into_iter()
-            .map(|kind| {
-                let read_id = self.next_operation_id();
-                (
-                    kind,
-                    ResourceRequest {
-                        cluster_id: session.cluster_id.clone(),
-                        session_id: session.session_id.clone(),
-                        kind,
-                        read_id,
-                        namespace: if namespaced_kind(kind) {
-                            namespace.clone()
-                        } else {
-                            None
-                        },
-                        continue_token: None,
-                        query: None,
-                        status: None,
-                        group: None,
-                    },
+        let request_session = session.clone();
+        let request_namespace = namespace.clone();
+        let is_current = move |app: &Self| {
+            app.overview_generation == generation
+                && app.active_cluster_section == section
+                && matches!(
+                    section.as_str(),
+                    "overview" | "workloads-overview" | "workloads/overview"
                 )
-            })
-            .collect();
-
+                && app.selected_namespace == namespace
+                && app.cluster_session.as_ref().is_some_and(|s| {
+                    s.status == "connected"
+                        && s.cluster_id == session.cluster_id
+                        && s.session_id == session.session_id
+                })
+                && matches!(app.history.current(), Route::Cluster { cluster_id, .. } if cluster_id == &session.cluster_id)
+        };
+        let session = request_session;
+        let namespace = request_namespace;
         self.cluster_loading = true;
         cx.notify();
 
         cx.spawn_in(window, async move |this, cx| {
             let mut snap = OverviewSnapshot::default();
-            for (kind, req) in requests {
-                if let Ok(page) = connection.resources(req).await {
-                    match kind {
-                        ResourceKind::Nodes => snap.nodes = Some(page),
-                        ResourceKind::Namespaces => snap.namespaces = Some(page),
-                        ResourceKind::Pods => snap.pods = Some(page),
-                        ResourceKind::Deployments => snap.deployments = Some(page),
-                        ResourceKind::DaemonSets => snap.daemonsets = Some(page),
-                        ResourceKind::StatefulSets => snap.statefulsets = Some(page),
-                        ResourceKind::ReplicaSets => snap.replicasets = Some(page),
-                        ResourceKind::Jobs => snap.jobs = Some(page),
-                        ResourceKind::CronJobs => snap.cronjobs = Some(page),
-                        ResourceKind::Events => snap.events = Some(page),
-                        _ => {}
+            let mut errors = Vec::new();
+            for kind in kinds {
+                let mut combined: Option<ResourcePage> = None;
+                let mut token = None;
+                let mut seen_tokens = std::collections::HashSet::new();
+                let mut incomplete = false;
+                for page_index in 0..100 {
+                    // Allocate an operation only while this exact overview and lease are active.
+                    let Ok(Some(req)) = this.update_in(cx, |app, _, _| {
+                        is_current(app).then(|| ResourceRequest {
+                            cluster_id: session.cluster_id.clone(),
+                            session_id: session.session_id.clone(),
+                            kind,
+                            read_id: app.next_operation_id(),
+                            namespace: if namespaced_kind(kind) {
+                                namespace.clone()
+                            } else {
+                                None
+                            },
+                            continue_token: token.clone(),
+                            query: None,
+                            status: None,
+                            group: None,
+                        })
+                    }) else {
+                        return;
+                    };
+                    let result = connection.resources(req.clone()).await;
+                    if !this
+                        .update_in(cx, |app, _, _| is_current(app))
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
+                    let mut page = match result {
+                        Ok(page)
+                            if page.cluster_id == req.cluster_id
+                                && page.session_id == req.session_id
+                                && page.kind == req.kind
+                                && page.read_id == req.read_id
+                                && page.namespace == req.namespace =>
+                        {
+                            page
+                        }
+                        result => {
+                            if let Some(page) = combined.as_mut() {
+                                page.truncated = true;
+                            }
+                            let reason = match result {
+                                Err(error) => format!("{error:?}"),
+                                Ok(_) => "response identity mismatch".to_string(),
+                            };
+                            errors.push(format!("{kind:?}: overview page failed: {reason}"));
+                            break;
+                        }
+                    };
+                    token = page.continue_token.clone();
+                    // A continuation alone is not permanent truncation once all pages arrive.
+                    incomplete |= page.truncated && token.is_none();
+                    let remaining = 10_000 - combined.as_ref().map_or(0, |p| p.items.len());
+                    incomplete |= page.items.len() > remaining;
+                    page.items.truncate(remaining);
+                    if let Some(accumulated) = combined.as_mut() {
+                        accumulated.items.append(&mut page.items);
+                        accumulated.read_id = page.read_id;
+                        accumulated.fetched_at = page.fetched_at;
+                        accumulated.continue_token = token.clone();
+                        accumulated.truncated = incomplete || token.is_some();
+                    } else {
+                        page.truncated = incomplete || token.is_some();
+                        combined = Some(page);
+                    }
+                    let Some(next_token) = token.as_ref() else {
+                        break;
+                    };
+                    if page_index == 99
+                        || combined.as_ref().is_some_and(|p| p.items.len() >= 10_000)
+                        || !seen_tokens.insert(next_token.clone())
+                    {
+                        // Retain the observed prefix, never a fabricated empty page.
+                        if let Some(page) = combined.as_mut() {
+                            page.truncated = true;
+                        }
+                        break;
                     }
                 }
+                match kind {
+                    ResourceKind::Nodes => snap.nodes = combined,
+                    ResourceKind::Namespaces => snap.namespaces = combined,
+                    ResourceKind::Pods => snap.pods = combined,
+                    ResourceKind::Deployments => snap.deployments = combined,
+                    ResourceKind::DaemonSets => snap.daemonsets = combined,
+                    ResourceKind::StatefulSets => snap.statefulsets = combined,
+                    ResourceKind::ReplicaSets => snap.replicasets = combined,
+                    ResourceKind::Jobs => snap.jobs = combined,
+                    ResourceKind::CronJobs => snap.cronjobs = combined,
+                    ResourceKind::Events => snap.events = combined,
+                    _ => {}
+                }
+                let snapshot = snap.clone();
+                let _ = this.update_in(cx, |app, _, cx| {
+                    if is_current(app) {
+                        app.overview_snapshot = snapshot;
+                        cx.notify();
+                    }
+                });
             }
-            let _ = this.update_in(cx, |this, _, cx| {
-                this.cluster_loading = false;
-                this.overview_snapshot = snap;
+            let _ = this.update_in(cx, |app, _, cx| {
+                if !is_current(app) {
+                    return;
+                }
+                app.cluster_loading = false;
+                app.overview_snapshot = snap;
+                app.cluster_error = (!errors.is_empty()).then(|| errors.join("; "));
                 cx.notify();
             });
         })
@@ -2083,7 +2180,7 @@ impl IceonApp {
                     .w_full()
                     .child(self.render_cluster_section_body(&section, active_kind, window, cx))
                     .when_some(
-                        self.cluster_error.clone().filter(|_| active_kind.is_none()),
+                        self.cluster_error.clone().filter(|_| active_kind.is_none() && parse_custom_resource_target(&section).is_none() && !matches!(section.as_str(), "overview" | "workloads-overview" | "workloads/overview")),
                         |el, error| el.child(crate::empty_state::error_state(error)),
                     )
                     .when_some(active_kind, |el, kind| {
@@ -2352,7 +2449,7 @@ impl IceonApp {
             || section == "workloads-overview"
             || section == "workloads/overview"
         {
-            return self.render_overview_body(cx).into_any_element();
+            return self.render_overview_dashboard(cx).into_any_element();
         }
         if section == "port-forwarding" {
             return self.render_port_forwarding_body(cx).into_any_element();
@@ -2379,242 +2476,6 @@ impl IceonApp {
             "Select a resource section from the sidebar.",
         )
         .into_any_element()
-    }
-
-    fn render_overview_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let snap = &self.overview_snapshot;
-        let current_cid = self
-            .cluster_session
-            .as_ref()
-            .map(|s| s.cluster_id.clone())
-            .unwrap_or_default();
-
-        let count_breakdown = |page: &Option<ResourcePage>| -> (usize, usize, usize) {
-            let Some(p) = page.as_ref() else {
-                return (0, 0, 0);
-            };
-            let total = p.items.len();
-            let mut healthy = 0;
-            let mut warning = 0;
-            for item in &p.items {
-                let s = item.status.to_lowercase();
-                if s.contains("running")
-                    || s.contains("ready")
-                    || s.contains("active")
-                    || s.contains("complete")
-                    || s.contains("succeeded")
-                    || s == "true"
-                {
-                    healthy += 1;
-                } else if s.contains("fail")
-                    || s.contains("error")
-                    || s.contains("pending")
-                    || s.contains("warning")
-                    || s == "false"
-                {
-                    warning += 1;
-                }
-            }
-            (total, healthy, warning)
-        };
-
-        let cards = [
-            ("Nodes", "nodes", count_breakdown(&snap.nodes)),
-            (
-                "Namespaces",
-                "namespaces",
-                count_breakdown(&snap.namespaces),
-            ),
-            ("Pods", "pods", count_breakdown(&snap.pods)),
-            (
-                "Deployments",
-                "deployments",
-                count_breakdown(&snap.deployments),
-            ),
-            (
-                "DaemonSets",
-                "daemon-sets",
-                count_breakdown(&snap.daemonsets),
-            ),
-            (
-                "StatefulSets",
-                "stateful-sets",
-                count_breakdown(&snap.statefulsets),
-            ),
-            (
-                "ReplicaSets",
-                "replica-sets",
-                count_breakdown(&snap.replicasets),
-            ),
-            ("Jobs", "jobs", count_breakdown(&snap.jobs)),
-            ("CronJobs", "cron-jobs", count_breakdown(&snap.cronjobs)),
-        ];
-
-        let events = snap
-            .events
-            .as_ref()
-            .map(|p| p.items.clone())
-            .unwrap_or_default();
-
-        v_flex()
-            .flex_1()
-            .w_full()
-            .h_full()
-            .min_h_0()
-            .p_4()
-            .gap_4()
-            .overflow_y_scrollbar()
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_3()
-                    .flex_wrap()
-                    .children(cards.into_iter().map(|(label, sec, (total, ok, warn))| {
-                        let cid = current_cid.clone();
-                        let target_sec = sec.to_owned();
-                        v_flex()
-                            .w(px(176.0))
-                            .p_3()
-                            .gap_1p5()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().secondary)
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(label),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!("ov-nav-{sec}")))
-                                            .xsmall()
-                                            .ghost()
-                                            .label("View")
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                if !cid.is_empty() {
-                                                    this.navigate(
-                                                        Route::Cluster {
-                                                            cluster_id: cid.clone(),
-                                                            section: target_sec.clone(),
-                                                        },
-                                                        true,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                }
-                                            })),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(total.to_string()),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(Tag::success().small().child(format!("{ok} ok")))
-                                    .when(warn > 0, |r| {
-                                        r.child(
-                                            Tag::warning().small().child(format!("{warn} attn")),
-                                        )
-                                    }),
-                            )
-                    })),
-            )
-            .child(
-                v_flex()
-                    .w_full()
-                    .p_3()
-                    .gap_2()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Recent Cluster Events ({})", events.len())),
-                    )
-                    .children(events.into_iter().take(25).enumerate().map(|(idx, ev)| {
-                        let ev_ref = ResourceReference {
-                            kind: ResourceKind::Events,
-                            name: ev.name.clone(),
-                            namespace: ev.namespace.clone(),
-                            uid: ev.uid.clone(),
-                        };
-                        h_flex()
-                            .w_full()
-                            .py_1()
-                            .gap_2()
-                            .justify_between()
-                            .items_center()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                h_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(if ev.status == "Warning" {
-                                        Tag::warning().small().child(ev.status.clone())
-                                    } else {
-                                        Tag::secondary().small().child(ev.status.clone())
-                                    })
-                                    .child(
-                                        div()
-                                            .w(px(130.0))
-                                            .text_xs()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .truncate()
-                                            .child(
-                                                ev.columns
-                                                    .get("reason")
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(160.0))
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .truncate()
-                                            .child(
-                                                ev.columns
-                                                    .get("involvedObject")
-                                                    .cloned()
-                                                    .unwrap_or_default(),
-                                            ),
-                                    )
-                                    .child(div().flex_1().text_xs().truncate().child(
-                                        ev.columns.get("message").cloned().unwrap_or_default(),
-                                    )),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("ov-ev-insp-{idx}")))
-                                    .ml_auto()
-                                    .flex_shrink_0()
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Eye)
-                                    .tooltip("Inspect cluster event")
-                                    .accessibility_label("Inspect cluster event")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_resource_inspector(ev_ref.clone(), window, cx);
-                                    })),
-                            )
-                    })),
-            )
     }
 
     fn render_port_forwarding_body(&self, cx: &mut Context<Self>) -> impl IntoElement {

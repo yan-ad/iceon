@@ -458,7 +458,7 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
     },
     NavSection {
         id: "config",
-        label: "Config",
+        label: "Configuration",
         default_child: "config-maps",
         children: &[
             NavChild {
@@ -521,7 +521,7 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
     },
     NavSection {
         id: "network",
-        label: "Network",
+        label: "Networking",
         default_child: "services",
         children: &[
             NavChild {

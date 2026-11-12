@@ -189,7 +189,23 @@ fn section_icon(section: &str) -> IconName {
     match section {
         "overview" => IconName::LayoutDashboard,
         "nodes" => IconName::Cpu,
-        "workloads" => IconName::GalleryVerticalEnd,
+        "workloads"
+        | "pods"
+        | "deployments"
+        | "daemon-sets"
+        | "stateful-sets"
+        | "replica-sets"
+        | "replication-controllers" => IconName::GalleryVerticalEnd,
+        "workloads-overview" => IconName::LayoutDashboard,
+        "jobs" | "cron-jobs" => IconName::Inbox,
+        "config-maps" => IconName::FileText,
+        "secrets" => IconName::FileText,
+        "services" | "ingresses" | "endpoints" | "endpoint-slices" | "network-policies" => {
+            IconName::Network
+        }
+        "persistent-volumes" | "persistent-volume-claims" | "storage-classes" => {
+            IconName::HardDrive
+        }
         "config" => IconName::Settings2,
         "network" => IconName::Network,
         "storage" => IconName::HardDrive,
@@ -339,7 +355,7 @@ impl IceonApp {
             .map(|pin| {
                 let destination = pin.section.clone().unwrap_or_else(|| "overview".into());
                 let label: SharedString = if destination == "overview" {
-                    "Cluster".into()
+                    "Overview".into()
                 } else {
                     destination_label(&destination).into()
                 };
@@ -372,47 +388,74 @@ impl IceonApp {
             })
             .collect::<Vec<_>>();
         let mut groups = Vec::new();
+        let cid = cluster_id.to_owned();
+        let pin_cid = cluster_id.to_owned();
+        let overview_pinned = is_section_pinned("overview");
+        groups.push(
+            SidebarGroup::new("").child(SidebarMenu::new().child(menu_item_with_pin(
+                "overview-first",
+                "Overview",
+                Some(section_icon("overview")),
+                active == "overview",
+                None,
+                Some((
+                    overview_pinned,
+                    Rc::new(cx.listener(move |app, _, _, cx| {
+                        app.toggle_section_pin(
+                            pin_cid.clone(),
+                            "overview".into(),
+                            !overview_pinned,
+                            cx,
+                        )
+                    })),
+                )),
+                cx.listener(move |app, _, window, cx| {
+                    app.navigate(
+                        Route::Cluster {
+                            cluster_id: cid.clone(),
+                            section: "overview".into(),
+                        },
+                        true,
+                        window,
+                        cx,
+                    )
+                }),
+            ))),
+        );
         if !favorites.is_empty() {
             groups
                 .push(SidebarGroup::new("Favorites").child(SidebarMenu::new().children(favorites)));
         }
-        let mut resources = Vec::new();
-        for group in CLUSTER_SECTIONS {
+        for group in CLUSTER_SECTIONS
+            .iter()
+            .filter(|group| group.id != "overview")
+        {
+            let mut resources = Vec::new();
             let group_id = group.id;
-            let expanded = self.expanded_cluster_groups.iter().any(|id| id == group_id);
             let leaf = group.children.is_empty();
-            let cid = cluster_id.to_owned();
-            let pin_state = if leaf {
-                let pinned = is_section_pinned(group.default_child);
+            if leaf {
+                let cid = cluster_id.to_owned();
                 let pin_cid = cluster_id.to_owned();
-                let pin_sec = group.default_child.to_owned();
-                let handler: SidebarClickHandler = Rc::new(cx.listener(move |this, _, _, cx| {
-                    this.toggle_section_pin(pin_cid.clone(), pin_sec.clone(), !pinned, cx);
-                }));
-                Some((pinned, handler))
-            } else {
-                None
-            };
-            resources.push(menu_item_with_pin(
-                format!("grp-{group_id}"),
-                if group_id == "overview" {
-                    "Cluster"
-                } else {
-                    group.label
-                },
-                Some(section_icon(group_id)),
-                leaf && active == group.default_child,
-                if leaf {
-                    None
-                } else if expanded {
-                    Some(IconName::ChevronDown)
-                } else {
-                    Some(IconName::ChevronRight)
-                },
-                pin_state,
-                cx.listener(move |this, _, window, cx| {
-                    if leaf {
-                        this.navigate(
+                let pinned = is_section_pinned(group.default_child);
+                resources.push(menu_item_with_pin(
+                    format!("grp-{group_id}"),
+                    group.label,
+                    Some(section_icon(group_id)),
+                    active == group.default_child,
+                    None,
+                    Some((
+                        pinned,
+                        Rc::new(cx.listener(move |app, _, _, cx| {
+                            app.toggle_section_pin(
+                                pin_cid.clone(),
+                                group.default_child.into(),
+                                !pinned,
+                                cx,
+                            )
+                        })),
+                    )),
+                    cx.listener(move |app, _, window, cx| {
+                        app.navigate(
                             Route::Cluster {
                                 cluster_id: cid.clone(),
                                 section: group.default_child.into(),
@@ -420,22 +463,10 @@ impl IceonApp {
                             true,
                             window,
                             cx,
-                        );
-                    } else {
-                        if let Some(index) = this
-                            .expanded_cluster_groups
-                            .iter()
-                            .position(|id| id == group_id)
-                        {
-                            this.expanded_cluster_groups.remove(index);
-                        } else {
-                            this.expanded_cluster_groups.push(group_id.into());
-                        }
-                        cx.notify();
-                    }
-                }),
-            ));
-            if expanded && !leaf {
+                        )
+                    }),
+                ));
+            } else {
                 resources.extend(group.children.iter().map(|child| {
                     let cid = cluster_id.to_owned();
                     let destination = child.id;
@@ -449,7 +480,7 @@ impl IceonApp {
                     menu_item_with_pin(
                         format!("child-{destination}"),
                         child.label,
-                        None,
+                        Some(section_icon(child.id)),
                         active == destination,
                         None,
                         Some((pinned, pin_handler)),
@@ -465,7 +496,6 @@ impl IceonApp {
                             );
                         }),
                     )
-                    .pl(px(32.0))
                 }));
 
                 if group_id == "custom-resources" {
@@ -573,8 +603,11 @@ impl IceonApp {
                     }
                 }
             }
+            groups.push(
+                SidebarGroup::new(if leaf { "" } else { group.label })
+                    .child(SidebarMenu::new().children(resources)),
+            );
         }
-        groups.push(SidebarGroup::new("Resources").child(SidebarMenu::new().children(resources)));
         Sidebar::new(SharedString::from(format!(
             "cluster-navigation-{cluster_id}"
         )))

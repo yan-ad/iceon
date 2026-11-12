@@ -75,3 +75,35 @@ async fn exact_cancel_stops_in_flight_read_and_old_disposal_cannot_cancel_replac
     .unwrap();
     assert_eq!(result, Err(ConnectionError::StaleSession));
 }
+
+#[tokio::test]
+async fn metadata_list_uses_partial_object_metadata_negotiation() {
+    use http::{Request, Response};
+    use kube::client::Body;
+    let (_root, _catalog, engine, id, _) = fixture();
+    let client = kube::Client::new(
+        crate::connection::transport::CancelService(tower::service_fn(
+            move |r: Request<Body>| async move {
+                let body = if r.uri().path() == "/version" {
+                    json!({"gitVersion":"v1.35.8"})
+                } else if r.uri().path().contains("customresourcedefinitions") {
+                    crd()
+                } else {
+                    assert_eq!(
+                        r.headers().get("accept").unwrap().to_str().unwrap(),
+                        "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1"
+                    );
+                    json!({"apiVersion":"meta.k8s.io/v1","kind":"PartialObjectMetadataList","metadata":{},"items":[]})
+                };
+                Ok::<_, std::io::Error>(Response::new(Body::from(
+                    serde_json::to_vec(&body).unwrap(),
+                )))
+            },
+        )),
+        "default",
+    );
+    let snapshot = connected(&engine, id, client).await;
+    let page = engine.custom_resources(request(&snapshot)).await.unwrap();
+    assert!(page.items.is_empty());
+    assert!(!page.truncated);
+}

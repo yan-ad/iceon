@@ -155,6 +155,20 @@ fn breadcrumb_choices(section: &str, group_level: bool) -> Vec<(String, String)>
         .unwrap_or_else(|| vec![("Definitions".into(), "custom-resource-definitions".into())])
 }
 
+/// GKE's generated context is `gke_<project>_<location>_<cluster>`.
+/// Only shorten the display label; routing and dropdown identity stay unchanged.
+fn compact_cluster_name(name: &str) -> &str {
+    name.strip_prefix("gke_")
+        .and_then(|context| {
+            let mut parts = context.splitn(3, '_');
+            let project = parts.next()?;
+            let location = parts.next()?;
+            let cluster = parts.next()?;
+            (!project.is_empty() && !location.is_empty() && !cluster.is_empty()).then_some(cluster)
+        })
+        .unwrap_or(name)
+}
+
 fn cluster_dot(color: &str) -> Hsla {
     let rgb = color
         .strip_prefix('#')
@@ -388,10 +402,10 @@ impl IceonApp {
                                                 .gap_2()
                                                 .child(
                                                     Button::new("titlebar-cluster-select")
-                                                        .ghost().xsmall().min_w_0().max_w(px(520.0))
+                                                        .ghost().xsmall().min_w_0().max_w(px(340.0))
                                                         .text_color(cx.theme().sidebar_foreground)
                                                         .child(h_flex().items_center().gap_2().min_w_0()
-                                                            .child(div().min_w_0().truncate().child(cluster.name.clone()))
+                                                            .child(div().min_w_0().max_w(px(180.0)).truncate().child(compact_cluster_name(&cluster.name).to_owned()))
                                                             .child(h_flex().flex_shrink_0().items_center().gap_1()
                                                                 .child(connection_indicator(&status, cx))
                                                                 .child(div().text_xs().max_w(px(140.0)).truncate().text_color(cx.theme().muted_foreground).child(version.clone()))))
@@ -565,6 +579,44 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     use super::cluster_choices;
+    #[test]
+    fn expanded_sidebar_and_breadcrumbs_share_overview_first_and_group_labels() {
+        let groups = crate::navigation::CLUSTER_SECTIONS;
+        assert_eq!(groups[0].id, "overview");
+        assert_eq!(
+            super::opened_path("overview"),
+            vec![("Overview".into(), "overview".into())]
+        );
+        assert_eq!(super::opened_path("config-maps")[0].0, "Configuration");
+        assert_eq!(super::opened_path("services")[0].0, "Networking");
+        assert_eq!(
+            super::breadcrumb_choices("pods", false)[0].1,
+            "workloads-overview"
+        );
+    }
+
+    #[test]
+    fn compact_gke_labels_preserve_cluster_name_and_other_contexts() {
+        assert_eq!(
+            super::compact_cluster_name(
+                "gke_perfect-impulse-344607_asia-southeast2-a_kaj-prd-cluster"
+            ),
+            "kaj-prd-cluster"
+        );
+        assert_eq!(
+            super::compact_cluster_name("gke_project_zone_cluster_extra"),
+            "cluster_extra"
+        );
+        for name in [
+            "yanuar@kubernetes",
+            "production",
+            "gke_project",
+            "gke_project_zone_",
+            "gke__zone_cluster",
+        ] {
+            assert_eq!(super::compact_cluster_name(name), name);
+        }
+    }
     #[test]
     fn breadcrumb_menus_match_sidebar_groups_and_workload_pages() {
         let groups = super::breadcrumb_choices("pods", true);

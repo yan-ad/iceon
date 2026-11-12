@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 mod tests;
 
 const BODY_LIMIT: usize = 2 * 1024 * 1024;
-const METADATA_ACCEPT: &str = "application/json;as=PartialObjectMetadataList;g=meta.k8s.io;v=v1";
+const METADATA_ACCEPT: &str = "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1";
 
 pub(super) struct CustomSlot {
     id: u64,
