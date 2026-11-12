@@ -32,7 +32,11 @@ impl UpdateStatus {
     }
 }
 impl IceonApp {
-    pub(crate) fn render_shell_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_shell_footer(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let sidebar_open = matches!(
             self.history.current(),
             crate::navigation::Route::Cluster { .. }
@@ -93,23 +97,37 @@ impl IceonApp {
                             .accessibility_label("Theme options")
                             .tooltip("Theme options")
                             .dropdown_menu(|menu, _, cx| crate::theme_picker::menu(menu, cx)),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("footer-updates")
+                            .xsmall()
+                            .ghost()
+                            .icon(gpui_kit_assets::IconName::Download)
+                            .accessibility_label("Check for Updates")
+                            .tooltip(format!(
+                                "Iceon v{} · {}",
+                                env!("CARGO_PKG_VERSION"),
+                                self.update_status.label(self.update_check_running)
+                            ))
+                            .disabled(self.update_check_running)
+                            .on_click(
+                                cx.listener(|app, _, window, cx| app.check_for_updates(window, cx)),
+                            ),
                     ),
             )
             .child(
-                Button::new("footer-updates")
-                    .xsmall()
-                    .ghost()
-                    .mr_2()
-                    .icon(gpui_kit_assets::IconName::Download)
-                    .label(format!(
-                        "v{} · {}",
-                        env!("CARGO_PKG_VERSION"),
-                        self.update_status.label(self.update_check_running)
-                    ))
-                    .accessibility_label("Check for Updates")
-                    .tooltip("Check for Updates")
-                    .disabled(self.update_check_running)
-                    .on_click(cx.listener(|app, _, window, cx| app.check_for_updates(window, cx))),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .track_focus(&self.console_focus)
+                    .key_context("IceonConsole")
+                    .when(
+                        !self.pod_dock_open
+                            && !matches!(self.history.current(), crate::navigation::Route::Setup),
+                        |area| area.child(self.render_console_tabs(window, cx)),
+                    ),
             )
     }
 }

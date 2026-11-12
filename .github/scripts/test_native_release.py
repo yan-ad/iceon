@@ -38,21 +38,21 @@ class NativeReleaseTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.out = self.root / "dist"
         self.out.mkdir()
-        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.1.3"\n')
+        (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.1.4"\n')
         lock = []
         for name in n.PACKAGES:
             directory = self.root / "crates" / name
             directory.mkdir(parents=True)
             (directory / "Cargo.toml").write_text(f'[package]\nname = "{name}"\nversion.workspace = true\n')
-            lock.append(f'[[package]]\nname = "{name}"\nversion = "0.1.3"\n')
+            lock.append(f'[[package]]\nname = "{name}"\nversion = "0.1.4"\n')
         (self.root / "Cargo.lock").write_text("\n".join(lock))
-        (self.root / "CHANGELOG.md").write_text("# Changes\n\n## 0.1.3 (pending CI)\n\nNative release.\n\n## 0.1.1\nOld\n")
+        (self.root / "CHANGELOG.md").write_text("# Changes\n\n## 0.1.4 (pending CI)\n\nNative release.\n\n## 0.1.1\nOld\n")
         self.sha = "a" * 40
         self.tag = "b" * 40
         self.verifier = patch.object(n, "verify_updates")
         self.verifier.start()
         self.addCleanup(self.verifier.stop)
-        self.env = {"GITHUB_REPOSITORY": n.REPOSITORY, "RELEASE_TAG": n.VERSION, "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/0.1.3", "GITHUB_SHA": self.sha}
+        self.env = {"GITHUB_REPOSITORY": n.REPOSITORY, "RELEASE_TAG": n.VERSION, "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/0.1.4", "GITHUB_SHA": self.sha}
 
     def assets(self, extra=None):
         info = dict(CFBundleIdentifier="ad.yan.iceon", CFBundleExecutable="iceon", CFBundleVersion=n.VERSION, CFBundleShortVersionString=n.VERSION)
@@ -76,7 +76,7 @@ class NativeReleaseTests(unittest.TestCase):
 
     def git(self, *args):
         if "ls-remote" in args:
-            return f"{self.tag}\trefs/tags/0.1.3\n{self.sha}\trefs/tags/0.1.3^{{}}"
+            return f"{self.tag}\trefs/tags/0.1.4\n{self.sha}\trefs/tags/0.1.4^{{}}"
         return self.sha
 
     def test_portable_upgrade_keeps_012_archive_layout(self):
@@ -91,14 +91,14 @@ class NativeReleaseTests(unittest.TestCase):
     def test_versions_valid_inherited_and_explicit(self):
         n.versions(self.root)
         path = self.root / "crates/iceon-app/Cargo.toml"
-        path.write_text('[package]\nname = "iceon-app"\nversion = "0.1.3"\n')
+        path.write_text('[package]\nname = "iceon-app"\nversion = "0.1.4"\n')
         n.versions(self.root)
 
     def test_versions_fail_closed(self):
         for filename in ("Cargo.toml", "Cargo.lock", "crates/iceon-app/Cargo.toml"):
             path = self.root / filename
             original = path.read_text()
-            path.write_text(original.replace('"0.1.3"', '"0.1.8"') if filename != "crates/iceon-app/Cargo.toml" else original.replace("version.workspace = true", 'version = "0.1.8"'))
+            path.write_text(original.replace('"0.1.4"', '"0.1.8"') if filename != "crates/iceon-app/Cargo.toml" else original.replace("version.workspace = true", 'version = "0.1.8"'))
             with self.subTest(filename=filename), self.assertRaises(ValueError):
                 n.versions(self.root)
             path.write_text(original)
@@ -106,14 +106,14 @@ class NativeReleaseTests(unittest.TestCase):
     def test_lock_missing_duplicate_or_registry_package(self):
         path = self.root / "Cargo.lock"
         original = path.read_text()
-        for text in (original.replace('name = "iceon-app"', 'name = "other"'), original + '\n[[package]]\nname = "iceon-app"\nversion = "0.1.3"\n', original.replace('name = "iceon-app"', 'name = "iceon-app"\nsource = "registry"')):
+        for text in (original.replace('name = "iceon-app"', 'name = "other"'), original + '\n[[package]]\nname = "iceon-app"\nversion = "0.1.4"\n', original.replace('name = "iceon-app"', 'name = "iceon-app"\nsource = "registry"')):
             path.write_text(text)
             with self.assertRaises(ValueError):
                 n.versions(self.root)
 
     def test_changelog_section_only(self):
         self.assertEqual(n.changelog(self.root), "Native release.")
-        for text in ("## 0.1.1\nOld", "## v0.1.3\nNo", "## 0.1.3\n\n", "## 0.1.3\nOne\n## 0.1.3\nTwo"):
+        for text in ("## 0.1.1\nOld", "## v0.1.4\nNo", "## 0.1.4\n\n", "## 0.1.4\nOne\n## 0.1.4\nTwo"):
             (self.root / "CHANGELOG.md").write_text(text)
             with self.assertRaises(ValueError):
                 n.changelog(self.root)
@@ -126,7 +126,7 @@ class NativeReleaseTests(unittest.TestCase):
             self.assertEqual(n.guard(self.root, self.tag), self.tag)
 
     def test_guard_rejects_bad_context(self):
-        for key, value in (("GITHUB_REPOSITORY", "fork/iceon"), ("RELEASE_TAG", "v0.1.3"), ("RELEASE_TAG", "0.1.4"), ("GITHUB_EVENT_NAME", "pull_request"), ("GITHUB_REF", "refs/heads/0.1.3"), ("GITHUB_SHA", "invalid")):
+        for key, value in (("GITHUB_REPOSITORY", "fork/iceon"), ("RELEASE_TAG", "v0.1.4"), ("RELEASE_TAG", "0.1.5"), ("GITHUB_EVENT_NAME", "pull_request"), ("GITHUB_REF", "refs/heads/0.1.4"), ("GITHUB_SHA", "invalid")):
             with patch.dict(os.environ, dict(self.env, **{key: value}), clear=True), patch.object(n, "run", side_effect=self.git), self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 n.guard(self.root)
 
@@ -135,10 +135,10 @@ class NativeReleaseTests(unittest.TestCase):
             n.guard(self.root)
 
     def test_remote_tag_missing_changed_or_different_commit(self):
-        for remote in ("", f"{'c' * 40}\trefs/tags/0.1.3", f"{'c' * 40}\trefs/tags/0.1.3\n{self.sha}\trefs/tags/0.1.3^{{}}"):
+        for remote in ("", f"{'c' * 40}\trefs/tags/0.1.4", f"{'c' * 40}\trefs/tags/0.1.4\n{self.sha}\trefs/tags/0.1.4^{{}}"):
             with patch.object(n, "run", return_value=remote), self.assertRaises(ValueError):
                 n.remote_tag(self.root, self.sha, self.tag)
-        with patch.object(n, "run", return_value=f"{self.sha}\trefs/tags/0.1.3"):
+        with patch.object(n, "run", return_value=f"{self.sha}\trefs/tags/0.1.4"):
             self.assertEqual(n.remote_tag(self.root, self.sha), self.sha)
 
     def test_binary_headers(self):
@@ -248,7 +248,7 @@ class NativeReleaseTests(unittest.TestCase):
         for change in ("version", "url", "signature", "alias", "linux", "date"):
             manifest = json.loads(original)
             if change == "version":
-                manifest["version"] = "0.1.4"
+                manifest["version"] = "0.1.5"
             elif change == "alias":
                 del manifest["platforms"]["darwin-aarch64-app"]
             elif change == "linux":
@@ -260,7 +260,7 @@ class NativeReleaseTests(unittest.TestCase):
             feed.write_text(json.dumps(manifest))
             with self.subTest(change=change), self.assertRaises(ValueError):
                 n.updater_manifest(self.out)
-        feed.write_text(original.replace('"version":', '"version":"0.1.3", "version":', 1))
+        feed.write_text(original.replace('"version":', '"version":"0.1.4", "version":', 1))
         with self.assertRaises(ValueError):
             n.updater_manifest(self.out)
         feed.write_text(original)
@@ -270,7 +270,7 @@ class NativeReleaseTests(unittest.TestCase):
 
     def test_signature_encoding_and_version(self):
         path = self.out / "fixture.sig"
-        for document in ("bad", "untrusted comment: x\na\ntrusted comment: timestamp:1\nb", "untrusted comment: x\na\ntrusted comment: version:0.1.4\nb", "untrusted comment: x\na\ntrusted comment: version:0.1.3\tversion:0.1.3\nb"):
+        for document in ("bad", "untrusted comment: x\na\ntrusted comment: timestamp:1\nb", "untrusted comment: x\na\ntrusted comment: version:0.1.5\nb", "untrusted comment: x\na\ntrusted comment: version:0.1.4\tversion:0.1.4\nb"):
             path.write_text(base64.b64encode(document.encode()).decode())
             with self.assertRaises(ValueError):
                 n.update_signature(path)

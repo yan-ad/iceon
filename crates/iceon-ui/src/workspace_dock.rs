@@ -292,10 +292,10 @@ impl Render for WorkspacePanel {
                 PanelKind::Console => gpui_kit::component::v_flex()
                     .track_focus(&app.console_focus)
                     .key_context("IceonConsole")
+                    .child(app.render_console_tabs(window, cx))
                     .size_full()
                     .min_h_0()
                     .min_w_0()
-                    .child(app.render_console_tabs(window, cx))
                     .child(
                         div()
                             .flex_1()

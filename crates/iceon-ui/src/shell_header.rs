@@ -422,7 +422,7 @@ impl IceonApp {
                             .min_w_0()
                             .items_center()
                             .gap_0()
-                            .child(h_flex().items_center().gap_1p5().h_full().flex_shrink_0()
+                            .child(h_flex().items_center().gap_1p5().h_full().flex_shrink_0().pr_2()
                                 .w(px(header_controls_width(self.navigation_widths.sidebar_width(), matches!(self.history.current(), Route::Cluster { .. }) && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed, cfg!(target_os = "macos"))))
                                 .border_r_1().border_color(cx.theme().sidebar_border)
                             .when(matches!(self.history.current(), Route::Cluster { .. }), |navigation| navigation.child(

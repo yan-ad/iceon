@@ -642,7 +642,7 @@ impl Render for IceonApp {
                             .child(self.render_cluster_workspace(window, cx)),
                     ),
             )
-            .child(self.render_shell_footer(cx))
+            .child(self.render_shell_footer(window, cx))
             .when(self.search_modal_open, |el| {
                 el.child(
                     v_flex()

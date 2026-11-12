@@ -2313,11 +2313,7 @@ impl IceonApp {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(div().flex_1().min_h_0().min_w_0().children(area))
-                    .when(
-                        !console_open && !matches!(self.history.current(), Route::Setup),
-                        |column| column.child(self.render_console_tabs(window, cx)),
-                    ),
+                    .child(div().flex_1().min_h_0().min_w_0().children(area)),
             )
             .when(inspector_open, |row| {
                 row.child(

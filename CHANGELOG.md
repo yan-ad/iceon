@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.4
+
+- Refresh the native shell with compact header controls, a sidebar footer, and
+  footer-aligned collapsed terminal controls; expanded terminal tabs stay on top.
+- Add data-only Zed marketplace theme management, unified theme settings, and
+  native file/folder/pasted-YAML cluster configuration.
+- Improve scoped RBAC navigation, automatic namespace discovery, initial connection
+  feedback, background refreshes, and persistent access-time Kubernetes versions.
+- Cache Overview snapshots and bound its Events preview; add container indicators
+  and pod usage columns, consistent empty states, and status-colored Events rows.
+- Add console tab context menus, focus-aware close shortcuts, shared YAML dock
+  creation/editing, and guarded bulk resource deletion.
+- Add explicit update checks with manual release downloads; no automatic installer
+  execution. Preserve 0.1.2 user-data migration and Windows portable ZIP upgrades.
+- Retain signed legacy migration feeds, release integrity gates, macOS ad-hoc signing
+  and Windows unsigned platform packages; no notarization/AuthentiCode claim.
+
 ## 0.1.3
 
 ### Native installers and signed migration feed

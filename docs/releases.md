@@ -6,15 +6,15 @@ Same-commit reusable CI still gates both platform builds and publication.
 
 ## Asset contract
 
-The configured version is currently `0.1.3`. Expected uploaded assets are:
+The configured version is currently `0.1.4`. Expected uploaded assets are:
 
 ```text
-Iceon_0.1.3_aarch64.app.tar.gz
-Iceon_0.1.3_aarch64.app.tar.gz.sig
-Iceon_0.1.3_aarch64.dmg
-Iceon_0.1.3_x86-setup.exe
-Iceon_0.1.3_x86-setup.exe.sig
-Iceon_0.1.3_i686.zip
+Iceon_0.1.4_aarch64.app.tar.gz
+Iceon_0.1.4_aarch64.app.tar.gz.sig
+Iceon_0.1.4_aarch64.dmg
+Iceon_0.1.4_x86-setup.exe
+Iceon_0.1.4_x86-setup.exe.sig
+Iceon_0.1.4_i686.zip
 latest.json
 SHASUMS256.txt
 ```
@@ -61,7 +61,7 @@ the signed migration feed is for older updater-enabled clients, not native 0.1.2
 - **macOS Apple Silicon:** quit Iceon, open the new DMG, and replace
   `/Applications/Iceon.app` (or the same location used previously). Bundle identity
   stays `ad.yan.iceon`; do not delete the application-data directory.
-- **Windows portable:** quit Iceon and extract `Iceon_0.1.3_i686.zip`, replacing
+- **Windows portable:** quit Iceon and extract `Iceon_0.1.4_i686.zip`, replacing
   the previous `Iceon/iceon.exe`. The archive retains 0.1.2's exact portable layout.
   Alternatively run Setup; this creates a registered per-user installation.
   Setup does not automatically locate arbitrary unregistered portable folders;
@@ -101,8 +101,8 @@ only for signing, never passed in argv or published as assets.
 
 ```sh
 # Secret values supplied through environment, never command arguments:
-cargo xtask sign-update dist/Iceon_0.1.3_aarch64.app.tar.gz 0.1.3
-cargo xtask verify-update dist/Iceon_0.1.3_aarch64.app.tar.gz.sig dist/Iceon_0.1.3_aarch64.app.tar.gz 0.1.3
+cargo xtask sign-update dist/Iceon_0.1.4_aarch64.app.tar.gz 0.1.4
+cargo xtask verify-update dist/Iceon_0.1.4_aarch64.app.tar.gz.sig dist/Iceon_0.1.4_aarch64.app.tar.gz 0.1.4
 ```
 
 Updater-enabled old clients use the existing endpoint:
@@ -123,7 +123,7 @@ globally. Installation/launch and credential/cluster behavior need native smoke 
 
 ## Publication guards
 
-The workflow currently accepts only exact tag `0.1.3`, without `v`. Manual dispatch
+The workflow currently accepts only exact tag `0.1.4`, without `v`. Manual dispatch
 requires its immutable remote tag to point to the workflow commit. The helper
 checks all four package versions/lock entries and a nonempty changelog section,
 records the raw annotated-tag object, and rechecks it before build/publication.
