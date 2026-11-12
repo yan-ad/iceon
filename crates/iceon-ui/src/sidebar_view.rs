@@ -2,10 +2,10 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, Collapsible as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarItem, SidebarMenu, SidebarMenuItem},
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -185,36 +185,112 @@ pub(crate) fn cluster_badge_color(color: &str, seed: &str, is_dark: bool) -> Hsl
     rgb(cluster_tile_palette(color, seed, is_dark).bg_rgb).into()
 }
 
-fn section_icon(section: &str) -> IconName {
+fn section_asset_icon(section: &str) -> AssetIconName {
+    use AssetIconName::*;
     match section {
-        "overview" => IconName::LayoutDashboard,
-        "nodes" => IconName::Cpu,
-        "workloads"
-        | "pods"
-        | "deployments"
-        | "daemon-sets"
-        | "stateful-sets"
-        | "replica-sets"
-        | "replication-controllers" => IconName::GalleryVerticalEnd,
-        "workloads-overview" => IconName::LayoutDashboard,
-        "jobs" | "cron-jobs" => IconName::Inbox,
-        "config-maps" => IconName::FileText,
-        "secrets" => IconName::FileText,
-        "services" | "ingresses" | "endpoints" | "endpoint-slices" | "network-policies" => {
-            IconName::Network
+        "overview" => LayoutDashboard,
+        "nodes" => Server,
+        "workloads-overview" => Gauge,
+        "pods" => Box,
+        "deployments" => Layers,
+        "daemon-sets" => Network,
+        "stateful-sets" => Database,
+        "replica-sets" => Copy,
+        "replication-controllers" => CopyCheck,
+        "jobs" => ListChecks,
+        "cron-jobs" => CalendarClock,
+        "config-maps" => FileText,
+        "secrets" => KeyRound,
+        "resource-quotas" => ChartPie,
+        "limit-ranges" => SlidersHorizontal,
+        "horizontal-pod-autoscalers" => ArrowLeftRight,
+        "vertical-pod-autoscalers" => ArrowUpDown,
+        "pod-disruption-budgets" => ShieldCheck,
+        "priority-classes" => ListOrdered,
+        "runtime-classes" => Container,
+        "leases" => Timer,
+        "mutating-webhook-configs" => Webhook,
+        "validating-webhook-configs" => BadgeCheck,
+        "validating-admission-policies" => FileCheck,
+        "validating-admission-policy-bindings" => ClipboardCheck,
+        "services" => Plug,
+        "endpoint-slices" => Blocks,
+        "endpoints" => MapPin,
+        "ingresses" => Route,
+        "ingress-classes" => Signpost,
+        "network-policies" => Shield,
+        "port-forwarding" => Cable,
+        "persistent-volume-claims" => HardDriveDownload,
+        "persistent-volumes" => HardDrive,
+        "storage-classes" => Archive,
+        "namespaces" => Folder,
+        "events" => Bell,
+        "helm-charts" => Package,
+        "helm-releases" => PackageCheck,
+        "users" => Users,
+        "service-accounts" => Contact,
+        "cluster-roles" => Crown,
+        "roles" => UserCog,
+        "cluster-role-bindings" => Link,
+        "role-bindings" => Link2,
+        "pod-security-policies" => ShieldAlert,
+        "custom-resource-definitions" | "custom-resources" => Puzzle,
+        _ => Square,
+    }
+}
+
+fn section_icon(section: &str) -> Icon {
+    Icon::new(section_asset_icon(section))
+}
+
+/// Unlike SidebarGroup, standalone navigation menus reserve no empty heading slot.
+#[derive(Clone)]
+struct NavigationGroup {
+    label: SharedString,
+    menu: SidebarMenu,
+    collapsed: bool,
+}
+impl NavigationGroup {
+    fn new(label: impl Into<SharedString>, menu: SidebarMenu) -> Self {
+        Self {
+            label: label.into(),
+            menu,
+            collapsed: false,
         }
-        "persistent-volumes" | "persistent-volume-claims" | "storage-classes" => {
-            IconName::HardDrive
-        }
-        "config" => IconName::Settings2,
-        "network" => IconName::Network,
-        "storage" => IconName::HardDrive,
-        "namespaces" => IconName::Folder,
-        "events" => IconName::Bell,
-        "helm" => IconName::Inbox,
-        "access-control" => IconName::User,
-        "custom-resources" => IconName::FileText,
-        _ => IconName::Square,
+    }
+}
+impl gpui_kit::component::Collapsible for NavigationGroup {
+    fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
+    fn collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
+        self
+    }
+}
+impl SidebarItem for NavigationGroup {
+    fn render(
+        self,
+        id: impl Into<ElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement {
+        let id = id.into();
+        gpui_kit::component::v_flex()
+            .gap_1()
+            .when(!self.label.is_empty() && !self.collapsed, |group| {
+                group.child(
+                    div()
+                        .px_2()
+                        .pt_2()
+                        .pb_1()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.label.clone()),
+                )
+            })
+            .child(self.menu.collapsed(self.collapsed).render(id, window, cx))
     }
 }
 
@@ -227,7 +303,7 @@ type SidebarClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 fn menu_item_with_pin(
     id_key: impl Into<SharedString>,
     label: impl Into<SharedString>,
-    icon: Option<IconName>,
+    icon: Option<Icon>,
     active: bool,
     action_icon: Option<IconName>,
     pin_state: Option<(bool, SidebarClickHandler)>,
@@ -369,7 +445,7 @@ impl IceonApp {
                 menu_item_with_pin(
                     format!("fav-{destination}"),
                     label,
-                    Some(IconName::Star),
+                    Some(Icon::new(IconName::Star)),
                     *active == normalize_destination(&destination),
                     None,
                     Some((true, unpin_handler)),
@@ -391,8 +467,9 @@ impl IceonApp {
         let cid = cluster_id.to_owned();
         let pin_cid = cluster_id.to_owned();
         let overview_pinned = is_section_pinned("overview");
-        groups.push(
-            SidebarGroup::new("").child(SidebarMenu::new().child(menu_item_with_pin(
+        groups.push(NavigationGroup::new(
+            "",
+            SidebarMenu::new().child(menu_item_with_pin(
                 "overview-first",
                 "Overview",
                 Some(section_icon("overview")),
@@ -420,11 +497,13 @@ impl IceonApp {
                         cx,
                     )
                 }),
-            ))),
-        );
+            )),
+        ));
         if !favorites.is_empty() {
-            groups
-                .push(SidebarGroup::new("Favorites").child(SidebarMenu::new().children(favorites)));
+            groups.push(NavigationGroup::new(
+                "Favorites",
+                SidebarMenu::new().children(favorites),
+            ));
         }
         for group in CLUSTER_SECTIONS
             .iter()
@@ -603,10 +682,10 @@ impl IceonApp {
                     }
                 }
             }
-            groups.push(
-                SidebarGroup::new(if leaf { "" } else { group.label })
-                    .child(SidebarMenu::new().children(resources)),
-            );
+            groups.push(NavigationGroup::new(
+                if leaf { "" } else { group.label },
+                SidebarMenu::new().children(resources),
+            ));
         }
         Sidebar::new(SharedString::from(format!(
             "cluster-navigation-{cluster_id}"
@@ -621,6 +700,33 @@ impl IceonApp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn standard_sidebar_destinations_have_distinct_icons() {
+        let mut icons = std::collections::HashMap::new();
+        for group in crate::navigation::CLUSTER_SECTIONS {
+            if group.id == "custom-resources" {
+                continue;
+            }
+            let destinations: Vec<_> = if group.children.is_empty() {
+                vec![group.default_child]
+            } else {
+                group.children.iter().map(|child| child.id).collect()
+            };
+            for destination in destinations {
+                let icon = super::section_asset_icon(destination);
+                assert_ne!(
+                    icon,
+                    gpui_kit_assets::IconName::Square,
+                    "missing icon: {destination}"
+                );
+                assert!(
+                    icons.insert(icon, destination).is_none(),
+                    "duplicate icon: {destination}"
+                );
+            }
+        }
+    }
+
     use super::{LIGHT_INK_RGB, cluster_rgb, cluster_tile_palette, wcag_contrast_ratio};
 
     #[test]
