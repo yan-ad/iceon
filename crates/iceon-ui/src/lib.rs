@@ -10,6 +10,7 @@ mod command_palette;
 mod console_font;
 #[cfg(debug_assertions)]
 mod console_probe;
+mod console_tabs;
 mod custom_resource_navigation;
 mod empty_state;
 mod selectable_text;
@@ -83,6 +84,7 @@ pub struct IceonApp {
     pub(crate) workspace_dock: Option<workspace_dock::WorkspaceDock>,
     pub(crate) inspector_open: bool,
     pub(crate) shell_focus: FocusHandle,
+    pub(crate) console_focus: FocusHandle,
     pub(crate) catalog: Arc<CatalogEngine>,
     pub(crate) connection: Arc<ConnectionEngine>,
     pub(crate) preferences_engine: Arc<PreferencesEngine>,
@@ -337,6 +339,7 @@ impl IceonApp {
             workspace_dock: None,
             inspector_open: false,
             shell_focus,
+            console_focus: cx.focus_handle(),
             catalog,
             connection,
             preferences_engine,

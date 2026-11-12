@@ -124,6 +124,11 @@ fn bindings(macos: bool) -> Vec<KeyBinding> {
     bind!(",", Preferences);
     bind!("o", AddCluster);
     bind!("w", CloseWindow);
+    keys.push(KeyBinding::new(
+        if macos { "cmd-w" } else { "ctrl-w" },
+        CloseWindow,
+        Some("IceonConsole"),
+    ));
     bind!("b", ToggleSidebar);
     bind!("k", CommandPalette);
     bind!("[", Back);
@@ -186,8 +191,11 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(AddCluster, |this, _: &AddCluster, window, cx| {
         this.open_add_config(window, cx);
     });
-    register!(CloseWindow, |_, _: &CloseWindow, window, _| window
-        .remove_window());
+    register!(CloseWindow, |app, _: &CloseWindow, window, cx| {
+        if !app.close_focused_console_tab(window, cx) {
+            window.remove_window();
+        }
+    });
     register!(ToggleSidebar, |this, _: &ToggleSidebar, _, cx| {
         this.sidebar_collapsed = !this.sidebar_collapsed;
         cx.notify();
@@ -358,7 +366,9 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &AddCluster, window, cx| {
                 this.open_add_config(window, cx);
             }))
-            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
+            .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
+                if !app.close_focused_console_tab(window, cx) { window.remove_window(); }
+            }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();

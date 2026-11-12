@@ -3,10 +3,6 @@ use crate::{
     IceonApp,
     terminal_surface::{TerminalEvent, TerminalSurface},
 };
-use gpui_kit::component::{
-    button::{Button, ButtonVariants as _},
-    h_flex,
-};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use iceon_core::local_terminal::{LocalTerminal, Status};
@@ -60,24 +56,6 @@ fn local_poll_changes(
 }
 
 impl IceonApp {
-    pub(crate) fn open_device_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.active_yaml_tab = None;
-        self.local_terminal_active = true;
-        self.pod_dock_open = true;
-        let existing = self
-            .active_device_terminal
-            .and_then(|key| self.device_terminals.iter().position(|tab| tab.key == key))
-            .or_else(|| (!self.device_terminals.is_empty()).then_some(0));
-        if let Some(index) = existing {
-            let tab = &self.device_terminals[index];
-            self.active_device_terminal = Some(tab.key);
-            window.focus(&tab.terminal.focus_handle(cx), cx);
-            cx.notify();
-        } else {
-            self.new_device_terminal(window, cx);
-        }
-    }
-
     pub(crate) fn new_device_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.device_terminals.len() + self.pod_dock_tabs.len() + self.yaml_dock_tabs.len() >= 12
         {
@@ -270,7 +248,7 @@ impl IceonApp {
     pub(crate) fn render_device_terminal(
         &mut self,
         _: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self
             .active_device_terminal
@@ -285,21 +263,7 @@ impl IceonApp {
                 .child(tab.terminal.clone())
                 .into_any_element();
         }
-        h_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .child(
-                Button::new("open-device-terminal")
-                    .ghost()
-                    .label("Open device terminal")
-                    .tooltip("Open device terminal")
-                    .accessibility_label("Open device terminal")
-                    .on_click(
-                        cx.listener(|app, _, window, cx| app.open_device_terminal(window, cx)),
-                    ),
-            )
-            .into_any_element()
+        Empty.into_any_element()
     }
 }
 

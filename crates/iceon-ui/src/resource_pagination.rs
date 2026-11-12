@@ -40,6 +40,16 @@ impl ResourcePagination {
         }
         Ok(())
     }
+    pub fn failed(&mut self, token: Option<&str>) {
+        self.loading = false;
+        self.stopped = true;
+        if let Some(token) = token {
+            self.tokens.remove(token);
+        }
+    }
+    pub fn retry(&mut self) {
+        self.stopped = false;
+    }
     pub fn completed(&mut self) {
         self.loading = false;
         self.pages += 1;
@@ -173,6 +183,19 @@ mod tests {
         let cancelled = ResourcePagination::default();
         assert!(!cancelled.accepts(&r, &page(&[], None)));
     }
+    #[test]
+    fn failed_continuation_can_retry_without_becoming_a_token_cycle() {
+        let mut state = ResourcePagination::default();
+        state.begin_next("next").unwrap();
+        state.loading = true;
+        state.failed(Some("next"));
+        assert!(state.stopped);
+        assert!(!state.loading);
+        state.retry();
+        assert!(state.begin_next("next").is_ok());
+        assert_eq!(state.pages, 0);
+    }
+
     #[test]
     fn empty_search_pages_continue_and_token_cycles_stop() {
         let first = page(&[], Some("next"));

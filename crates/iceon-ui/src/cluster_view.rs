@@ -8,6 +8,7 @@ use crate::navigation::resource_view_by_kind;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, ColorName, Disableable as _, IconName, Selectable as _, Sizable as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -1402,11 +1403,48 @@ impl IceonApp {
             return;
         };
         if let Err(error) = self.resource_pagination.begin_next(&token) {
-            self.cluster_error = Some(error.into());
+            window.push_notification(
+                gpui_kit::component::notification::Notification::warning(error),
+                cx,
+            );
             cx.notify();
             return;
         }
         self.fetch_resource_page(kind, Some(token), window, cx);
+    }
+
+    fn notify_resource_page_failure(
+        &mut self,
+        req: &ResourceRequest,
+        message: String,
+        retry: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resource_pagination
+            .failed(req.continue_token.as_deref());
+        self.cluster_loading = false;
+        let owner = cx.entity().downgrade();
+        let request = req.clone();
+        let note = gpui_kit::component::notification::Notification::warning(message)
+            .title("Could not load more resources")
+            .on_click(move |_, window, cx| {
+                if !retry {
+                    return;
+                }
+                let _ = owner.update(cx, |app, cx| {
+                    if !app.resource_request_is_current(&request, cx) {
+                        return;
+                    }
+                    app.resource_pagination.retry();
+                    if request.continue_token.is_some() {
+                        app.load_more_resources(request.kind, window, cx);
+                    } else {
+                        app.fetch_resource_page(request.kind, None, window, cx);
+                    }
+                });
+            });
+        window.push_notification(note, cx);
     }
 
     fn resource_request_is_current(&self, req: &ResourceRequest, cx: &Context<Self>) -> bool {
@@ -1479,19 +1517,20 @@ impl IceonApp {
             let result = connection.resources(req.clone()).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 if !this.resource_request_is_current(&req, cx) { return; }
-                this.resource_pagination.completed();
+                this.resource_pagination.loading = false;
                 this.cluster_loading = false;
                 match result {
                     Ok(page) if this.resource_pagination.accepts(&req, &page) => {
+                        this.resource_pagination.completed();
                         let (page, limited) = crate::resource_pagination::merge_page(
                             this.resource_page.as_deref().filter(|_| req.continue_token.is_some()), page);
                         let incomplete = page.truncated && page.continue_token.is_none();
                         this.resource_page = Some(Rc::new(page));
                         if limited || incomplete {
                             this.resource_pagination.stopped = true;
-                            this.cluster_error = Some(if limited {
-                                "Resource scan reached the 50,000 item limit; results are incomplete. Narrow the namespace or search."
-                            } else { "Resource response was truncated without a continuation; results are incomplete. Refresh to retry." }.into());
+                            window.push_notification(gpui_kit::component::notification::Notification::warning(if limited {
+                                "Resource scan reached the 50,000 item limit. Narrow the namespace or search. Loaded rows are preserved."
+                            } else { "Resource response was incomplete without a continuation. Loaded rows are preserved; refresh to retry." }), cx);
                         } else if req.query.is_some() || req.status.is_some()
                             || this.resource_page.as_ref().is_some_and(|p| p.items.is_empty()) {
                             this.load_more_resources(kind, window, cx);
@@ -1500,8 +1539,8 @@ impl IceonApp {
                             this.start_pod_sync(window, cx);
                         }
                     }
-                    Ok(_) => this.cluster_error = Some("Resource response identity mismatch; results are incomplete. Refresh to retry.".into()),
-                    Err(err) => this.cluster_error = Some(format!("Resource load failed; results are incomplete. Refresh to retry: {err:?}")),
+                    Ok(_) => this.notify_resource_page_failure(&req, "The response did not match the requested page. Loaded rows are preserved; refresh to retry.".into(), false, window, cx),
+                    Err(err) => this.notify_resource_page_failure(&req, format!("Loaded rows are preserved. Click this notification to retry: {err:?}"), true, window, cx),
                 }
                 cx.notify();
             });
@@ -2070,6 +2109,65 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
+        if cluster_route && self.initial_access_loading() {
+            let cluster_name = self
+                .cluster_session
+                .as_ref()
+                .and_then(|session| {
+                    self.catalog_snapshot
+                        .clusters
+                        .iter()
+                        .find(|cluster| cluster.id == session.cluster_id)
+                })
+                .map(|cluster| cluster.name.clone())
+                .unwrap_or_else(|| "Cluster".into());
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .bg(cx.theme().background)
+                .p_6()
+                .child(
+                    v_flex()
+                        .w_full()
+                        .max_w(px(640.))
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .w_full()
+                                .text_center()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .truncate()
+                                .child(cluster_name),
+                        )
+                        .child(
+                            gpui_kit::component::spinner::Spinner::new()
+                                .large()
+                                .color(cx.theme().primary),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child("Checking cluster access…"),
+                        )
+                        .child(
+                            v_flex()
+                                .items_center()
+                                .gap_2()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Connection established")
+                                .child("Reviewing resource and namespace permissions")
+                                .child("Preparing available navigation and actions"),
+                        ),
+                )
+                .into_any_element();
+        }
         let sidebar_open =
             cluster_route && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed;
         let console_open = self.pod_dock_open;
@@ -2196,6 +2294,7 @@ impl IceonApp {
                         ),
                 )
             })
+            .into_any_element()
     }
 
     pub(crate) fn render_cluster_main(
@@ -2697,6 +2796,13 @@ impl IceonApp {
                 .is_some_and(|page| page.continue_token.is_some() || page.truncated);
             let state = if let Some(error) = self.cluster_error.clone() {
                 crate::empty_state::error_state(error).into_any_element()
+            } else if self.resource_pagination.stopped {
+                crate::empty_state::empty_state(
+                    IconName::Search,
+                    "No loaded results",
+                    "Loading paused. Retry from the notification or use Refresh.",
+                )
+                .into_any_element()
             } else if pending || more {
                 crate::empty_state::empty_state(
                     IconName::Search,
@@ -2755,20 +2861,8 @@ impl IceonApp {
             },
         };
         table.update(cx, |table, cx| table.sync(data, cx));
-        let content = table
+        table
             .cached(StyleRefinement::default().size_full())
-            .into_any_element();
-        if self.cluster_error.is_none() {
-            return content;
-        }
-        v_flex()
-            .size_full()
-            .min_h_0()
-            .min_w_0()
-            .child(div().flex_1().min_h_0().min_w_0().child(content))
-            .when_some(self.cluster_error.clone(), |el, error| {
-                el.child(crate::empty_state::error_state(error))
-            })
             .into_any_element()
     }
 

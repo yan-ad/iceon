@@ -228,16 +228,14 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(tab) = self.yaml_dock_tabs.iter().find(|t| t.key == key) else {
-            return;
-        };
-        if tab.dirty(cx) {
-            self.confirm_destructive_action("Discard YAML changes?", "This buffer has unsaved changes. Closing discards only this tab. Use Save & Close to save first.", "Discard", window, cx, move |app, _, cx| app.close_yaml_tab(key, cx));
-        } else {
-            self.close_yaml_tab(key, cx);
-        }
+        self.request_close_console_tabs(
+            crate::console_tabs::ConsoleTab::Yaml(key),
+            crate::console_tabs::CloseTabs::One,
+            window,
+            cx,
+        );
     }
-    fn close_yaml_tab(&mut self, key: u64, cx: &mut Context<Self>) {
+    pub(crate) fn close_yaml_tab(&mut self, key: u64, cx: &mut Context<Self>) {
         if let Some(index) = self.yaml_dock_tabs.iter().position(|t| t.key == key) {
             let tab = self.yaml_dock_tabs.remove(index);
             if let Some(operation_id) = tab.operation {

@@ -57,7 +57,7 @@ type ContainerSelectState = SelectState<SearchableVec<ContainerChoice>>;
 pub struct PodDockTab {
     pub id: String,
     // UI identity is independent of the backend ID (opening/reconnect replace it).
-    key: u64,
+    pub(crate) key: u64,
     pub pod_name: String,
     pub namespace: String,
     pub uid: String,
@@ -928,18 +928,10 @@ impl IceonApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // Keep a Terminal launcher only while there are no local sessions.
-        // Snapshot keys, not indices: close/reconnect can change positions before a click.
-        let primary = self.device_terminals.first();
-        let primary_key = primary.map(|tab| tab.key);
-        let primary_title = primary.map(|tab| tab.title.as_str()).unwrap_or("Terminal");
-        let primary_tooltip = primary
-            .map(|tab| format!("{} — {}", tab.title, tab.status))
-            .unwrap_or_else(|| "Open your device terminal".into());
-        let extra_keys = self
+        // Stable identities are shared by selection, menus, and deferred closes.
+        let device_keys = self
             .device_terminals
             .iter()
-            .skip(1)
             .map(|tab| tab.key)
             .collect::<Vec<_>>();
         let pod_keys = self
@@ -947,7 +939,7 @@ impl IceonApp {
             .iter()
             .map(|tab| tab.key)
             .collect::<Vec<_>>();
-        let pod_offset = 1 + extra_keys.len();
+        let pod_offset = device_keys.len();
         let yaml_offset = pod_offset + pod_keys.len();
         let yaml_keys = self
             .yaml_dock_tabs
@@ -961,65 +953,50 @@ impl IceonApp {
                 .map(|i| yaml_offset + i)
                 .unwrap_or(usize::MAX)
         } else if self.local_terminal_active {
-            extra_keys
+            device_keys
                 .iter()
                 .position(|key| Some(*key) == self.active_device_terminal)
-                .map(|index| index + 1)
-                .unwrap_or(0)
+                .unwrap_or(usize::MAX)
         } else {
             self.active_pod_tab
                 .filter(|index| *index < pod_keys.len())
                 .map(|index| index + pod_offset)
                 .unwrap_or(usize::MAX)
         };
-        let mut tabs = vec![
-            Tab::new()
-                .min_w(px(160.))
-                .px_3()
-                .flex_shrink_0()
-                .label(console_tab_title(primary_title))
-                .aria_label(primary_tooltip.clone())
-                .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
-                .when_some(primary_key, |tab, key| {
-                    tab.suffix(
+        let mut tabs = Vec::new();
+        tabs.extend(self.device_terminals.iter().map(|tab| {
+            let key = tab.key;
+            let title = tab.title.clone();
+            let tooltip = format!("{} — {}", title, tab.status);
+            self.console_tab_menu(
+                Tab::new()
+                    .min_w(px(160.))
+                    .px_3()
+                    .flex_shrink_0()
+                    .label(console_tab_title(&title))
+                    .aria_label(tooltip.clone())
+                    .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    .suffix(
                         Button::new(SharedString::from(format!("close-device-console-{key}")))
                             .xsmall()
                             .ghost()
                             .icon(IconName::Close)
-                            .tooltip("Close device shell")
-                            .accessibility_label("Close device shell")
-                            .on_click(cx.listener(move |app, _, _, cx| {
+                            .tooltip("Close device terminal")
+                            .accessibility_label("Close device terminal")
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                app.close_device_terminal(key, cx);
+                                this.request_close_console_tabs(
+                                    crate::console_tabs::ConsoleTab::Device(key),
+                                    crate::console_tabs::CloseTabs::One,
+                                    window,
+                                    cx,
+                                );
                             })),
-                    )
-                })
-                .tooltip(move |window, cx| Tooltip::new(primary_tooltip.clone()).build(window, cx)),
-        ];
-        tabs.extend(self.device_terminals.iter().skip(1).map(|tab| {
-            let key = tab.key;
-            let title = tab.title.clone();
-            let tooltip = format!("{} — {}", title, tab.status);
-            Tab::new()
-                .min_w(px(160.))
-                .px_3()
-                .flex_shrink_0()
-                .label(console_tab_title(&title))
-                .aria_label(tooltip.clone())
-                .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
-                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .suffix(
-                    Button::new(SharedString::from(format!("close-device-console-{key}")))
-                        .xsmall()
-                        .ghost()
-                        .icon(IconName::Close)
-                        .tooltip("Close device terminal")
-                        .accessibility_label("Close device terminal")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.close_device_terminal(key, cx);
-                        })),
-                )
+                    ),
+                crate::console_tabs::ConsoleTab::Device(key),
+                cx,
+            )
         }));
         tabs.extend(self.pod_dock_tabs.iter().map(|tab| {
             let key = tab.key;
@@ -1031,37 +1008,42 @@ impl IceonApp {
                 tab.mode_label(),
                 tab.status
             );
-            Tab::new()
-                .min_w(px(160.))
-                .px_3()
-                .flex_shrink_0()
-                .label(console_tab_title(&title))
-                .aria_label(tooltip.clone())
-                .prefix(
-                    gpui_kit::component::Icon::new(if tab.mode == PodStreamMode::Logs {
-                        IconName::FileText
-                    } else {
-                        IconName::SquareTerminal
-                    })
-                    .small(),
-                )
-                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .suffix(
-                    Button::new(SharedString::from(format!("close-console-{key}")))
-                        .xsmall()
-                        .ghost()
-                        .icon(IconName::Close)
-                        .tooltip("Close pod console")
-                        .accessibility_label("Close pod console")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            if let Some(index) =
-                                this.pod_dock_tabs.iter().position(|tab| tab.key == key)
-                            {
-                                this.close_pod_tab(index, cx);
-                            }
-                        })),
-                )
+            self.console_tab_menu(
+                Tab::new()
+                    .min_w(px(160.))
+                    .px_3()
+                    .flex_shrink_0()
+                    .label(console_tab_title(&title))
+                    .aria_label(tooltip.clone())
+                    .prefix(
+                        gpui_kit::component::Icon::new(if tab.mode == PodStreamMode::Logs {
+                            IconName::FileText
+                        } else {
+                            IconName::SquareTerminal
+                        })
+                        .small(),
+                    )
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    .suffix(
+                        Button::new(SharedString::from(format!("close-console-{key}")))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Close)
+                            .tooltip("Close pod console")
+                            .accessibility_label("Close pod console")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.request_close_console_tabs(
+                                    crate::console_tabs::ConsoleTab::Pod(key),
+                                    crate::console_tabs::CloseTabs::One,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    ),
+                crate::console_tabs::ConsoleTab::Pod(key),
+                cx,
+            )
         }));
         tabs.extend(self.yaml_dock_tabs.iter().map(|tab| {
             let key = tab.key;
@@ -1077,26 +1059,30 @@ impl IceonApp {
                 tab.name(),
                 tab.message
             );
-            Tab::new()
-                .min_w(px(160.))
-                .px_3()
-                .flex_shrink_0()
-                .label(console_tab_title(&title))
-                .aria_label(tooltip.clone())
-                .prefix(gpui_kit::component::Icon::new(IconName::FileText).small())
-                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                .suffix(
-                    Button::new(SharedString::from(format!("close-yaml-{key}")))
-                        .xsmall()
-                        .ghost()
-                        .icon(IconName::Close)
-                        .tooltip("Close YAML editor")
-                        .accessibility_label("Close YAML editor")
-                        .on_click(cx.listener(move |app, _, window, cx| {
-                            cx.stop_propagation();
-                            app.request_close_yaml_tab(key, window, cx);
-                        })),
-                )
+            self.console_tab_menu(
+                Tab::new()
+                    .min_w(px(160.))
+                    .px_3()
+                    .flex_shrink_0()
+                    .label(console_tab_title(&title))
+                    .aria_label(tooltip.clone())
+                    .prefix(gpui_kit::component::Icon::new(IconName::FileText).small())
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    .suffix(
+                        Button::new(SharedString::from(format!("close-yaml-{key}")))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Close)
+                            .tooltip("Close YAML editor")
+                            .accessibility_label("Close YAML editor")
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                cx.stop_propagation();
+                                app.request_close_yaml_tab(key, window, cx);
+                            })),
+                    ),
+                crate::console_tabs::ConsoleTab::Yaml(key),
+                cx,
+            )
         }));
         let duplicate_key = (!self.local_terminal_active && self.active_yaml_tab.is_none())
             .then(|| {
@@ -1204,53 +1190,24 @@ impl IceonApp {
                     ),
             )
             .on_click(cx.listener(move |this, index: &usize, window, cx| {
-                if let Some(key) = index
-                    .checked_sub(yaml_offset)
-                    .and_then(|i| yaml_keys.get(i))
-                {
-                    this.select_yaml_tab(*key, window, cx);
-                    return;
+                let target = device_keys
+                    .get(*index)
+                    .map(|key| crate::console_tabs::ConsoleTab::Device(*key))
+                    .or_else(|| {
+                        index
+                            .checked_sub(pod_offset)
+                            .and_then(|i| pod_keys.get(i))
+                            .map(|key| crate::console_tabs::ConsoleTab::Pod(*key))
+                    })
+                    .or_else(|| {
+                        index
+                            .checked_sub(yaml_offset)
+                            .and_then(|i| yaml_keys.get(i))
+                            .map(|key| crate::console_tabs::ConsoleTab::Yaml(*key))
+                    });
+                if let Some(target) = target {
+                    this.select_console_tab(target, window, cx);
                 }
-                this.active_yaml_tab = None;
-                if *index == 0 {
-                    this.local_terminal_active = true;
-                    this.pod_dock_open = true;
-                    this.active_device_terminal = primary_key
-                        .filter(|key| this.device_terminals.iter().any(|tab| tab.key == *key));
-                    this.open_device_terminal(window, cx);
-                    return;
-                }
-                if let Some(key) = index.checked_sub(1).and_then(|index| extra_keys.get(index)) {
-                    if let Some(tab) = this.device_terminals.iter().find(|tab| tab.key == *key) {
-                        this.active_device_terminal = Some(*key);
-                        this.local_terminal_active = true;
-                        this.pod_dock_open = true;
-                        window.focus(&tab.terminal.focus_handle(cx), cx);
-                        cx.notify();
-                    }
-                    return;
-                }
-                let Some(key) = index
-                    .checked_sub(pod_offset)
-                    .and_then(|index| pod_keys.get(index))
-                else {
-                    return;
-                };
-                let Some(index) = this.pod_dock_tabs.iter().position(|tab| tab.key == *key) else {
-                    return;
-                };
-                this.active_pod_tab = Some(index);
-                this.local_terminal_active = false;
-                this.pod_dock_open = true;
-                if let Some(terminal) = this
-                    .pod_dock_tabs
-                    .get(index)
-                    .filter(|tab| tab.mode != PodStreamMode::Logs)
-                    .and_then(|tab| tab.terminal.as_ref())
-                {
-                    window.focus(&terminal.focus_handle(cx), cx);
-                }
-                cx.notify();
             }))
     }
 

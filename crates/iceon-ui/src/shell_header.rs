@@ -627,10 +627,7 @@ impl IceonApp {
                                                                             let _ = owner.update(cx, |app, cx| { if app.access_ready() && app.route_allowed(&destination) { app.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: destination.clone() }, true, window, cx); } });
                                                                         }));
                                                                     }
-                                                                    let owner = owner.clone();
-                                                                  menu.separator().item(PopupMenuItem::new("Enter namespace…").on_click(move |_, window, cx| {
-                                                                      let _ = owner.update(cx, |app, cx| app.open_namespace_scope_dialog(window, cx));
-                                                                  }))
+                                                                     menu
                                                                 }
                                                             }))
                                                 }))
@@ -657,7 +654,10 @@ impl IceonApp {
                                                                          }));
                                                                      }
                                                                  }
-                                                                 menu
+                                                                 let owner = owner.clone();
+                                                                 menu.separator().item(PopupMenuItem::new("Enter namespace…").on_click(move |_, window, cx| {
+                                                                     let _ = owner.update(cx, |app, cx| app.open_namespace_scope_dialog(window, cx));
+                                                                 }))
                                                              }
                                                          }),
                                                  ),

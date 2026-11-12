@@ -290,6 +290,8 @@ impl Render for WorkspacePanel {
                     Route::Cluster { .. } => app.render_cluster_main(window, cx),
                 },
                 PanelKind::Console => gpui_kit::component::v_flex()
+                    .track_focus(&app.console_focus)
+                    .key_context("IceonConsole")
                     .size_full()
                     .min_h_0()
                     .min_w_0()

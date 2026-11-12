@@ -23,17 +23,32 @@ struct AccessScope {
 }
 #[derive(Default)]
 pub(crate) struct AccessState {
+    initial_lease: Option<(String, String)>,
     scope: Option<AccessScope>,
     generation: u64,
     ready: bool,
     running: bool,
     epoch: Option<String>,
     entries: HashMap<PermissionCheck, (PermissionDecision, u64)>,
+    // Display-only projection; action decisions always use expiring entries.
+    published_lists: HashMap<PermissionCheck, PermissionDecision>,
+    staging_lists: HashMap<PermissionCheck, PermissionDecision>,
     pending: HashSet<PermissionCheck>,
     active: Option<ReviewRequest>,
     revision: u64,
     scheduled: HashSet<PermissionCheck>,
     lists_changed: bool,
+}
+fn needs_initial_access_page(
+    completed: Option<&(String, String)>,
+    cluster: &str,
+    lease: &str,
+    running: bool,
+) -> bool {
+    running
+        && !completed.is_some_and(|(previous_cluster, previous_lease)| {
+            previous_cluster == cluster && previous_lease == lease
+        })
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -133,6 +148,61 @@ fn valid(c: &PermissionCheck) -> bool {
     true
 }
 impl AccessState {
+    fn list_decision(&self, key: &PermissionCheck) -> PermissionDecision {
+        if !self.ready {
+            return PermissionDecision::Unknown;
+        }
+        self.published_lists
+            .get(key)
+            .copied()
+            .unwrap_or(PermissionDecision::Unknown)
+    }
+
+    fn stage_list(&mut self, key: &PermissionCheck, decision: PermissionDecision) {
+        if key.action == PermissionAction::List {
+            self.staging_lists.insert(key.clone(), decision);
+        }
+    }
+
+    fn commit_lists(&mut self, checks: &[PermissionCheck]) -> bool {
+        if !checks
+            .iter()
+            .all(|key| self.staging_lists.contains_key(key))
+        {
+            return false;
+        }
+        let published = checks
+            .iter()
+            .map(|key| {
+                let decision = self.staging_lists[key];
+                // Unavailable reviews do not revoke navigation or grant fresh action access.
+                let decision = if decision == PermissionDecision::Unknown {
+                    self.published_lists.get(key).copied().unwrap_or(decision)
+                } else {
+                    decision
+                };
+                (key.clone(), decision)
+            })
+            .collect::<HashMap<_, _>>();
+        self.lists_changed |= self.published_lists != published;
+        self.published_lists = published;
+        self.staging_lists.clear();
+        self.ready = true;
+        true
+    }
+
+    fn invalidate(&mut self) {
+        self.entries.clear();
+        self.published_lists.clear();
+        self.staging_lists.clear();
+        self.pending.clear();
+        self.scheduled.clear();
+        self.epoch = None;
+        self.ready = false;
+        self.running = false;
+        self.lists_changed = false;
+    }
+
     fn needs_renewal(&self, key: &PermissionCheck, at: u64) -> bool {
         self.entries
             .get(key)
@@ -160,6 +230,19 @@ impl IceonApp {
                 namespace: self.selected_namespace.clone(),
             })
     }
+    pub(crate) fn initial_access_loading(&self) -> bool {
+        let Some(session) = self.cluster_session.as_ref() else {
+            return false;
+        };
+        session.status == "connected"
+            && needs_initial_access_page(
+                self.access.initial_lease.as_ref(),
+                &session.cluster_id,
+                &session.session_id,
+                self.access.running,
+            )
+    }
+
     pub fn access_ready(&self) -> bool {
         self.access.ready && self.access.scope == self.access_scope() && self.access.scope.is_some()
     }
@@ -192,16 +275,17 @@ impl IceonApp {
                 == PermissionDecision::Allowed
     }
     pub fn can_list(&self, kind: ResourceKind) -> bool {
-        self.resource_allowed(
-            kind,
-            PermissionAction::List,
-            if namespaced_kind(kind) {
-                self.selected_namespace.as_deref()
-            } else {
-                None
-            },
-            None,
-        )
+        self.access_ready()
+            && self.access.list_decision(&check(
+                kind,
+                PermissionAction::List,
+                if namespaced_kind(kind) {
+                    self.selected_namespace.as_deref()
+                } else {
+                    None
+                },
+                None,
+            )) == PermissionDecision::Allowed
     }
     /// Display-only fallback: a generic allow can expose an ordinary row action.
     /// Generic denied/unknown never overrides an exact named allow, nor establishes a named denial.
@@ -284,6 +368,13 @@ impl IceonApp {
         {
             return;
         }
+        if action == PermissionAction::List {
+            if !self.access.running {
+                let scope = self.access.scope.clone().unwrap();
+                self.run_access_reviews(list_checks(&scope), window, cx);
+            }
+            return;
+        }
         self.access.scheduled.insert(key.clone());
         self.access.pending.insert(key);
         if !self.access.running && self.access_ready() {
@@ -291,13 +382,23 @@ impl IceonApp {
         }
     }
     pub fn refresh_access(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Same-scope refresh preserves navigation, namespaces and loaded data.
+        if self.access.scope.is_some() && self.access.scope == self.access_scope() {
+            if !self.access.running {
+                let scope = self.access.scope.clone().unwrap();
+                self.run_access_reviews(list_checks(&scope), window, cx);
+            }
+            return;
+        }
         if let Some(request) = self.access.active.take() {
             let _ = self.connection.cancel_permissions(request);
         }
         let generation = self.next_operation_id();
         let scope = self.access_scope();
         let revision = self.access.revision.wrapping_add(1);
+        let initial_lease = self.access.initial_lease.clone();
         self.access = AccessState {
+            initial_lease,
             scope: scope.clone(),
             generation,
             revision,
@@ -331,17 +432,24 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.access.running {
+            return;
+        }
         let Some(scope) = self.access.scope.clone() else {
             return;
         };
         let generation = self.access.generation;
+        let initial_phase = !self.access.ready;
+        let list_phase = !initial.is_empty();
+        if list_phase {
+            self.access.staging_lists.clear();
+        }
         self.access.scheduled.extend(initial.iter().cloned());
         self.access.running = true;
         let connection = self.connection.clone();
         cx.spawn_in(window, async move |owner, cx| {
-            let initial_phase = !initial.is_empty();
             let mut queue = initial;
-            let mut lists = initial_phase;
+            let mut lists = list_phase;
             loop {
                 if queue.is_empty() {
                     if lists {
@@ -352,14 +460,22 @@ impl IceonApp {
                             {
                                 return None;
                             }
-                            app.access.ready = true;
-                            app.access.revision = app.access.revision.wrapping_add(1);
-                            app.cluster_loading = false;
-                            app.load_access_namespaces(window, cx);
-                            if app.can_list(ResourceKind::CustomResourceDefinitions) {
-                                app.discover_custom_resources(window, cx);
+                            if !app.access.commit_lists(&list_checks(&scope)) {
+                                app.access.running = false;
+                                return None;
                             }
-                            app.load_active_cluster_section(window, cx);
+                            app.access.initial_lease =
+                                Some((scope.cluster.clone(), scope.lease.clone()));
+                            app.access.revision = app.access.revision.wrapping_add(1);
+                            let changed = std::mem::take(&mut app.access.lists_changed);
+                            if initial_phase || changed {
+                                app.cluster_loading = false;
+                                app.load_access_namespaces(window, cx);
+                                if app.can_list(ResourceKind::CustomResourceDefinitions) {
+                                    app.discover_custom_resources(window, cx);
+                                }
+                                app.load_active_cluster_section(window, cx);
+                            }
                             cx.notify();
                             let actions = app.relevant_access_checks();
                             app.access.scheduled.extend(actions.iter().cloned());
@@ -461,11 +577,7 @@ impl IceonApp {
                                     .zip(&request.checks)
                                     .all(|(item, check)| &item.check == check)
                             {
-                                app.access.entries.clear();
-                                app.access.pending.clear();
-                                app.access.scheduled.clear();
-                                app.access.running = false;
-                                app.access.ready = false;
+                                app.access.invalidate();
                                 cx.notify();
                                 return false;
                             }
@@ -475,24 +587,13 @@ impl IceonApp {
                                 .as_ref()
                                 .is_some_and(|epoch| epoch != &response.authorization_epoch)
                             {
-                                app.access.entries.clear();
-                                app.access.pending.clear();
-                                app.access.scheduled.clear();
-                                app.access.epoch = None;
-                                app.access.ready = false;
-                                app.access.running = false;
+                                app.access.invalidate();
                                 cx.notify();
                                 return false;
                             }
                             app.access.epoch = Some(response.authorization_epoch);
                             for item in response.items {
-                                if app.access.ready
-                                    && item.check.action == PermissionAction::List
-                                    && app.access.entries.get(&item.check).map(|(d, _)| *d)
-                                        != Some(item.decision)
-                                {
-                                    app.access.lists_changed = true;
-                                }
+                                app.access.stage_list(&item.check, item.decision);
                                 app.access
                                     .entries
                                     .insert(item.check, (item.decision, response.expires_at));
@@ -500,6 +601,7 @@ impl IceonApp {
                         } else {
                             // A failed renewal must not extend an old allowance.
                             for key in &request.checks {
+                                app.access.stage_list(key, PermissionDecision::Unknown);
                                 app.access
                                     .entries
                                     .insert(key.clone(), (PermissionDecision::Unknown, now()));
@@ -611,7 +713,7 @@ impl IceonApp {
                         {
                             return false;
                         }
-                        // Expiry is still fail-closed, including in cached UI projections.
+                        // Action expiry stays fail-closed; navigation does not age out.
                         app.access.revision = app.access.revision.wrapping_add(1);
                         cx.notify();
                         if app.access.running {
@@ -621,10 +723,14 @@ impl IceonApp {
                             app.run_access_reviews(list_checks(&scope), window, cx);
                             return true;
                         }
-                        let mut checks = list_checks(&scope);
-                        checks.extend(app.relevant_access_checks());
                         let at = now();
-                        for key in checks {
+                        let lists = list_checks(&scope);
+                        if lists.iter().any(|key| app.access.needs_renewal(key, at)) {
+                            // Full review, atomically published: never renew a partial TTL batch.
+                            app.run_access_reviews(lists, window, cx);
+                            return true;
+                        }
+                        for key in app.relevant_access_checks() {
                             if app.access.needs_renewal(&key, at)
                                 && app.access.scheduled.insert(key.clone())
                             {
@@ -680,11 +786,191 @@ impl IceonApp {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn full_page_loading_is_only_for_initial_session_review() {
+        let completed = ("cluster".into(), "lease".into());
+        assert!(super::needs_initial_access_page(
+            None, "cluster", "lease", true
+        ));
+        assert!(!super::needs_initial_access_page(
+            Some(&completed),
+            "cluster",
+            "lease",
+            true
+        ));
+        assert!(super::needs_initial_access_page(
+            Some(&completed),
+            "cluster",
+            "new-lease",
+            true
+        ));
+        assert!(!super::needs_initial_access_page(
+            None, "cluster", "lease", false
+        ));
+    }
     use super::{AccessScope, AccessState, check, now, valid};
     use iceon_core::connection::{
         ResourceKind,
         permissions::{PermissionAction, PermissionDecision},
     };
+    fn scope() -> AccessScope {
+        AccessScope {
+            cluster: "c".into(),
+            lease: "s".into(),
+            namespace: Some("a".into()),
+        }
+    }
+
+    fn published_state() -> AccessState {
+        let scope = scope();
+        let mut state = AccessState {
+            scope: Some(scope.clone()),
+            ..Default::default()
+        };
+        for key in super::list_checks(&scope) {
+            state.stage_list(&key, PermissionDecision::Allowed);
+        }
+        assert!(state.commit_lists(&super::list_checks(&scope)));
+        state.lists_changed = false;
+        state
+    }
+
+    #[test]
+    fn expired_entries_keep_navigation_but_never_allow_actions() {
+        let mut state = published_state();
+        let key = check(ResourceKind::Pods, PermissionAction::List, Some("a"), None);
+        state
+            .entries
+            .insert(key.clone(), (PermissionDecision::Allowed, 0));
+        let action = check(
+            ResourceKind::Pods,
+            PermissionAction::Delete,
+            Some("a"),
+            Some("p"),
+        );
+        state
+            .entries
+            .insert(action.clone(), (PermissionDecision::Allowed, 0));
+        assert_eq!(state.list_decision(&key), PermissionDecision::Allowed);
+        assert_eq!(state.decision(&key), PermissionDecision::Unknown);
+        assert_eq!(state.decision(&action), PermissionDecision::Unknown);
+        assert!(!state.lists_changed);
+    }
+
+    #[test]
+    fn initial_lists_are_not_published_until_every_batch_is_reviewed() {
+        let checks = super::list_checks(&scope());
+        assert!(checks.len() > 32, "exercise multiple review batches");
+        let mut state = AccessState::default();
+        for key in &checks[..32] {
+            state.stage_list(key, PermissionDecision::Allowed);
+        }
+        assert!(!state.commit_lists(&checks));
+        assert!(!state.ready);
+        assert!(state.published_lists.is_empty());
+        for key in &checks[32..] {
+            state.stage_list(key, PermissionDecision::Denied);
+        }
+        assert!(state.commit_lists(&checks));
+        assert!(state.ready);
+        assert_eq!(state.list_decision(&checks[0]), PermissionDecision::Allowed);
+        assert_eq!(
+            state.list_decision(checks.last().unwrap()),
+            PermissionDecision::Denied
+        );
+    }
+
+    #[test]
+    fn renewal_publishes_denials_atomically_and_only_flags_real_changes() {
+        let mut state = published_state();
+        let checks = super::list_checks(&scope());
+        for key in &checks[..32] {
+            state.stage_list(key, PermissionDecision::Denied);
+        }
+        assert!(!state.commit_lists(&checks));
+        assert!(
+            checks
+                .iter()
+                .all(|key| state.list_decision(key) == PermissionDecision::Allowed)
+        );
+        assert!(!state.lists_changed);
+        for key in &checks[32..] {
+            state.stage_list(key, PermissionDecision::Denied);
+        }
+        assert!(state.commit_lists(&checks));
+        assert!(state.lists_changed);
+        assert!(
+            checks
+                .iter()
+                .all(|key| state.list_decision(key) == PermissionDecision::Denied)
+        );
+        state.lists_changed = false;
+        for key in &checks {
+            state.stage_list(key, PermissionDecision::Denied);
+        }
+        assert!(state.commit_lists(&checks));
+        assert!(
+            !state.lists_changed,
+            "unchanged renewal must not reload a page"
+        );
+    }
+
+    #[test]
+    fn unavailable_refresh_retains_navigation_not_fresh_action_access() {
+        let mut state = published_state();
+        let checks = super::list_checks(&scope());
+        for key in &checks {
+            state.stage_list(key, PermissionDecision::Unknown);
+            state
+                .entries
+                .insert(key.clone(), (PermissionDecision::Unknown, now() + 30_000));
+        }
+        assert!(state.ready, "background refresh must not reset readiness");
+        assert!(state.commit_lists(&checks));
+        assert!(!state.lists_changed);
+        for key in &checks {
+            assert_eq!(state.list_decision(key), PermissionDecision::Allowed);
+            assert_eq!(state.decision(key), PermissionDecision::Unknown);
+        }
+        let mut initial = AccessState::default();
+        for key in &checks {
+            initial.stage_list(key, PermissionDecision::Unknown);
+        }
+        assert!(initial.commit_lists(&checks));
+        assert!(
+            checks
+                .iter()
+                .all(|key| initial.list_decision(key) == PermissionDecision::Unknown)
+        );
+    }
+
+    #[test]
+    fn new_scope_and_epoch_invalidation_clear_published_and_staged_decisions() {
+        let mut state = published_state();
+        let key = super::list_checks(&scope()).remove(0);
+        state.stage_list(&key, PermissionDecision::Allowed);
+        state.invalidate();
+        assert!(!state.ready);
+        assert!(!state.running);
+        assert!(state.entries.is_empty());
+        assert!(state.published_lists.is_empty());
+        assert!(state.staging_lists.is_empty());
+        assert_eq!(state.list_decision(&key), PermissionDecision::Unknown);
+        let new_scope = AccessScope {
+            namespace: Some("b".into()),
+            ..scope()
+        };
+        let state = AccessState {
+            scope: Some(new_scope.clone()),
+            generation: 2,
+            ..Default::default()
+        };
+        assert!(!state.current(&scope(), 1));
+        assert!(state.current(&new_scope, 2));
+        assert!(!state.ready);
+        assert!(state.published_lists.is_empty());
+    }
+
     #[test]
     fn exact_scope_and_unknown_are_not_allowance() {
         let mut state = AccessState::default();

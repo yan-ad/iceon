@@ -28,7 +28,21 @@ pub(crate) fn init(cx: &mut App) {
         "ctrl-j", "ctrl-k", "ctrl-l", "ctrl-m", "ctrl-n", "ctrl-o", "ctrl-p", "ctrl-q", "ctrl-r",
         "ctrl-s", "ctrl-t", "ctrl-u", "ctrl-v", "ctrl-w", "ctrl-x", "ctrl-y", "ctrl-z",
     ];
-    cx.bind_keys(CONTROL_KEYS.map(|key| KeyBinding::new(key, NoAction, Some(KEY_CONTEXT))));
+    cx.bind_keys(
+        CONTROL_KEYS
+            .into_iter()
+            .filter(|key| cfg!(target_os = "macos") || *key != "ctrl-w")
+            .map(|key| KeyBinding::new(key, NoAction, Some(KEY_CONTEXT))),
+    );
+    cx.bind_keys([KeyBinding::new(
+        if cfg!(target_os = "macos") {
+            "cmd-w"
+        } else {
+            "ctrl-w"
+        },
+        crate::native_menu::CloseWindow,
+        Some(KEY_CONTEXT),
+    )]);
     cx.bind_keys([
         KeyBinding::new("cmd-c", CopySnapshot, Some(KEY_CONTEXT)),
         KeyBinding::new("cmd-v", PasteClipboard, Some(KEY_CONTEXT)),
