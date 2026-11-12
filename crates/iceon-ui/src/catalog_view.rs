@@ -1,5 +1,8 @@
 //! Cluster setup fallback and background catalog operations.
 
+#[path = "cluster_config.rs"]
+mod cluster_config;
+
 use gpui_kit::component::{
     ActiveTheme as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
@@ -10,7 +13,6 @@ use gpui_kit::*;
 
 use crate::navigation::catalog_error_message;
 use crate::{IceonApp, selectable_text::selectable_text};
-use iceon_core::catalog::CatalogSnapshot;
 
 impl IceonApp {
     pub(crate) fn render_cluster_setup(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -63,9 +65,9 @@ impl IceonApp {
                     .child(
                         Button::new("cluster-setup-import")
                             .primary()
-                            .label("Import kubeconfig")
+                            .label("Add Config")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.prompt_import_kubeconfig(window, cx);
+                                this.open_add_config(window, cx);
                             })),
                     )
                     .child(
@@ -119,52 +121,6 @@ impl IceonApp {
                 if changed {
                     cx.notify();
                 }
-            });
-        })
-        .detach();
-    }
-
-    pub(crate) fn prompt_import_kubeconfig(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("Select kubeconfig file".into()),
-        });
-        let catalog = self.catalog.clone();
-        let connection = self.connection.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            let path_str = path.to_string_lossy().into_owned();
-            let result = iceon_core::runtime::spawn_blocking(move || {
-                let mut snapshot = catalog
-                    .import_kubeconfig(iceon_core::catalog::ImportRequest { path: path_str })?;
-                let _ = connection.project_catalog_statuses(&mut snapshot);
-                Ok::<CatalogSnapshot, iceon_core::catalog::CatalogError>(snapshot)
-            })
-            .await;
-
-            let _ = this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok(Ok(snapshot)) => {
-                        this.catalog_snapshot = snapshot;
-                        this.catalog_error = None;
-                        this.ensure_cluster_route(window, cx);
-                    }
-                    Ok(Err(err)) => {
-                        this.catalog_error = Some(catalog_error_message(err).to_string());
-                    }
-                    Err(_) => {
-                        this.catalog_error =
-                            Some("Failed to import kubeconfig on background worker.".into());
-                    }
-                }
-                cx.notify();
             });
         })
         .detach();

@@ -327,6 +327,110 @@ async fn download(client: &reqwest::Client, url: &str, limit: usize) -> Result<V
     Ok(bytes)
 }
 
+/// Safe display-only metadata. No repository URLs or extension code are consumed.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct MarketplaceExtension {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub download_count: u64,
+}
+
+fn marketplace_url(query: &str) -> Result<url::Url, String> {
+    let query = query.trim();
+    if query.len() > 256 || query.chars().any(char::is_control) {
+        return Err("Search must be at most 256 bytes without control characters".into());
+    }
+    let mut url = url::Url::parse("https://cloud.zed.dev/extensions").unwrap();
+    url.query_pairs_mut()
+        .append_pair("max_schema_version", "1")
+        .append_pair("provides", "themes");
+    if !query.is_empty() {
+        url.query_pairs_mut().append_pair("filter", query);
+    }
+    Ok(url)
+}
+
+fn parse_marketplace(bytes: &[u8]) -> Result<Vec<MarketplaceExtension>, String> {
+    #[derive(Deserialize)]
+    struct Listing {
+        data: Vec<Entry>,
+    }
+    #[derive(Deserialize)]
+    struct Entry {
+        #[serde(flatten)]
+        metadata: MarketplaceExtension,
+        provides: Vec<String>,
+    }
+    if bytes.len() > METADATA_LIMIT {
+        return Err("Marketplace response exceeds size limit".into());
+    }
+    let listing: Listing =
+        serde_json::from_slice(bytes).map_err(|_| "Invalid marketplace response".to_owned())?;
+    if listing.data.len() > 4096 {
+        return Err("Too many marketplace extensions".into());
+    }
+    let mut ids = BTreeSet::new();
+    let mut extensions = Vec::new();
+    for entry in listing.data {
+        let item = entry.metadata;
+        valid_id(&item.id)?;
+        if item.name.trim().is_empty()
+            || item.name.len() > 256
+            || item.description.len() > 4096
+            || !ids.insert(item.id.clone())
+            || !entry.provides.iter().any(|kind| kind == "themes")
+        {
+            return Err("Invalid marketplace theme metadata".into());
+        }
+        extensions.push(item);
+    }
+    Ok(extensions)
+}
+
+/// Browse the theme-only marketplace using its supported `filter` search.
+/// The endpoint returns a full list (page parameters are ignored); callers cache
+/// this bounded result and paginate locally. Run on Tokio, not a UI executor.
+pub async fn marketplace(query: &str) -> Result<Vec<MarketplaceExtension>, String> {
+    let url = marketplace_url(query)?;
+    // Browse has a separate no-redirect policy: cloud.zed.dev is NOT added to
+    // the install/download allowlist and metadata cannot supply network targets.
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Unable to create marketplace browser".to_owned())?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| "Marketplace search failed".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Marketplace returned HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|n| n > METADATA_LIMIT as u64)
+    {
+        return Err("Marketplace response exceeds size limit".into());
+    }
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| "Marketplace body download failed".to_owned())?;
+        if chunk.len() > METADATA_LIMIT.saturating_sub(bytes.len()) {
+            return Err("Marketplace response exceeds size limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    parse_marketplace(&bytes)
+}
+
 fn latest_version(bytes: &[u8], id: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Listing {
@@ -663,6 +767,38 @@ mod tests {
             "1.0.0",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn marketplace_search_is_encoded_and_bounded() {
+        let url = marketplace_url(" github & dark ").unwrap();
+        assert_eq!(url.host_str(), Some("cloud.zed.dev"));
+        assert_eq!(
+            url.query_pairs().find(|(k, _)| k == "filter").unwrap().1,
+            "github & dark"
+        );
+        assert!(marketplace_url(&"x".repeat(257)).is_err());
+        assert!(marketplace_url("a\nb").is_err());
+        assert!(!allowed_url(&url)); // browse cannot broaden install hosts
+    }
+
+    #[test]
+    fn marketplace_metadata_is_validated() {
+        let fixture = br#"{"data":[{"id":"github-theme","name":"GitHub","description":"Themes","download_count":42,"provides":["themes"],"repository":"https://ignored.test"}]}"#;
+        let entries = parse_marketplace(fixture).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].download_count, 42);
+        for (from, to) in [
+            ("github-theme", "../unsafe"),
+            ("[\"themes\"]", "[\"languages\"]"),
+        ] {
+            let invalid = String::from_utf8(fixture.to_vec())
+                .unwrap()
+                .replace(from, to);
+            assert!(parse_marketplace(invalid.as_bytes()).is_err());
+        }
+        assert!(parse_marketplace(&vec![b' '; METADATA_LIMIT + 1]).is_err());
+        assert!(parse_marketplace(br#"{"data":null}"#).is_err());
     }
 
     #[test]

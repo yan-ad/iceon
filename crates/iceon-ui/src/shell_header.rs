@@ -92,20 +92,11 @@ fn cluster_choices(snapshot: &CatalogSnapshot) -> Vec<ClusterChoice> {
 
 fn opened_path(section: &str) -> Vec<(String, String)> {
     if let Some(name) = section.strip_prefix("crd:") {
-        return vec![
-            (
-                "Custom Resources".into(),
-                "custom-resource-definitions".into(),
-            ),
-            (name.into(), section.into()),
-        ];
+        return vec![(name.into(), section.into())];
     }
     for group in crate::navigation::CLUSTER_SECTIONS {
         if let Some(child) = group.children.iter().find(|child| child.id == section) {
-            return vec![
-                (group.label.into(), group.default_child.into()),
-                (child.label.into(), child.id.into()),
-            ];
+            return vec![(child.label.into(), child.id.into())];
         }
         if group.id == section {
             return vec![(group.label.into(), group.default_child.into())];
@@ -439,7 +430,10 @@ impl IceonApp {
                                                                         }));
                                                                     }
                                                                 }
-                                                                menu
+                                                                let config_owner = owner.clone();
+                                                                menu.separator().item(PopupMenuItem::new("Add Config…").on_click(move |_, window, cx| {
+                                                                    let _ = config_owner.update(cx, |app, cx| app.open_add_config(window, cx));
+                                                                }))
                                                             }
                                                         }),
                                                 )
@@ -601,8 +595,8 @@ mod tests {
             super::opened_path("overview"),
             vec![("Overview".into(), "overview".into())]
         );
-        assert_eq!(super::opened_path("config-maps")[0].0, "Configuration");
-        assert_eq!(super::opened_path("services")[0].0, "Networking");
+        assert_eq!(super::opened_path("config-maps")[0].0, "Config Maps");
+        assert_eq!(super::opened_path("services")[0].0, "Services");
         assert_eq!(
             super::breadcrumb_choices("pods", false)[0].1,
             "workloads-overview"
@@ -670,10 +664,7 @@ mod tests {
     fn breadcrumbs_show_resource_path_and_track_cluster_color() {
         assert_eq!(
             super::opened_path("pods"),
-            vec![
-                ("Workloads".into(), "workloads-overview".into()),
-                ("Pods".into(), "pods".into())
-            ]
+            vec![("Pods".into(), "pods".into())]
         );
         assert_eq!(
             super::opened_path("nodes"),

@@ -2,7 +2,63 @@
 use gpui_kit::{AssetSource, SharedString};
 use std::borrow::Cow;
 
-gpui_kit_assets::icon_assets!(ExtraIcons, [Pin, PinOff, Pencil, Trash]);
+gpui_kit_assets::icon_assets!(
+    ExtraIcons,
+    [
+        Archive,
+        ArrowLeftRight,
+        ArrowUpDown,
+        BadgeCheck,
+        Bell,
+        Blocks,
+        Box,
+        Cable,
+        CalendarClock,
+        ChartPie,
+        ClipboardCheck,
+        Contact,
+        Container,
+        Copy,
+        CopyCheck,
+        Crown,
+        Database,
+        FileCheck,
+        FileText,
+        Folder,
+        Gauge,
+        HardDrive,
+        HardDriveDownload,
+        KeyRound,
+        Layers,
+        LayoutDashboard,
+        Link,
+        Link2,
+        ListChecks,
+        ListOrdered,
+        MapPin,
+        Network,
+        Package,
+        PackageCheck,
+        Pencil,
+        Pin,
+        PinOff,
+        Plug,
+        Puzzle,
+        Route,
+        Server,
+        Shield,
+        ShieldAlert,
+        ShieldCheck,
+        Signpost,
+        SlidersHorizontal,
+        Square,
+        Timer,
+        Trash,
+        UserCog,
+        Users,
+        Webhook
+    ]
+);
 
 pub(crate) struct AppAssets;
 impl AssetSource for AppAssets {
@@ -25,6 +81,23 @@ impl AssetSource for AppAssets {
 mod tests {
     use super::AppAssets;
     use gpui_kit::AssetSource;
+    #[test]
+    fn every_sidebar_destination_icon_has_an_embedded_svg() {
+        for group in crate::navigation::CLUSTER_SECTIONS {
+            for destination in std::iter::once(group.default_child)
+                .chain(group.children.iter().map(|child| child.id))
+            {
+                let icon = crate::sidebar_view::section_asset_icon(destination);
+                let path = icon.path();
+                let bytes = AppAssets.load(&path).unwrap().expect("sidebar icon SVG");
+                assert!(
+                    std::str::from_utf8(&bytes).unwrap().contains("<svg"),
+                    "{destination}: {path}"
+                );
+            }
+        }
+    }
+
     use gpui_kit_assets::IconName;
 
     #[test]

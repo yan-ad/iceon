@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-fn section_asset_icon(section: &str) -> AssetIconName {
+pub(crate) fn section_asset_icon(section: &str) -> AssetIconName {
     use AssetIconName::*;
     match section {
         "overview" => LayoutDashboard,

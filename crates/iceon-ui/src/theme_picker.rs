@@ -1,11 +1,5 @@
 //! Shared theme choices: built-in appearances and locally installed Zed themes only.
-use gpui_kit::component::{
-    Selectable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
-    menu::{PopupMenu, PopupMenuItem},
-};
-use gpui_kit::prelude::*;
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 use iceon_core::preferences::AppTheme;
 
@@ -53,39 +47,6 @@ pub(crate) fn menu(mut menu: PopupMenu, cx: &App) -> PopupMenu {
 }
 
 /// Compact appearance controls for callers that still embed them in settings.
-pub(crate) fn appearance(cx: &App) -> AnyElement {
-    let current = selected(cx);
-    let installed = selected_zed(cx).is_some();
-    h_flex()
-        .flex_wrap()
-        .gap_2()
-        .children(DEFAULTS.into_iter().enumerate().map(|(ix, theme)| {
-            Button::new(("default-theme", ix))
-                .ghost()
-                .label(theme.label())
-                .selected(!installed && current == theme)
-                .on_click(move |_, _, cx| crate::preferences_view::set_theme(cx, theme))
-        }))
-        .children(
-            cx.try_global::<crate::themes_settings::ThemeCatalog>()
-                .into_iter()
-                .flat_map(|catalog| &catalog.extensions)
-                .flat_map(|extension| &extension.themes)
-                .enumerate()
-                .map(|(ix, theme)| {
-                    let id = theme.id.clone();
-                    Button::new(("installed-appearance", ix))
-                        .ghost()
-                        .label(theme.name.clone())
-                        .selected(selected_zed(cx) == Some(theme.id.as_str()))
-                        .on_click(move |_, _, cx| {
-                            crate::preferences_view::set_zed_theme(cx, Some(id.clone()))
-                        })
-                }),
-        )
-        .into_any_element()
-}
-
 #[cfg(test)]
 mod tests {
     use super::DEFAULTS;

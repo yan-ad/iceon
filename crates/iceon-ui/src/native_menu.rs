@@ -183,7 +183,7 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
         });
     });
     register!(AddCluster, |this, _: &AddCluster, window, cx| {
-        this.prompt_import_kubeconfig(window, cx);
+        this.open_add_config(window, cx);
     });
     register!(CloseWindow, |_, _: &CloseWindow, window, _| window
         .remove_window());
@@ -352,7 +352,7 @@ impl IceonApp {
                 });
             }))
             .on_action(cx.listener(|this, _: &AddCluster, window, cx| {
-                this.prompt_import_kubeconfig(window, cx);
+                this.open_add_config(window, cx);
             }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {

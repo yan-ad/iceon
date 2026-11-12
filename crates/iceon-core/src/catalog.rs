@@ -5,6 +5,7 @@
 //! Acceptance fixtures live in catalog/tests.rs.
 
 use crate::preferences::KubernetesPreferences;
+pub mod config;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
