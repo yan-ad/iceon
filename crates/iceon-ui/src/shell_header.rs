@@ -8,7 +8,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    select::{SearchableVec, SelectEvent, SelectItem, SelectState},
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     v_flex,
 };
 use gpui_kit::prelude::*;
@@ -377,6 +377,8 @@ impl IceonApp {
             return;
         };
         let cluster_id = cluster_id.clone();
+        self.sync_namespace_select(window, cx);
+        let select = self.namespace_select.clone();
         let owner = cx.entity().downgrade();
         let input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -392,8 +394,23 @@ impl IceonApp {
         window.open_dialog(cx, move |dialog, _, _| {
             let confirm = state.clone();
             dialog
-                .title("Enter namespace")
-                .child(state.clone())
+                .title("Choose namespace")
+                .child(
+                    v_flex()
+                        .gap_3()
+                        .child(
+                            Select::new(&select)
+                                .w_full()
+                                .search_placeholder("Search namespaces…")
+                                .menu_width(px(360.)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .child("Or enter a namespace if discovery is restricted:"),
+                        )
+                        .child(state.clone()),
+                )
                 .on_ok(move |_, window, cx| {
                     confirm.update(cx, |state, cx| state.submit(window, cx))
                 })

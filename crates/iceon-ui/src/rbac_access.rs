@@ -6,8 +6,7 @@ use crate::{
 };
 use gpui_kit::{prelude::*, *};
 use iceon_core::connection::{
-    ResourceKind,
-    namespace_cache::NamespaceRefreshRequest,
+    ResourceKind, ResourceRequest,
     permissions::{PermissionAction, PermissionCheck, PermissionDecision, ReviewRequest},
 };
 use std::{
@@ -456,7 +455,6 @@ impl IceonApp {
         self.overview_generation = self.next_operation_id();
         self.custom_discovery_generation = self.next_operation_id();
         self.custom_definitions_page = None;
-        self.namespaces.clear();
         self.sync_namespace_select(window, cx);
         if let Some(scope) = scope {
             let checks = list_checks(&scope);
@@ -805,28 +803,52 @@ impl IceonApp {
             return;
         };
         let generation = self.access.generation;
-        let read_id = self.next_operation_id();
         let connection = self.connection.clone();
         cx.spawn_in(window, async move |owner, cx| {
-            let result = connection
-                .namespace_cache_refresh(NamespaceRefreshRequest {
-                    cluster_id: scope.cluster.clone(),
-                    session_id: scope.lease.clone(),
-                    read_id,
-                })
-                .await;
-            let _ = owner.update_in(cx, |app, window, cx| {
-                if !app.access.current(&scope, generation)
-                    || app.access_scope().as_ref() != Some(&scope)
-                {
+            let mut token = None;
+            let mut tokens = HashSet::new();
+            let mut names = std::collections::BTreeSet::new();
+            for _ in 0..100 {
+                let Ok(Some(read_id)) = owner.update_in(cx, |app, _, _| {
+                    (app.access.current(&scope, generation)
+                        && app.access_scope().as_ref() == Some(&scope))
+                    .then(|| app.next_operation_id())
+                }) else {
+                    return;
+                };
+                let result = connection
+                    .resources(ResourceRequest {
+                        cluster_id: scope.cluster.clone(),
+                        session_id: scope.lease.clone(),
+                        read_id,
+                        kind: ResourceKind::Namespaces,
+                        namespace: None,
+                        continue_token: token.clone(),
+                        query: None,
+                        status: None,
+                        group: None,
+                    })
+                    .await;
+                let Ok(page) = result else {
+                    return;
+                };
+                names.extend(page.items.into_iter().map(|item| item.name));
+                token = page.continue_token;
+                let snapshot: Vec<_> = names.iter().cloned().collect();
+                let _ = owner.update_in(cx, |app, window, cx| {
+                    if !app.access.current(&scope, generation)
+                        || app.access_scope().as_ref() != Some(&scope)
+                    {
+                        return;
+                    }
+                    app.namespaces = snapshot;
+                    app.sync_namespace_select(window, cx);
+                    cx.notify();
+                });
+                if token.is_none() || names.len() >= 10000 || !tokens.insert(token.clone()) {
                     return;
                 }
-                if let Ok(snapshot) = result {
-                    app.namespaces = snapshot.names;
-                    app.sync_namespace_select(window, cx);
-                }
-                cx.notify();
-            });
+            }
         })
         .detach();
     }

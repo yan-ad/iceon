@@ -1525,6 +1525,10 @@ impl IceonApp {
                         let (page, limited) = crate::resource_pagination::merge_page(
                             this.resource_page.as_deref().filter(|_| req.continue_token.is_some()), page);
                         let incomplete = page.truncated && page.continue_token.is_none();
+                        if req.kind == ResourceKind::Namespaces {
+                            this.namespaces = page.items.iter().map(|item| item.name.clone()).collect();
+                            this.sync_namespace_select(window,cx);
+                        }
                         this.resource_page = Some(Rc::new(page));
                         if limited || incomplete {
                             this.resource_pagination.stopped = true;
