@@ -11,6 +11,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants as _},
         h_flex,
         scroll::ScrollableElement as _,
+        skeleton::Skeleton,
         tooltip::Tooltip,
         v_flex,
     },
@@ -95,7 +96,7 @@ fn count(page: Option<&ResourcePage>) -> String {
     })
     .unwrap_or_else(|| "—".into())
 }
-fn stat(label: &str, value: String, note: &str, cx: &App) -> AnyElement {
+fn stat(label: &str, value: String, note: &str, loading: bool, cx: &App) -> AnyElement {
     v_flex()
         .flex_1()
         .min_w(px(145.))
@@ -108,12 +109,15 @@ fn stat(label: &str, value: String, note: &str, cx: &App) -> AnyElement {
                 .text_color(cx.theme().muted_foreground)
                 .child(label.to_owned()),
         )
-        .child(
+        .child(if loading && value == "—" {
+            Skeleton::new().w(px(72.)).h(px(28.)).into_any_element()
+        } else {
             div()
                 .text_xl()
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(value),
-        )
+                .child(value)
+                .into_any_element()
+        })
         .child(
             div()
                 .text_xs()
@@ -122,6 +126,29 @@ fn stat(label: &str, value: String, note: &str, cx: &App) -> AnyElement {
         )
         .into_any_element()
 }
+fn loading_card(label: &str, cx: &App) -> AnyElement {
+    v_flex()
+        .w_full()
+        .min_w_0()
+        .p_4()
+        .gap_3()
+        .rounded(px(12.))
+        .bg(cx.theme().secondary)
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .child(label.to_owned()),
+        )
+        .child(Skeleton::new().h(px(44.)).rounded(px(4.)))
+        .child(
+            h_flex()
+                .gap_4()
+                .children((0..3).map(|_| Skeleton::new().w(px(72.)).h(px(32.)))),
+        )
+        .into_any_element()
+}
+
 impl IceonApp {
     fn overview_workload_card(
         &self,
@@ -131,6 +158,9 @@ impl IceonApp {
         page: Option<&ResourcePage>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if page.is_none() && self.cluster_loading {
+            return loading_card(label, cx);
+        }
         let mut items = page.map(|page| page.items.clone()).unwrap_or_default();
         items.sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
         let mut totals = [0usize; 6];
@@ -277,6 +307,13 @@ impl IceonApp {
     }
     fn overview_capacity(&self, memory: bool, cx: &App) -> AnyElement {
         let page = self.overview_snapshot.nodes.as_ref();
+        if page.is_none() && self.cluster_loading {
+            return div()
+                .flex_1()
+                .min_w_0()
+                .child(loading_card(if memory { "Memory" } else { "CPU" }, cx))
+                .into_any_element();
+        }
         let complete = page.is_some_and(|page| {
             !page.items.is_empty() && !page.truncated && page.continue_token.is_none()
         });
@@ -399,7 +436,9 @@ impl IceonApp {
         let events = if let Some(page) = snap.events.as_ref() {
             let table = self
                 .overview_events_table
-                .get_or_insert_with(|| cx.new(|cx| ResourceTable::new(owner, cx)))
+                .get_or_insert_with(|| {
+                    cx.new(|cx| ResourceTable::new(owner, cx).without_selection())
+                })
                 .clone();
             let data = TableData {
                 page: Some(Rc::new(page.clone())),
@@ -414,11 +453,20 @@ impl IceonApp {
             };
             table.update(cx, |table, cx| table.sync(data, cx));
             div().h(px(330.)).w_full().child(table).into_any_element()
+        } else if self.cluster_loading {
+            v_flex()
+                .w_full()
+                .h(px(330.))
+                .gap_2()
+                .p_3()
+                .child(Skeleton::new().h(px(32.)))
+                .children((0..6).map(|_| Skeleton::new().h(px(36.)).secondary()))
+                .into_any_element()
         } else {
             div()
                 .p_4()
                 .text_sm()
-                .child("Events unavailable or still loading")
+                .child("Events unavailable")
                 .into_any_element()
         };
         v_flex()
@@ -444,6 +492,7 @@ impl IceonApp {
                             "—".into()
                         },
                         "Observed workload issues",
+                        self.cluster_loading,
                         cx,
                     ))
                     .child(stat(
@@ -452,6 +501,7 @@ impl IceonApp {
                             .map(|n| format!("{n} / {}", count(snap.nodes.as_ref())))
                             .unwrap_or_else(|| "—".into()),
                         "Loaded nodes",
+                        self.cluster_loading,
                         cx,
                     ))
                     .child(stat(
@@ -460,15 +510,23 @@ impl IceonApp {
                             .map(|n| format!("{n} / {}", count(snap.pods.as_ref())))
                             .unwrap_or_else(|| "—".into()),
                         "Selected namespace scope",
+                        self.cluster_loading,
                         cx,
                     ))
                     .child(stat(
                         "Warning events",
                         warning.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
                         "Loaded event records, not an hourly rate",
+                        self.cluster_loading,
                         cx,
                     ))
-                    .child(stat("Security findings", "—".into(), "Not scanned", cx)),
+                    .child(stat(
+                        "Security findings",
+                        "—".into(),
+                        "Not scanned",
+                        false,
+                        cx,
+                    )),
             )
             .child(
                 div()

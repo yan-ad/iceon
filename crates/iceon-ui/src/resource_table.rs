@@ -417,6 +417,7 @@ impl TableCache {
 
 pub(crate) struct ResourceTable {
     owner: WeakEntity<IceonApp>,
+    selection_enabled: bool,
     selected: Vec<DeleteTarget>,
     selection_lease: String,
     cache: TableCache,
@@ -431,6 +432,7 @@ impl ResourceTable {
     pub(crate) fn new(owner: WeakEntity<IceonApp>, _cx: &mut Context<Self>) -> Self {
         Self {
             owner,
+            selection_enabled: true,
             selected: Vec::new(),
             selection_lease: String::new(),
             cache: TableCache::default(),
@@ -440,6 +442,11 @@ impl ResourceTable {
             layouts: HashMap::new(),
             header_bounds: HashMap::new(),
         }
+    }
+
+    pub(crate) fn without_selection(mut self) -> Self {
+        self.selection_enabled = false;
+        self
     }
 
     pub(crate) fn sync(&mut self, data: TableData, cx: &mut Context<Self>) {
@@ -822,31 +829,33 @@ impl ResourceTable {
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()
-            .child(
-                div()
-                    .w(px(36.0))
-                    .flex_shrink_0()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        Checkbox::new(SharedString::from(format!("select-resource-{idx}")))
-                            .checked(selected)
-                            .disabled(target.is_none())
-                            .on_click(cx.listener(move |table, checked: &bool, _, cx| {
-                                cx.stop_propagation();
-                                if let Some(target) = &target {
-                                    if *checked {
-                                        if !table.selected.contains(target) {
-                                            table.selected.push(target.clone());
+            .when(self.selection_enabled, |row| {
+                row.child(
+                    div()
+                        .w(px(36.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            Checkbox::new(SharedString::from(format!("select-resource-{idx}")))
+                                .checked(selected)
+                                .disabled(target.is_none())
+                                .on_click(cx.listener(move |table, checked: &bool, _, cx| {
+                                    cx.stop_propagation();
+                                    if let Some(target) = &target {
+                                        if *checked {
+                                            if !table.selected.contains(target) {
+                                                table.selected.push(target.clone());
+                                            }
+                                        } else {
+                                            table.selected.retain(|candidate| candidate != target);
                                         }
-                                    } else {
-                                        table.selected.retain(|candidate| candidate != target);
+                                        table.selection_changed(cx);
                                     }
-                                    table.selection_changed(cx);
-                                }
-                            })),
-                    ),
-            )
+                                })),
+                        ),
+                )
+            })
             .child(
                 table_cell(
                     layout.width("name"),
@@ -1361,7 +1370,9 @@ impl Render for ResourceTable {
                     .scrollbar(&self.horizontal_scroll, ScrollbarAxis::Horizontal)
                     .child(
                         v_flex()
-                            .min_w(px(layout.total() + 36.0))
+                            .min_w(px(
+                                layout.total() + if self.selection_enabled { 36.0 } else { 0.0 }
+                            ))
                             .w_full()
                             .flex_1()
                             .min_h_0()
@@ -1373,14 +1384,16 @@ impl Render for ResourceTable {
                                     .border_color(cx.theme().border)
                                     .items_center()
                                     .flex_shrink_0()
-                                    .child(
-                                        div()
-                                            .w(px(36.0))
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .justify_center()
-                                            .child(self.render_selection_checkbox(cx)),
-                                    )
+                                    .when(self.selection_enabled, |header| {
+                                        header.child(
+                                            div()
+                                                .w(px(36.0))
+                                                .flex_shrink_0()
+                                                .flex()
+                                                .justify_center()
+                                                .child(self.render_selection_checkbox(cx)),
+                                        )
+                                    })
                                     .children(
                                         layout.columns.iter().filter(|c| c.key != "actions").map(
                                             |column| {
