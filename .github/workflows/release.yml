@@ -24,7 +24,8 @@ env:
 
 jobs:
   validate:
-    runs-on: macos-15
+    # Source/tag validation and helper tests do not require Apple tooling.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       tag_object: ${{ steps.guard.outputs.tag_object }}
@@ -115,6 +116,7 @@ jobs:
 
   publish:
     needs: [validate, ci, build]
+    # Downloaded macOS archives are verified using codesign; keep this on macOS.
     runs-on: macos-15
     timeout-minutes: 20
     permissions:
