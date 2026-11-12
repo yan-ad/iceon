@@ -1000,6 +1000,27 @@ impl Render for PreferencesWindow {
 }
 
 impl IceonApp {
+    pub(crate) fn open_theme_management(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_preferences(window, cx);
+        if let Some(handle) = self.preferences_window {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(root) = window.root::<gpui_kit::component::Root>().flatten() {
+                    let view = root.read(cx).view().clone();
+                    if let Ok(settings) = view.downcast::<PreferencesWindow>() {
+                        settings.update(cx, |settings, cx| {
+                            settings.section = 1;
+                            settings
+                                .themes_settings
+                                .update(cx, |themes, cx| themes.open_marketplace(window, cx));
+                            cx.notify();
+                        });
+                    }
+                }
+            });
+        }
+        cx.notify();
+    }
+
     pub(crate) fn open_preferences(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Ok(snapshot) = self.preferences_engine.snapshot() {
             self.preferences_revision = snapshot.revision;
@@ -1034,7 +1055,7 @@ impl IceonApp {
                 cx,
             ))),
             window_min_size: Some(size(px(680.0), px(480.0))),
-            window_background: crate::shell_theme::background_appearance(),
+            window_background: crate::shell_theme::background_appearance(cx),
             ..TitleBar::window_options()
         };
 

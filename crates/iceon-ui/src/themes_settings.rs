@@ -4,8 +4,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
-    menu::{DropdownMenu as _, PopupMenuItem},
+    input::{Input, InputEvent, InputState},
     v_flex,
 };
 use gpui_kit::prelude::*;
@@ -22,6 +21,7 @@ pub(crate) struct ThemeCatalog {
     marketplace_loading: bool,
     marketplace_loaded: bool,
     marketplace_error: Option<String>,
+    marketplace_generation: u64,
 }
 impl Global for ThemeCatalog {}
 
@@ -68,55 +68,99 @@ fn extension_id(input: &str) -> Result<String, String> {
 
 pub(crate) struct ThemesSettings {
     extension_input: Entity<InputState>,
+    marketplace_mode: bool,
     visible: usize,
-    variants: std::collections::HashMap<String, String>,
+    scroll: ScrollHandle,
+    search_task: Option<Task<()>>,
 }
 
 impl ThemesSettings {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         init(cx);
-        let this = Self {
+        let extension_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search theme extensions…"));
+        cx.subscribe_in(
+            &extension_input,
+            window,
+            |view, input, event, window, cx| {
+                if matches!(event, InputEvent::Change) && view.marketplace_mode {
+                    let query = input.read(cx).value().to_string();
+                    view.schedule_search(query, window, cx);
+                }
+            },
+        )
+        .detach();
+        Self {
+            extension_input,
+            marketplace_mode: false,
             visible: 20,
-            variants: std::collections::HashMap::new(),
-            extension_input: cx
-                .new(|cx| InputState::new(window, cx).placeholder("Search theme extensions…")),
-        };
-        if !cx.global::<ThemeCatalog>().marketplace_loaded {
-            Self::browse(String::new(), window, cx);
+            scroll: ScrollHandle::new(),
+            search_task: None,
         }
-        this
     }
 
-    fn browse(query: String, window: &mut Window, cx: &mut Context<Self>) {
-        if cx.global::<ThemeCatalog>().marketplace_loading {
+    /// Preferences opens installed management by default. Menu/picker integrations
+    /// can explicitly open this same view in marketplace mode.
+    pub(crate) fn open_marketplace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.marketplace_mode = true;
+        self.visible = 20;
+        self.scroll = ScrollHandle::new();
+        let query = self.extension_input.read(cx).value().to_string();
+        self.schedule_search(query, window, cx);
+        cx.notify();
+    }
+
+    fn schedule_search(&mut self, query: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.visible = 20;
+        self.scroll = ScrollHandle::new();
+        let catalog = cx.global_mut::<ThemeCatalog>();
+        // Invalidate on *input*, not when the debounce expires: an older request
+        // must never flash its results during the new query's debounce window.
+        catalog.marketplace_generation += 1;
+        let generation = catalog.marketplace_generation;
+        catalog.marketplace_loading = true;
+        catalog.marketplace_loaded = false;
+        catalog.marketplace.clear();
+        catalog.marketplace_error = None;
+        catalog.marketplace_query = query.clone();
+        self.search_task = Some(cx.spawn_in(window, async move |view, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            let _ = view.update_in(cx, |_, window, cx| {
+                Self::browse(query, generation, window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    fn browse(query: String, generation: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if cx.global::<ThemeCatalog>().marketplace_generation != generation {
             return;
         }
-        let catalog = cx.global_mut::<ThemeCatalog>();
-        catalog.marketplace_loading = true;
-        catalog.marketplace_error = None;
-        let handle = iceon_core::runtime::spawn(async move {
-            (query.clone(), zed_themes::marketplace(&query).await)
-        });
+        let handle =
+            iceon_core::runtime::spawn(async move { zed_themes::marketplace(&query).await });
         let app = cx.to_async();
         cx.spawn_in(window, async move |_, _| {
             let result = handle.await;
             app.update(|cx| {
                 let catalog = cx.global_mut::<ThemeCatalog>();
+                if catalog.marketplace_generation != generation {
+                    return;
+                }
                 catalog.marketplace_loading = false;
                 match result {
-                    Ok((query, Ok(items))) => {
+                    Ok(Ok(items)) => {
                         catalog.marketplace = items;
-                        catalog.marketplace_query = query;
                         catalog.marketplace_loaded = true;
                     }
-                    Ok((_, Err(error))) => catalog.marketplace_error = Some(error),
+                    Ok(Err(error)) => catalog.marketplace_error = Some(error),
                     Err(_) => catalog.marketplace_error = Some("Marketplace worker stopped".into()),
                 }
                 cx.refresh_windows();
             });
         })
         .detach();
-        cx.notify();
     }
 
     fn change(&mut self, input: &str, remove: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -136,6 +180,12 @@ impl ThemesSettings {
         catalog.loading = true;
         catalog.error = None;
         let changed_id = id.clone();
+        let metadata = cx
+            .global::<ThemeCatalog>()
+            .marketplace
+            .iter()
+            .find(|item| item.id == id)
+            .cloned();
         // Reqwest runs on Tokio, not the GPUI foreground executor. Store reads and
         // removals also stay off the UI thread. Detached completion reconciles the
         // global cache even if this settings entity has already been dismissed.
@@ -146,7 +196,10 @@ impl ThemesSettings {
                     .map_err(|_| "Theme removal worker stopped".to_owned())
                     .and_then(|result| result)
             } else {
-                zed_themes::install(&id).await.map(|_| ())
+                match metadata {
+                    Some(item) => zed_themes::install_with_metadata(&item).await.map(|_| ()),
+                    None => zed_themes::install(&id).await.map(|_| ()),
+                }
             };
             let inventory = iceon_core::runtime::spawn_blocking(zed_themes::installed)
                 .await
@@ -205,330 +258,211 @@ impl Render for ThemesSettings {
         let loading = catalog.loading;
         let browsing = catalog.marketplace_loading;
         let extensions = catalog.extensions.clone();
-        let error = catalog
-            .error
-            .clone()
-            .or_else(|| catalog.marketplace_error.clone());
+        let error = catalog.error.clone().or_else(|| {
+            self.marketplace_mode
+                .then(|| catalog.marketplace_error.clone())
+                .flatten()
+        });
         let market = catalog.marketplace.clone();
-        let query = catalog.marketplace_query.trim().to_lowercase();
-        let active = crate::theme_picker::selected_zed(cx).map(str::to_owned);
-        let current = cx
-            .try_global::<crate::preferences_view::GlobalPreferencesState>()
-            .map(|state| state.preferences.app.theme)
-            .unwrap_or(iceon_core::preferences::AppTheme::System);
-        let remaining: Vec<_> = market
-            .into_iter()
-            .filter(|item| !extensions.iter().any(|extension| extension.id == item.id))
-            .collect();
-        let more = remaining.len() > self.visible;
-        let mut rows: Vec<AnyElement> = Vec::new();
-        for (index, theme) in crate::theme_picker::DEFAULTS.into_iter().enumerate() {
-            let selected = active.is_none() && current == theme;
-            rows.push(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(theme.label()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if theme == iceon_core::preferences::AppTheme::System {
-                                        "Built-in · follows system appearance"
-                                    } else {
-                                        "Built-in appearance"
-                                    }),
-                            ),
-                    )
-                    .child(
-                        Button::new(("default-theme-apply", index))
-                            .small()
-                            .ghost()
-                            .label(if selected { "Applied" } else { "Apply" })
-                            .disabled(selected)
-                            .on_click(move |_, _, cx| {
-                                crate::preferences_view::set_theme(cx, theme)
-                            }),
-                    )
-                    .into_any_element(),
-            );
-        }
-        let built_in_rows = rows.len();
-        for extension in extensions.iter().filter(|extension| {
-            query.is_empty()
-                || extension.id.to_lowercase().contains(&query)
-                || extension
-                    .themes
-                    .iter()
-                    .any(|theme| theme.name.to_lowercase().contains(&query))
-        }) {
-            let id = extension.id.clone();
-            let variant = self
-                .variants
-                .get(&id)
-                .and_then(|selected| extension.themes.iter().find(|theme| &theme.id == selected))
-                .or_else(|| {
-                    extension
-                        .themes
-                        .iter()
-                        .find(|theme| Some(&theme.id) == active.as_ref())
-                })
-                .or_else(|| extension.themes.first());
-            let variant_id = variant.map(|theme| theme.id.clone());
-            let applied = variant_id.is_some() && variant_id == active;
-            let label = variant
-                .map(|theme| theme.name.clone())
-                .unwrap_or_else(|| "No variants".into());
-            let variants = extension.themes.clone();
-            let owner = cx.entity().downgrade();
-            let extension_id = id.clone();
-            let selected_variant = variant_id.clone();
-            rows.push(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .truncate()
-                                    .child(id.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!(
-                                        "Installed · {} · {} variants",
-                                        extension.version,
-                                        extension.themes.len()
-                                    )),
-                            ),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("variant-{id}")))
-                            .small()
-                            .outline()
-                            .max_w(px(260.))
-                            .label(label)
-                            .dropdown_menu(move |mut menu, _, _| {
-                                for theme in &variants {
-                                    let owner = owner.clone();
-                                    let extension_id = extension_id.clone();
-                                    let theme_id = theme.id.clone();
-                                    menu = menu.item(
-                                        PopupMenuItem::new(theme.name.clone())
-                                            .checked(Some(&theme.id) == selected_variant.as_ref())
-                                            .on_click(move |_, _, cx| {
-                                                let _ = owner.update(cx, |view, cx| {
-                                                    view.variants.insert(
-                                                        extension_id.clone(),
-                                                        theme_id.clone(),
-                                                    );
-                                                    cx.notify();
-                                                });
-                                            }),
-                                    );
-                                }
-                                menu
-                            }),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("apply-{id}")))
-                            .small()
-                            .ghost()
-                            .label(if applied { "Applied" } else { "Apply" })
-                            .disabled(loading || applied || variant_id.is_none())
-                            .on_click(move |_, _, cx| {
-                                crate::preferences_view::set_zed_theme(cx, variant_id.clone())
-                            }),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("uninstall-{id}")))
-                            .small()
-                            .ghost()
-                            .label("Uninstall")
-                            .disabled(loading)
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.change(&id, true, window, cx)
-                            })),
-                    )
-                    .into_any_element(),
-            );
-        }
-        for item in remaining.into_iter().take(self.visible) {
-            let id = item.id.clone();
-            rows.push(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .truncate()
-                                    .child(item.name),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .truncate()
-                                    .child(format!(
-                                        "{} · {} downloads",
-                                        item.id, item.download_count
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .truncate()
-                                    .child(item.description),
-                            ),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("install-{id}")))
-                            .small()
-                            .outline()
-                            .label("Install")
-                            .disabled(loading)
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.change(&id, false, window, cx)
-                            })),
-                    )
-                    .into_any_element(),
-            );
-        }
-        let no_search_results = !query.is_empty()
+        let marketplace_mode = self.marketplace_mode;
+        let more = marketplace_mode && market.len() > self.visible;
+        let no_results = marketplace_mode
             && catalog.marketplace_loaded
             && !browsing
-            && !loading
             && error.is_none()
-            && rows.len() == built_in_rows;
-        v_flex()
-            .size_full()
-            .min_h_0()
-            .min_w_0()
-            .p_5()
-            .gap_3()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Themes"),
-            )
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&self.extension_input).small()),
-                    )
-                    .child(
-                        Button::new("theme-search")
-                            .small()
-                            .outline()
-                            .label("Search / Refresh")
-                            .disabled(browsing)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.visible = 20;
-                                Self::browse(
-                                    view.extension_input.read(cx).value().to_string(),
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if browsing {
-                        "Searching marketplace…"
-                    } else if loading {
-                        "Updating theme installation…"
-                    } else {
-                        "Built-in, installed, and marketplace themes · theme data only"
-                    }),
-            )
+            && market.is_empty();
+        let mut rows: Vec<AnyElement> = Vec::new();
+        if !marketplace_mode {
+            for extension in &extensions {
+                let id = extension.id.clone();
+                let name = if extension.name.is_empty() {
+                    id.clone()
+                } else {
+                    extension.name.clone()
+                };
+                let downloads = extension
+                    .download_count
+                    .map(|n| format!(" · {n} downloads"))
+                    .unwrap_or_default();
+                rows.push(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap_3()
+                        .px_3()
+                        .py_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{} · v{} · {} variants{}",
+                                            id,
+                                            extension.version,
+                                            extension.themes.len(),
+                                            downloads
+                                        )),
+                                )
+                                .when(!extension.description.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(extension.description.clone()),
+                                    )
+                                }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("uninstall-{id}")))
+                                .small()
+                                .ghost()
+                                .icon(IconName::Delete)
+                                .tooltip(format!("Uninstall {name}"))
+                                .accessibility_label(format!("Uninstall {name}"))
+                                .disabled(loading)
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.change(&id, true, window, cx)
+                                })),
+                        )
+                        .into_any_element(),
+                );
+            }
+        } else {
+            for item in market.into_iter().take(self.visible) {
+                let id = item.id.clone();
+                let installed = extensions.iter().any(|extension| extension.id == id);
+                let label = if installed {
+                    format!("{} is installed", item.name)
+                } else {
+                    format!("Install {}", item.name)
+                };
+                rows.push(
+                    h_flex()
+                        .w_full()
+                        .min_w_0()
+                        .items_center()
+                        .gap_3()
+                        .px_3()
+                        .py_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(item.name),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!(
+                                            "{} · {} downloads{}",
+                                            item.id,
+                                            item.download_count,
+                                            if installed { " · Installed" } else { "" }
+                                        )),
+                                )
+                                // Deliberately wrap rather than truncate marketplace descriptions.
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(item.description),
+                                ),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("install-{id}")))
+                                .small()
+                                .ghost()
+                                .icon(if installed {
+                                    IconName::Check
+                                } else {
+                                    IconName::Plus
+                                })
+                                .tooltip(label.clone())
+                                .accessibility_label(label)
+                                .disabled(loading || installed)
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.change(&id, false, window, cx)
+                                })),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        v_flex().size_full().min_h_0().min_w_0().p_5().gap_3()
+            .child(h_flex().w_full().items_center().gap_2()
+                .child(div().flex_1().text_lg().font_weight(FontWeight::SEMIBOLD)
+                    .child(if marketplace_mode { "Theme Marketplace" } else { "Installed Themes" }))
+                .child(Button::new("themes-mode").small().outline()
+                    .label(if marketplace_mode { "Installed Themes" } else { "Install Themes" })
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        if view.marketplace_mode {
+                            view.marketplace_mode = false;
+                            view.search_task = None;
+                            // Ignore in-flight marketplace responses after returning to management.
+                            let catalog = cx.global_mut::<ThemeCatalog>();
+                            catalog.marketplace_generation += 1;
+                            catalog.marketplace_loading = false;
+                            view.scroll = ScrollHandle::new();
+                            cx.notify();
+                        } else {
+                            view.open_marketplace(window, cx);
+                        }
+                    }))))
+            .when(marketplace_mode, |el| {
+                el.child(Input::new(&self.extension_input).small())
+            })
+            .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                .child(if browsing && marketplace_mode { "Searching marketplace…" }
+                    else if loading { "Updating theme installation…" }
+                    else if marketplace_mode { "Browse Zed theme extensions · scroll for more · theme data only" }
+                    else { "Manage installed extensions here. Choose appearance and variants in the theme picker." }))
             .when_some(error, |el, error| {
                 el.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
-            .child(
-                v_flex()
-                    .id("unified-theme-list")
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .overflow_y_scroll()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(px(8.))
-                    .children(rows)
-                    .when(no_search_results, |el| {
-                        el.child(compact_empty_state(
-                            IconName::Search,
-                            "No themes found",
-                            "Try a different theme name or extension ID.",
-                        ))
-                    })
-                    .when(more, |el| {
-                        el.child(
-                            Button::new("marketplace-more")
-                                .small()
-                                .ghost()
-                                .label("Show more")
-                                .on_click(cx.listener(|view, _, _, cx| {
-                                    view.visible += 20;
-                                    cx.notify();
-                                })),
-                        )
-                    }),
-            )
+            .child(v_flex().id(if marketplace_mode { "marketplace-theme-list" } else { "installed-theme-list" })
+                .flex_1().min_h_0().w_full().overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                // gpui-pre 0.3.11 ScrollHandle/on_scroll: remaining distance is
+                // max_offset + offset (scroll offsets are negative). No network
+                // pagination: Zed returns one bounded list, revealed locally.
+                .on_scroll(cx.listener(move |view, _: &ScrollEvent, _, cx| {
+                    if more && view.scroll.max_offset().y + view.scroll.offset().y <= px(240.) {
+                        view.visible = view.visible.saturating_add(20);
+                        cx.notify();
+                    }
+                }))
+                .border_1().border_color(cx.theme().border).rounded(px(8.))
+                .children(rows)
+                .when(!marketplace_mode && extensions.is_empty(), |el| {
+                    el.child(compact_empty_state(IconName::Palette, "No installed themes",
+                        "Install a theme extension from the marketplace. Built-in appearances are available in the theme picker."))
+                })
+                .when(no_results, |el| {
+                    el.child(compact_empty_state(IconName::Search, "No themes found",
+                        "Try a different theme name or extension ID."))
+                }))
     }
 }
 

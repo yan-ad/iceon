@@ -5,7 +5,6 @@ use gpui_kit::{
         ActiveTheme as _, Disableable as _, IconName, Sizable as _,
         button::{Button, ButtonVariants as _},
         h_flex,
-        menu::DropdownMenu as _,
     },
     prelude::*,
     *,
@@ -96,7 +95,9 @@ impl IceonApp {
                             })
                             .accessibility_label("Theme options")
                             .tooltip("Theme options")
-                            .dropdown_menu(|menu, _, cx| crate::theme_picker::menu(menu, cx)),
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.toggle_theme_picker(window, cx)
+                            })),
                     )
                     .child(div().flex_1())
                     .child(

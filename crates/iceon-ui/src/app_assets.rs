@@ -53,6 +53,9 @@ gpui_kit_assets::icon_assets!(
         Timer,
         Download,
         Trash,
+        Logs,
+        Shredder,
+        RefreshCw,
         UserCog,
         Users,
         Webhook
@@ -62,6 +65,11 @@ gpui_kit_assets::icon_assets!(
 pub(crate) struct AppAssets;
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
+        if path == crate::action_icons::ATTACH_PATH {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../assets/icons/square-arrow-up-left-exit.svg"
+            ))));
+        }
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
         }
@@ -70,6 +78,9 @@ impl AssetSource for AppAssets {
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(ExtraIcons.list(path)?);
+        if crate::action_icons::ATTACH_PATH.starts_with(path) {
+            paths.push(crate::action_icons::ATTACH_PATH.into());
+        }
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -104,6 +115,9 @@ mod tests {
         for icon in [
             IconName::Pencil,
             IconName::Trash,
+            IconName::Logs,
+            IconName::Shredder,
+            IconName::RefreshCw,
             IconName::Check,
             IconName::Download,
         ] {
@@ -112,5 +126,18 @@ mod tests {
             assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
             assert!(AppAssets.list("icons/").unwrap().contains(&path));
         }
+    }
+    #[test]
+    fn attach_action_svg_is_embedded() {
+        let path = crate::action_icons::ATTACH_PATH;
+        let bytes = AppAssets.load(path).unwrap().expect("attach SVG");
+        assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));
+        assert!(
+            AppAssets
+                .list("icons/")
+                .unwrap()
+                .iter()
+                .any(|p| p.as_ref() == path)
+        );
     }
 }

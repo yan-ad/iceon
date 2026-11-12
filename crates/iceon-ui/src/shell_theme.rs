@@ -19,11 +19,57 @@ fn neutral(value: u32, alpha: f32) -> Hsla {
 
 /// Native blur on macOS; other platforms use compositor transparency when
 /// available. No software blur, unsupported native calls, or extra dependency.
-pub(crate) fn background_appearance() -> WindowBackgroundAppearance {
+#[derive(Clone, Copy, Default)]
+struct ShellAppearance(Option<WindowBackgroundAppearance>);
+impl gpui_kit::Global for ShellAppearance {}
+
+pub(crate) fn background_appearance(cx: &App) -> WindowBackgroundAppearance {
+    cx.try_global::<ShellAppearance>()
+        .and_then(|s| s.0)
+        .unwrap_or_else(default_background_appearance)
+}
+
+fn default_background_appearance() -> WindowBackgroundAppearance {
     if cfg!(target_os = "macos") {
         WindowBackgroundAppearance::Blurred
     } else {
         WindowBackgroundAppearance::Transparent
+    }
+}
+
+fn zed_background_appearance(zed: &iceon_core::zed_themes::ZedTheme) -> WindowBackgroundAppearance {
+    match zed
+        .style
+        .get("background.appearance")
+        .and_then(|v| v.as_str())
+    {
+        Some("blurred") => {
+            if cfg!(target_os = "macos") {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Transparent
+            }
+        }
+        Some("transparent") => WindowBackgroundAppearance::Transparent,
+        _ => WindowBackgroundAppearance::Opaque,
+    }
+}
+
+fn apply_zed_chrome(colors: &mut ThemeColor, zed: &iceon_core::zed_themes::ZedTheme) {
+    if matches!(
+        zed.style
+            .get("background.appearance")
+            .and_then(|v| v.as_str()),
+        Some("blurred" | "transparent")
+    ) {
+        let alpha = if zed.appearance == "dark" {
+            CHROME_ALPHA_DARK
+        } else {
+            CHROME_ALPHA_LIGHT
+        };
+        colors.sidebar = colors.sidebar.alpha(colors.sidebar.a.min(alpha));
+        colors.title_bar = colors.title_bar.alpha(colors.title_bar.a.min(alpha));
+        colors.status_bar = colors.status_bar.alpha(colors.status_bar.a.min(alpha));
     }
 }
 
@@ -622,14 +668,24 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
         if let Some(zed) = &zed {
             apply_zed_theme(&mut theme.colors, zed);
             apply_zed_editor(theme, zed);
+            apply_zed_chrome(&mut theme.colors, zed);
         }
     });
     cx.set_global(crate::preference_runtime::ConsoleTheme(console_palette(
         Theme::global(cx),
         zed.as_ref(),
     )));
+    let appearance = zed
+        .as_ref()
+        .map_or_else(default_background_appearance, zed_background_appearance);
+    cx.set_global(ShellAppearance(Some(appearance)));
     if let Some(window) = window {
-        window.set_background_appearance(background_appearance());
+        window.set_background_appearance(appearance);
+    }
+    for handle in cx.windows() {
+        let _ = handle.update(cx, |_, window, _| {
+            window.set_background_appearance(appearance)
+        });
     }
     mode
 }
@@ -652,6 +708,28 @@ mod tests {
                 .map(|(key, value)| ((*key).into(), (*value).into()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn zed_blur_only_affects_chrome_and_preserves_translucent_tokens() {
+        let mut zed = zed_fixture("dark", &[("background.appearance", "blurred")]);
+        let mut colors = *ThemeColor::dark();
+        colors.sidebar = neutral(0x102030, 1.0);
+        colors.title_bar = neutral(0x304050, 0.3);
+        let content = colors.background;
+        super::apply_zed_chrome(&mut colors, &zed);
+        assert_eq!(colors.sidebar.a, CHROME_ALPHA_DARK);
+        assert_eq!(colors.title_bar.a, 0.3);
+        assert_eq!(colors.background, content);
+        zed.style
+            .insert("background.appearance".into(), "opaque".into());
+        assert_eq!(
+            super::zed_background_appearance(&zed),
+            gpui_kit::WindowBackgroundAppearance::Opaque
+        );
+        let before = colors.sidebar;
+        super::apply_zed_chrome(&mut colors, &zed);
+        assert_eq!(colors.sidebar, before);
     }
 
     #[test]

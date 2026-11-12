@@ -2360,6 +2360,7 @@ impl IceonApp {
         let deleting = self.bulk_delete.active.is_some();
         let active_kind = section_to_resource_kind(&section);
         v_flex()
+            .bg(cx.theme().background)
             .size_full()
             .min_w_0()
             .min_h_0()

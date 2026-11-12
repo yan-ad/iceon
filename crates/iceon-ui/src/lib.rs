@@ -1,5 +1,6 @@
 //! Pure-Rust GPUI (`gpui-kit`) desktop UI shell for Iceon (`icekube`).
 
+mod action_icons;
 mod age_label;
 mod app_assets;
 pub mod badge;
@@ -110,6 +111,8 @@ pub struct IceonApp {
     pub(crate) expanded_cluster_groups: Vec<String>,
 
     pub(crate) search_modal_open: bool,
+    pub(crate) theme_picker_open: bool,
+    pub(crate) theme_command_state: Entity<gpui_kit::component::command::CommandState>,
     pub(crate) preferences_window: Option<AnyWindowHandle>,
     pub(crate) preferences_revision: u64,
     runtime_editor_preferences: Option<iceon_core::preferences::EditorPreferences>,
@@ -366,6 +369,9 @@ impl IceonApp {
             navigation_widths: cluster_view::NavigationWidths::load(),
             expanded_cluster_groups,
             search_modal_open: false,
+            theme_picker_open: false,
+            theme_command_state: cx
+                .new(|cx| gpui_kit::component::command::CommandState::new(window, cx)),
             preferences_window: None,
             preferences_revision,
             runtime_editor_preferences: None,
@@ -648,13 +654,12 @@ impl Render for IceonApp {
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .bg(cx.theme().background)
                             .overflow_hidden()
                             .child(self.render_cluster_workspace(window, cx)),
                     ),
             )
             .child(self.render_shell_footer(window, cx))
-            .when(self.search_modal_open, |el| {
+            .when(self.search_modal_open || self.theme_picker_open, |el| {
                 el.child(
                     v_flex()
                         .occlude()
@@ -667,6 +672,7 @@ impl Render for IceonApp {
                         .on_mouse_down(
                             gpui_kit::MouseButton::Left,
                             cx.listener(|this, _, window, cx| {
+                                this.theme_picker_open = false;
                                 this.close_command_palette(window, cx);
                             }),
                         )
@@ -676,7 +682,11 @@ impl Render for IceonApp {
                                 .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                                     cx.stop_propagation()
                                 })
-                                .child(self.render_search_modal(cx)),
+                                .child(if self.theme_picker_open {
+                                    self.render_theme_picker(cx).into_any_element()
+                                } else {
+                                    self.render_search_modal(cx).into_any_element()
+                                }),
                         ),
                 )
             })
@@ -738,7 +748,7 @@ pub fn run() {
             let preferences_engine = preferences_engine.clone();
             let secrets_engine = secrets_engine.clone();
             let options = WindowOptions {
-                window_background: shell_theme::background_appearance(),
+                window_background: shell_theme::background_appearance(cx),
                 ..TitleBar::window_options()
             };
             let (main_window, main_app) = gpui_kit::open_window(options, cx, move |window, cx| {

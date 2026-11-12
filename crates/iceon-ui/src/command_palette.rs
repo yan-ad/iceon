@@ -57,6 +57,7 @@ impl IceonApp {
             self.close_command_palette(window, cx);
             return;
         }
+        self.theme_picker_open = false;
         self.search_modal_open = true;
         self.command_state.update(cx, |state, cx| {
             state.set_query("", window, cx);

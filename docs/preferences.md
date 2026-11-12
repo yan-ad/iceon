@@ -107,3 +107,22 @@ General → UI Font Family selects installed fonts for application chrome and co
 Editor → Font Family uses the same searchable native font picker for YAML editors
 and diffs. UI, editor and terminal fonts remain independent, persist across restarts,
 and can each be reset; older preferences retain the native system UI font.
+
+### Theme selection and management
+
+Use the footer theme icon or Cmd+* (Ctrl+* on non-macOS systems) to open the
+searchable theme command menu. It lists System/Dark/Light and installed variants,
+marks the active choice, and supports arrow keys, Enter and Escape. Install Themes
+opens the explicit marketplace view. Preferences → Themes starts in installed-theme
+management; selection no longer uses a popover or variant dropdown.
+
+Installed records retain marketplace names, descriptions and download counts captured
+at installation. Older records remain readable; unavailable metadata is not fabricated.
+Marketplace search runs automatically after a 300 ms debounce, and scrolling reveals
+additional results in batches within the bounded response (not unlimited server paging).
+Install and uninstall use icon actions with accessible labels and tooltips.
+
+Zed `background.appearance` controls native shell opacity/transparency. Blurred themes
+use native macOS blur; other platforms use compositor transparency where available.
+Header, footer and sidebar expose the material while content keeps its own background.
+Theme names containing “blur” are not interpreted as configuration.

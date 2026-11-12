@@ -43,6 +43,13 @@ pub struct ZedTheme {
 pub struct InstalledExtension {
     pub id: String,
     pub version: String,
+    /// Marketplace metadata captured at installation; absent in legacy records.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub download_count: Option<u64>,
     pub themes: Vec<ZedTheme>,
 }
 
@@ -171,6 +178,12 @@ fn validate_extension(extension: &InstalledExtension, id: &str) -> Result<(), St
         || extension.themes.len() > THEME_LIMIT
     {
         return Err("Invalid installed extension record".into());
+    }
+    if (!extension.name.is_empty() && extension.name.trim().is_empty())
+        || extension.name.len() > 256
+        || extension.description.len() > 4096
+    {
+        return Err("Invalid installed marketplace metadata".into());
     }
     let mut ids = BTreeSet::new();
     for theme in &extension.themes {
@@ -466,6 +479,25 @@ fn latest_version(bytes: &[u8], id: &str) -> Result<String, String> {
 /// before acquiring the store lock; parsing/publication runs off the async executor.
 pub async fn install(id: &str) -> Result<InstalledExtension, String> {
     valid_id(id)?;
+    let metadata = marketplace(id)
+        .await?
+        .into_iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| "Theme extension was not found in the marketplace".to_owned())?;
+    install_with_metadata(&metadata).await
+}
+
+/// Install an exact, validated marketplace listing while preserving its display metadata.
+/// Listing fields are data only: none can supply a download URL or filesystem path.
+pub async fn install_with_metadata(
+    item: &MarketplaceExtension,
+) -> Result<InstalledExtension, String> {
+    let id = item.id.as_str();
+    valid_id(id)?;
+    if item.name.trim().is_empty() || item.name.len() > 256 || item.description.len() > 4096 {
+        return Err("Invalid marketplace theme metadata".into());
+    }
+    let item = item.clone();
     let client = client()?;
     let metadata = download(&client, &format!("{API}/extensions/{id}"), METADATA_LIMIT).await?;
     let version = latest_version(&metadata, id)?;
@@ -478,7 +510,10 @@ pub async fn install(id: &str) -> Result<InstalledExtension, String> {
     let id = id.to_owned();
     let root = root();
     tokio::task::spawn_blocking(move || {
-        let record = parse_archive(&archive, &id, &version)?;
+        let mut record = parse_archive(&archive, &id, &version)?;
+        record.extension.name = item.name;
+        record.extension.description = item.description;
+        record.extension.download_count = Some(item.download_count);
         publish(&root, &record)?;
         Ok(record.extension)
     })
@@ -723,6 +758,9 @@ fn parse_archive(bytes: &[u8], id: &str, version: &str) -> Result<Record, String
     let extension = InstalledExtension {
         id: id.into(),
         version: version.into(),
+        name: String::new(),
+        description: String::new(),
+        download_count: None,
         themes,
     };
     validate_extension(&extension, id)?;
@@ -799,6 +837,31 @@ mod tests {
         }
         assert!(parse_marketplace(&vec![b' '; METADATA_LIMIT + 1]).is_err());
         assert!(parse_marketplace(br#"{"data":null}"#).is_err());
+    }
+
+    #[test]
+    fn legacy_records_and_marketplace_metadata_round_trip() {
+        let mut record = sample();
+        let mut legacy = serde_json::to_value(&record).unwrap();
+        let extension = legacy["extension"].as_object_mut().unwrap();
+        extension.remove("name");
+        extension.remove("description");
+        extension.remove("download_count");
+        let old: Record = serde_json::from_value(legacy).unwrap();
+        validate_extension(&old.extension, "ocean").unwrap();
+        assert!(old.extension.name.is_empty());
+        assert_eq!(old.extension.download_count, None);
+
+        record.extension.name = "Ocean Themes".into();
+        record.extension.description = "Full description\nwith a second paragraph.".into();
+        record.extension.download_count = Some(123456);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        publish(&root, &record).unwrap();
+        assert_eq!(installed_at(&root).unwrap(), vec![record.extension.clone()]);
+        record.extension.description = "x".repeat(4097);
+        assert!(publish(&root, &record).is_err());
+        assert_eq!(installed_at(&root).unwrap()[0].download_count, Some(123456));
     }
 
     #[test]
