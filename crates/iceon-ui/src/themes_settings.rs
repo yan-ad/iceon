@@ -1,6 +1,7 @@
 //! Data-only Zed theme installation and cached native settings controls.
+use crate::empty_state::compact_empty_state;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
@@ -268,6 +269,7 @@ impl Render for ThemesSettings {
                     .into_any_element(),
             );
         }
+        let built_in_rows = rows.len();
         for extension in extensions.iter().filter(|extension| {
             query.is_empty()
                 || extension.id.to_lowercase().contains(&query)
@@ -436,6 +438,12 @@ impl Render for ThemesSettings {
                     .into_any_element(),
             );
         }
+        let no_search_results = !query.is_empty()
+            && catalog.marketplace_loaded
+            && !browsing
+            && !loading
+            && error.is_none()
+            && rows.len() == built_in_rows;
         v_flex()
             .size_full()
             .min_h_0()
@@ -501,6 +509,13 @@ impl Render for ThemesSettings {
                     .border_color(cx.theme().border)
                     .rounded(px(8.))
                     .children(rows)
+                    .when(no_search_results, |el| {
+                        el.child(compact_empty_state(
+                            IconName::Search,
+                            "No themes found",
+                            "Try a different theme name or extension ID.",
+                        ))
+                    })
                     .when(more, |el| {
                         el.child(
                             Button::new("marketplace-more")

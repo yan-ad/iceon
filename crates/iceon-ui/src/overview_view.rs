@@ -280,20 +280,18 @@ impl IceonApp {
                     })),
             )
             .when(page.is_none(), |card| {
-                card.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Unavailable or still loading"),
-                )
+                card.child(crate::empty_state::compact_empty_state(
+                    IconName::CircleAlert,
+                    "Data unavailable",
+                    "Refresh to retry loading this resource.",
+                ))
             })
             .when(page.is_some_and(|page| page.items.is_empty()), |card| {
-                card.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("None in this scope"),
-                )
+                card.child(crate::empty_state::compact_empty_state(
+                    IconName::Inbox,
+                    "No resources found",
+                    "There are no resources in this namespace scope.",
+                ))
             })
             .when(items.len() > 1000, |card| {
                 card.child(
@@ -530,11 +528,12 @@ impl IceonApp {
                 .children((0..6).map(|_| Skeleton::new().h(px(36.)).secondary()))
                 .into_any_element()
         } else {
-            div()
-                .p_4()
-                .text_sm()
-                .child("Events unavailable")
-                .into_any_element()
+            crate::empty_state::compact_empty_state(
+                IconName::Bell,
+                "Events unavailable",
+                "Refresh to retry loading events for this scope.",
+            )
+            .into_any_element()
         };
         let mut stats = Vec::new();
         if !workloads.is_empty() {
@@ -626,6 +625,13 @@ impl IceonApp {
             };
             columns[column].push(self.overview_workload_card(label, section, kind, page, cx));
         }
+        if workloads.is_empty()
+            && !self.can_list(ResourceKind::Nodes)
+            && !self.can_list(ResourceKind::Events)
+        {
+            return crate::empty_state::page_empty_state(IconName::LayoutDashboard,
+                "No overview resources available", "Choose another namespace or refresh access to view resources available to your account.").into_any_element();
+        }
         v_flex()
             .size_full().min_h_0().p_4().gap_4().overflow_y_scrollbar()
             .when_some(self.cluster_error.as_deref().and_then(overview_error), |el, error| el.child(crate::empty_state::error_state(error)))
@@ -648,7 +654,7 @@ impl IceonApp {
                                 }
                         }))))
                 .child(events))
-            .when(workloads.is_empty() && !self.can_list(ResourceKind::Nodes) && !self.can_list(ResourceKind::Events), |el| el.child(div().text_sm().text_color(cx.theme().muted_foreground).child("No overview resources are available in this scope.")))
+
             .into_any_element()
     }
 }

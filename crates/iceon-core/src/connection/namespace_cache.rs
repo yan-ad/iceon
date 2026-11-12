@@ -251,6 +251,90 @@ impl ConnectionEngine {
         }
         Ok(snapshot)
     }
+    /// Independent metadata-only discovery: does not occupy inventory table read slots.
+    pub async fn discover_namespaces(&self, scope: SessionRequest) -> Result<Vec<String>> {
+        validate_request(&scope)?;
+        self.reject_known_denied_read(
+            &scope,
+            &super::permissions::PermissionCheck {
+                kind: ResourceKind::Namespaces,
+                action: super::permissions::PermissionAction::List,
+                namespace: None,
+                name: None,
+            },
+        )?;
+        let _worker = self
+            .workers
+            .try_acquire()
+            .map_err(|_| ConnectionError::Busy)?;
+        let (client, cancel, epoch) = {
+            let state = self
+                .session
+                .lock()
+                .map_err(|_| ConnectionError::StoreUnavailable)?;
+            let session = current(&state, &scope)?;
+            let client = session
+                .client
+                .clone()
+                .ok_or(ConnectionError::NotConnected)?;
+            validate_credentials(&client)?;
+            (
+                client,
+                session.cancel.child_token(),
+                self.authentication_generation.load(Ordering::SeqCst),
+            )
+        };
+        let result = super::bounded(&cancel, async {
+            let mut names = BTreeSet::new();
+            let mut tokens = BTreeSet::new();
+            let mut request = ResourceRequest {
+                cluster_id: scope.cluster_id.clone(),
+                session_id: scope.session_id.clone(),
+                kind: ResourceKind::Namespaces,
+                read_id: 1,
+                namespace: None,
+                continue_token: None,
+                query: None,
+                status: None,
+                group: None,
+            };
+            for _ in 0..100 {
+                let page = transport::resources(&client, &request, &cancel).await?;
+                for item in page.items {
+                    if !valid_name(&item.name) {
+                        return Err(ConnectionError::InvalidResponse);
+                    }
+                    names.insert(item.name);
+                }
+                if names.len() > 10000 {
+                    return Err(ConnectionError::LimitExceeded);
+                }
+                request.continue_token = page.continue_token;
+                if request.continue_token.is_none() {
+                    if page.truncated {
+                        return Err(ConnectionError::LimitExceeded);
+                    }
+                    return Ok(names.into_iter().collect());
+                }
+                if !tokens.insert(request.continue_token.clone()) {
+                    return Err(ConnectionError::InvalidResponse);
+                }
+            }
+            Err(ConnectionError::LimitExceeded)
+        })
+        .await;
+        cancel.cancel();
+        let state = self
+            .session
+            .lock()
+            .map_err(|_| ConnectionError::StoreUnavailable)?;
+        current(&state, &scope)?;
+        if self.authentication_generation.load(Ordering::SeqCst) != epoch {
+            return Err(ConnectionError::StaleSession);
+        }
+        result
+    }
+
     pub async fn namespace_cache_refresh(
         self: &Arc<Self>,
         request: NamespaceRefreshRequest,

@@ -15,6 +15,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::IceonApp;
+use crate::empty_state::compact_empty_state;
 use crate::navigation::secrets_error_message;
 use iceon_core::secrets::{
     Entry, Field, LoginRequest, Metadata, Mount, Profile, ProfileInput, Provider, ReadRequest,
@@ -27,6 +28,8 @@ const OWNER_ID: &str = "gpui-workspace";
 #[derive(Default, Clone)]
 pub struct SecretsWorkspaceState {
     pub profiles: Vec<Profile>,
+    profiles_loaded: bool,
+    listing_loaded: bool,
     pub selected_profile_id: Option<String>,
     pub creating_profile: bool,
     pub session: Option<SessionView>,
@@ -61,6 +64,7 @@ impl IceonApp {
                 match result {
                     Ok(profiles) => {
                         this.secrets_state.profiles = profiles;
+                        this.secrets_state.profiles_loaded = true;
                         this.secrets_state.error = None;
                     }
                     Err(err) => {
@@ -117,6 +121,7 @@ impl IceonApp {
                     Ok(profile) => {
                         if let Ok(list) = profiles {
                             this.secrets_state.profiles = list;
+                            this.secrets_state.profiles_loaded = true;
                         }
                         this.secrets_state.creating_profile = false;
                         this.secrets_state.selected_profile_id = Some(profile.id);
@@ -142,6 +147,7 @@ impl IceonApp {
         self.secrets_state.session = None;
         self.secrets_state.mounts.clear();
         self.secrets_state.entries.clear();
+        self.secrets_state.listing_loaded = false;
         self.secrets_state.selected_secret_path = None;
         self.secrets_state.metadata = None;
         self.secrets_state.reveal = None;
@@ -269,6 +275,7 @@ impl IceonApp {
         };
         let read_id = self.secrets_state.next_id();
         self.secrets_state.current_path = path.clone();
+        self.secrets_state.listing_loaded = false;
         self.secrets_state.loading = true;
         let mount = self.secrets_state.active_mount.clone();
         let engine = self.secrets.clone();
@@ -290,6 +297,7 @@ impl IceonApp {
                 match res {
                     Ok(listing) => {
                         this.secrets_state.entries = listing.entries;
+                        this.secrets_state.listing_loaded = true;
                         this.secrets_state.error = None;
                     }
                     Err(err) => {
@@ -432,6 +440,19 @@ impl IceonApp {
                             .flex_1()
                             .gap_1()
                             .overflow_y_scrollbar()
+                            .when(
+                                state.profiles_loaded
+                                    && !state.loading
+                                    && state.error.is_none()
+                                    && state.profiles.is_empty(),
+                                |el| {
+                                    el.child(compact_empty_state(
+                                        IconName::Folder,
+                                        "No Vault profiles",
+                                        "Create a profile with New to connect to Vault.",
+                                    ))
+                                },
+                            )
                             .children(state.profiles.iter().map(|profile| {
                                 let pid = profile.id.clone();
                                 let selected =
@@ -613,6 +634,19 @@ impl IceonApp {
                                                     .flex_1()
                                                     .gap_1()
                                                     .overflow_y_scrollbar()
+                                                    .when(
+                                                        state.listing_loaded
+                                                            && !state.loading
+                                                            && state.error.is_none()
+                                                            && state.entries.is_empty(),
+                                                        |el| {
+                                                            el.child(compact_empty_state(
+                                                                IconName::Folder,
+                                                                "No secret entries",
+                                                                "This path has no entries to browse.",
+                                                            ))
+                                                        },
+                                                    )
                                                     .children(state.entries.iter().map(|entry| {
                                                         let full_path =
                                                             if state.current_path.is_empty() {
@@ -743,12 +777,11 @@ impl IceonApp {
                                                         })
                                                         .into_any_element()
                                                 } else {
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child(
-                                                            "Select a secret entry to view metadata or reveal values.",
-                                                        )
+                                                    compact_empty_state(
+                                                        IconName::File,
+                                                        "No secret selected",
+                                                        "Select a secret entry to view metadata or reveal values.",
+                                                    )
                                                         .into_any_element()
                                                 },
                                             ),
@@ -756,10 +789,11 @@ impl IceonApp {
                             )
                             .into_any_element()
                     } else {
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Select or create a Vault KV v2 profile on the left to start.")
+                        compact_empty_state(
+                            IconName::Folder,
+                            "No Vault profile selected",
+                            "Select or create a Vault KV v2 profile on the left to start.",
+                        )
                             .into_any_element()
                     }),
             )

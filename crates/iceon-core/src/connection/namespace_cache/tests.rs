@@ -161,3 +161,32 @@ async fn failed_refresh_retains_snapshot_and_stale_sessions_cannot_read_it() {
         ConnectionError::StaleSession
     );
 }
+
+#[tokio::test]
+async fn independent_discovery_does_not_replace_inventory_slot_or_require_principal_review() {
+    let (_root, _catalog, engine, id, _) = fixture();
+    let session = connected(&engine, id, fake(|path| {
+        assert!(!path.contains("selfsubjectreviews"));
+        if path.starts_with("/api/v1/namespaces?") {
+            (200, serde_json::to_vec(&json!({"apiVersion":"v1","kind":"NamespaceList","metadata":{},"items":[
+                {"metadata":{"name":"dev","uid":"uid-dev","resourceVersion":"1"},"status":{"phase":"Active"}},
+                {"metadata":{"name":"default","uid":"uid-default","resourceVersion":"1"},"status":{"phase":"Active"}}
+            ]})).unwrap())
+        } else { normal(path) }
+    })).await;
+    let scope = SessionRequest {
+        cluster_id: session.cluster_id,
+        session_id: session.session_id,
+    };
+    assert_eq!(
+        engine.discover_namespaces(scope.clone()).await.unwrap(),
+        vec!["default", "dev"]
+    );
+    let state = engine.session.lock().unwrap();
+    assert!(
+        !current(&state, &scope)
+            .unwrap()
+            .reads
+            .contains_key(&ResourceKind::Namespaces)
+    );
+}

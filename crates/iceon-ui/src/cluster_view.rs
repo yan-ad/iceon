@@ -1007,6 +1007,8 @@ impl IceonApp {
             return;
         }
 
+        self.selected_namespace = None;
+        self.sync_namespace_select(window, cx);
         self.stop_active_pod_sync();
         self.access = crate::rbac_access::AccessState::default();
         self.cluster_session = None;
@@ -2607,8 +2609,9 @@ impl IceonApp {
             if self.route_visible(section) {
                 let reviewing = !self.access_ready();
                 return v_flex().size_full().min_h_0().items_center().justify_center().gap_3().p_6()
-                    .child(div().text_sm().child(if reviewing { "Checking permissions for this namespace…" } else { "Choose a namespace you can access" }))
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground).child(if reviewing { "The navigation stays available while access is reviewed." } else { "This resource is not accessible in the current scope. Namespace permissions can differ from All Namespaces." }))
+                    .child(crate::empty_state::empty_state(IconName::Folder,
+                        if reviewing { "Checking namespace access" } else { "Choose a namespace you can access" },
+                        if reviewing { "The navigation stays available while access is reviewed." } else { "This resource is not accessible in the current scope. Choose a provided namespace to continue." }))
                     .child(self.namespace_dropdown("resource-choose-namespace", "Choose namespace…".into(), cx))
                     .into_any_element();
             }
@@ -2984,6 +2987,19 @@ impl IceonApp {
                         ),
                 )
             })
+            .when(
+                self.helm_page.is_some()
+                    && items.is_empty()
+                    && !self.cluster_loading
+                    && self.cluster_error.is_none(),
+                |el| {
+                    el.child(crate::empty_state::empty_state(
+                        IconName::Inbox,
+                        "No Helm items found",
+                        "No charts or releases are available in the current scope.",
+                    ))
+                },
+            )
             .children(items.into_iter().enumerate().map(|(idx, item)| {
                 let name = item.name.clone();
                 let ns = item.namespace.clone();
@@ -3098,9 +3114,7 @@ impl IceonApp {
                 let el = el
                     .when(page.items.is_empty(), |el| {
                         el.child(
-                            div()
-                                .text_sm()
-                                .child("No custom resources in this namespace scope."),
+                            crate::empty_state::empty_state(IconName::FileText, "No custom resources found", "There are no instances of this resource in the selected namespace scope."),
                         )
                     })
                     .when(page.continue_token.is_some() || page.truncated, |el| {

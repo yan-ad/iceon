@@ -4,13 +4,14 @@
 mod cluster_config;
 
 use gpui_kit::component::{
-    ActiveTheme as _, StyledExt as _,
+    ActiveTheme as _, IconName,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use crate::empty_state::empty_state;
 use crate::navigation::catalog_error_message;
 use crate::{IceonApp, selectable_text::selectable_text};
 
@@ -26,18 +27,11 @@ impl IceonApp {
             .p_6()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .child("No configured clusters"),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Import a kubeconfig or configure cluster discovery in Preferences."),
-            )
+            .child(empty_state(
+                IconName::FolderOpen,
+                "No configured clusters",
+                "Import a kubeconfig or configure cluster discovery in Preferences.",
+            ))
             .when_some(
                 self.catalog_snapshot
                     .discovery_error

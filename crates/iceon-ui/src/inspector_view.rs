@@ -32,6 +32,7 @@ use iceon_core::connection::{
     workload_actions::{WorkflowRequest, WorkloadAction},
 };
 
+use crate::empty_state::compact_empty_state;
 use crate::{IceonApp, pod_dock_view::PodTarget, selectable_text::selectable_text};
 
 #[path = "editor_surface.rs"]
@@ -3309,12 +3310,11 @@ impl IceonApp {
                                 .child(state_tag),
                         )
                         .when(pod.events.is_empty(), |r| {
-                            r.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(selectable_text("No pod events recorded.")),
-                            )
+                            r.child(compact_empty_state(
+                                IconName::Search,
+                                "No pod events recorded.",
+                                "Events reported for this pod will appear here.",
+                            ))
                         })
                         .children(pod.events.iter().map(|ev| {
                             h_flex()
@@ -3366,12 +3366,11 @@ impl IceonApp {
                         selectable_text(format!("INVOLVED EVENTS ({})", col.items.len())),
                     ))
                     .when(col.items.is_empty(), |r| {
-                        r.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(selectable_text("No recent events for this object.")),
-                        )
+                        r.child(compact_empty_state(
+                            IconName::Search,
+                            "No recent events for this object.",
+                            "Events reported for this object will appear here.",
+                        ))
                     })
                     .children(col.items.into_iter().enumerate().map(|(idx, item)| {
                         let target = item.reference.clone();
