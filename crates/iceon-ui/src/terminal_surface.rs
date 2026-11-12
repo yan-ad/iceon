@@ -126,8 +126,7 @@ pub(crate) struct TerminalSurface {
 struct GridStyle {
     font: Font,
     font_size: f32,
-    background: u32,
-    foreground: u32,
+    palette: crate::preference_runtime::TerminalPalette,
 }
 
 #[derive(Default)]
@@ -513,23 +512,26 @@ fn encode_paste(text: &str, bracketed: bool) -> String {
     }
 }
 
-fn ansi_color(color: vt100::Color, foreground: bool, bold: bool) -> u32 {
-    const PALETTE: [u32; 16] = [
-        0x000000, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
-        0xf14c4c, 0x23d18b, 0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
-    ];
+fn ansi_color(
+    color: vt100::Color,
+    foreground: bool,
+    bold: bool,
+    palette: &crate::preference_runtime::TerminalPalette,
+) -> Hsla {
     match color {
         vt100::Color::Default => {
             if foreground {
-                0xd4d4d4
+                palette.foreground
             } else {
-                0x000000
+                palette.background
             }
         }
-        vt100::Color::Rgb(r, g, b) => (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b),
+        vt100::Color::Rgb(r, g, b) => {
+            rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into()
+        }
         vt100::Color::Idx(index) => match index {
             0..=15 => {
-                PALETTE[usize::from(if foreground && bold && index < 8 {
+                palette.ansi[usize::from(if foreground && bold && index < 8 {
                     index + 8
                 } else {
                     index
@@ -538,11 +540,12 @@ fn ansi_color(color: vt100::Color, foreground: bool, bold: bool) -> u32 {
             16..=231 => {
                 let n = index - 16;
                 let component = |v: u8| if v == 0 { 0 } else { 55 + u32::from(v) * 40 };
-                (component(n / 36) << 16) | (component(n / 6 % 6) << 8) | component(n % 6)
+                rgb((component(n / 36) << 16) | (component(n / 6 % 6) << 8) | component(n % 6))
+                    .into()
             }
             _ => {
                 let gray = 8 + u32::from(index - 232) * 10;
-                gray * 0x010101
+                rgb(gray * 0x010101).into()
             }
         },
     }
@@ -605,9 +608,8 @@ impl Render for TerminalSurface {
         };
         let font_size = f32::from(preferences.font_size);
         let line_height = font_size * 1.5;
-        let dark = gpui_kit::component::theme::Theme::global(cx).mode.is_dark();
-        let (default_bg, default_fg) =
-            crate::preference_runtime::terminal_colors(preferences.theme, dark);
+        let palette = crate::preference_runtime::terminal_palette(preferences.theme, cx);
+        let (default_bg, default_fg) = (palette.background, palette.foreground);
         let (cols, rows) = self.size();
         #[cfg(debug_assertions)]
         {
@@ -628,8 +630,7 @@ impl Render for TerminalSurface {
         let style = GridStyle {
             font: console_font.clone(),
             font_size,
-            background: default_bg,
-            foreground: default_fg,
+            palette: palette.clone(),
         };
         if self.grid_cache.needs_rebuild(&style) {
             #[cfg(debug_assertions)]
@@ -656,8 +657,8 @@ impl Render for TerminalSurface {
                         cell.contents()
                     };
                     text.push_str(content);
-                    let mut foreground = ansi_color(cell.fgcolor(), true, cell.bold());
-                    let mut background = ansi_color(cell.bgcolor(), false, false);
+                    let mut foreground = ansi_color(cell.fgcolor(), true, cell.bold(), &palette);
+                    let mut background = ansi_color(cell.bgcolor(), false, false, &palette);
                     if cell.fgcolor() == vt100::Color::Default {
                         foreground = default_fg;
                     }
@@ -668,20 +669,19 @@ impl Render for TerminalSurface {
                         std::mem::swap(&mut foreground, &mut background);
                     }
                     if cell.dim() {
-                        foreground = (foreground & 0xfefefe) >> 1;
+                        foreground = background.blend(foreground.alpha(0.5));
                     }
                     if show_cursor
                         && cursor.0 == row
                         && (cursor.1 == col || (cell.is_wide() && cursor.1 == col + 1))
                     {
-                        foreground = 0x000000;
-                        background = 0xd4d4d4;
+                        foreground = palette.cursor_text;
+                        background = palette.cursor;
                     }
                     if let Some((a, b)) = self.selection {
                         let (a, b) = if a < b { (a, b) } else { (b, a) };
                         if (row, col) >= a && (row, col) < b {
-                            background = 0x365f8c;
-                            foreground = 0xffffff;
+                            background = background.blend(palette.selection);
                         }
                     }
                     let mut face = console_font.clone();
@@ -696,11 +696,11 @@ impl Render for TerminalSurface {
                         TextRun {
                             len: content.len(),
                             font: face,
-                            color: rgb(foreground).into(),
-                            background_color: Some(rgb(background).into()),
+                            color: foreground,
+                            background_color: Some(background),
                             underline: cell.underline().then_some(UnderlineStyle {
                                 thickness: px(1.0),
-                                color: Some(rgb(foreground).into()),
+                                color: Some(foreground),
                                 wavy: false,
                             }),
                             strikethrough: None,
@@ -731,8 +731,8 @@ impl Render for TerminalSurface {
             .min_h_0()
             .min_w_0()
             .overflow_hidden()
-            .bg(rgb(default_bg))
-            .text_color(rgb(default_fg))
+            .bg(default_bg)
+            .text_color(default_fg)
             .font_family(font_family)
             .text_size(px(font_size))
             .line_height(px(line_height))
@@ -861,6 +861,33 @@ mod tests {
     use gpui_kit::{Keystroke, Modifiers};
 
     #[::core::prelude::v1::test]
+    fn imported_ansi_preserves_truecolor_and_bold_background_semantics() {
+        let mut palette = crate::preference_runtime::TerminalPalette::default_for(true);
+        palette.ansi[1] = gpui_kit::rgb(0x112233).into();
+        palette.ansi[9] = gpui_kit::rgb(0x445566).into();
+        assert_eq!(
+            ansi_color(vt100::Color::Idx(1), true, false, &palette),
+            palette.ansi[1]
+        );
+        assert_eq!(
+            ansi_color(vt100::Color::Idx(1), true, true, &palette),
+            palette.ansi[9]
+        );
+        assert_eq!(
+            ansi_color(vt100::Color::Idx(1), false, true, &palette),
+            palette.ansi[1]
+        );
+        assert_eq!(
+            ansi_color(vt100::Color::Default, true, false, &palette),
+            palette.foreground
+        );
+        assert_eq!(
+            ansi_color(vt100::Color::Rgb(1, 2, 3), true, true, &palette),
+            gpui_kit::Hsla::from(gpui_kit::rgb(0x010203))
+        );
+    }
+
+    #[::core::prelude::v1::test]
     fn double_click_word_boundaries_preserve_unicode_and_separators() {
         let cells = "hello pod_name 世界 42"
             .chars()
@@ -905,8 +932,7 @@ mod tests {
         let style = super::GridStyle {
             font: gpui_kit::font("JetBrains Mono"),
             font_size: 12.,
-            background: 0,
-            foreground: 0xd4d4d4,
+            palette: crate::preference_runtime::TerminalPalette::default_for(true),
         };
         let mut cache = super::GridCache::default();
         let mut parser = super::surface_parser(80, 24, false);
@@ -938,11 +964,15 @@ mod tests {
                 ..style.clone()
             },
             super::GridStyle {
-                background: 0xffffff,
+                palette: crate::preference_runtime::TerminalPalette::default_for(false),
                 ..style.clone()
             },
             super::GridStyle {
-                foreground: 0x111111,
+                palette: {
+                    let mut p = style.palette.clone();
+                    p.ansi[1] = gpui_kit::rgb(0x111111).into();
+                    p
+                },
                 ..style.clone()
             },
         ] {
@@ -1133,7 +1163,23 @@ mod tests {
         p.process(b"\x1b]52;c;c2VjcmV0\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\");
         p.screen_mut().set_scrollback(0);
         assert!(!p.screen().contents().contains("c2VjcmV0"));
-        assert_eq!(ansi_color(vt100::Color::Idx(196), true, false), 0xff0000);
-        assert_eq!(ansi_color(vt100::Color::Idx(255), true, false), 0xeeeeee);
+        assert_eq!(
+            ansi_color(
+                vt100::Color::Idx(196),
+                true,
+                false,
+                &crate::preference_runtime::TerminalPalette::default_for(true)
+            ),
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xff0000))
+        );
+        assert_eq!(
+            ansi_color(
+                vt100::Color::Idx(255),
+                true,
+                false,
+                &crate::preference_runtime::TerminalPalette::default_for(true)
+            ),
+            gpui_kit::Hsla::from(gpui_kit::rgb(0xeeeeee))
+        );
     }
 }

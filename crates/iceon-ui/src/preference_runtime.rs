@@ -80,17 +80,55 @@ pub(crate) fn log_line(value: &str, timezone: &str) -> String {
     format!("{} {payload}", timestamp(prefix, timezone))
 }
 
-pub(crate) fn terminal_colors(theme: TerminalTheme, dark: bool) -> (u32, u32) {
-    match theme {
-        TerminalTheme::Dark => (0x000000, 0xd4d4d4),
-        TerminalTheme::Light => (0xffffff, 0x1f1f1f),
-        TerminalTheme::Match => {
-            if dark {
-                (0x000000, 0xd4d4d4)
-            } else {
-                (0xffffff, 0x1f1f1f)
-            }
+/// Full presentation palette, shared by native exec/device terminals and logs.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TerminalPalette {
+    pub background: gpui_kit::Hsla,
+    pub foreground: gpui_kit::Hsla,
+    pub ansi: [gpui_kit::Hsla; 16],
+    pub cursor: gpui_kit::Hsla,
+    pub cursor_text: gpui_kit::Hsla,
+    pub selection: gpui_kit::Hsla,
+}
+
+impl TerminalPalette {
+    pub(crate) fn default_for(dark: bool) -> Self {
+        let color = |rgb| gpui_kit::Hsla::from(gpui_kit::rgb(rgb));
+        let background = color(if dark { 0x000000 } else { 0xffffff });
+        let foreground = color(if dark { 0xd4d4d4 } else { 0x1f1f1f });
+        Self {
+            background,
+            foreground,
+            ansi: [
+                0x000000, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5,
+                0x666666, 0xf14c4c, 0x23d18b, 0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
+            ]
+            .map(color),
+            cursor: foreground,
+            cursor_text: background,
+            selection: color(0x365f8c).alpha(0.65),
         }
+    }
+}
+
+/// Replaced atomically on every app-theme application, never read from disk in render.
+pub(crate) struct ConsoleTheme(pub TerminalPalette);
+impl gpui_kit::Global for ConsoleTheme {}
+
+pub(crate) fn terminal_palette(theme: TerminalTheme, cx: &gpui_kit::App) -> TerminalPalette {
+    use gpui_kit::component::theme::Theme;
+    let matched = cx
+        .try_global::<ConsoleTheme>()
+        .map(|theme| theme.0.clone())
+        .unwrap_or_else(|| TerminalPalette::default_for(Theme::global(cx).mode.is_dark()));
+    resolve_terminal_palette(theme, matched)
+}
+
+fn resolve_terminal_palette(theme: TerminalTheme, matched: TerminalPalette) -> TerminalPalette {
+    match theme {
+        TerminalTheme::Dark => TerminalPalette::default_for(true),
+        TerminalTheme::Light => TerminalPalette::default_for(false),
+        TerminalTheme::Match => matched,
     }
 }
 
@@ -98,6 +136,26 @@ pub(crate) fn terminal_colors(theme: TerminalTheme, dark: bool) -> (u32, u32) {
 mod tests {
     use super::*;
     use iceon_core::preferences::{AppTheme, Preferences};
+
+    #[test]
+    fn terminal_match_inherits_all_tokens_but_explicit_modes_ignore_import() {
+        let mut imported = TerminalPalette::default_for(false);
+        imported.background = gpui_kit::rgb(0x112233).into();
+        imported.ansi[1] = gpui_kit::rgb(0x445566).into();
+        imported.cursor = gpui_kit::rgb(0x778899).into();
+        assert_eq!(
+            resolve_terminal_palette(TerminalTheme::Match, imported.clone()),
+            imported
+        );
+        assert_eq!(
+            resolve_terminal_palette(TerminalTheme::Dark, imported.clone()),
+            TerminalPalette::default_for(true)
+        );
+        assert_eq!(
+            resolve_terminal_palette(TerminalTheme::Light, imported),
+            TerminalPalette::default_for(false)
+        );
+    }
 
     #[test]
     fn preserves_invalid_timestamp_and_zone() {
@@ -134,19 +192,6 @@ mod tests {
             timestamp("2024-07-01T00:00:00Z", "America/New_York"),
             "2024-06-30 20:00:00 EDT"
         );
-    }
-
-    #[test]
-    fn terminal_match_respects_app_but_explicit_theme_wins() {
-        assert_ne!(
-            terminal_colors(TerminalTheme::Match, true),
-            terminal_colors(TerminalTheme::Match, false)
-        );
-        assert_eq!(
-            terminal_colors(TerminalTheme::Light, true),
-            terminal_colors(TerminalTheme::Light, false)
-        );
-        assert_eq!(terminal_colors(TerminalTheme::Dark, false), (0, 0xd4d4d4));
     }
 
     #[test]

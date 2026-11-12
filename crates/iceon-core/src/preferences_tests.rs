@@ -359,3 +359,22 @@ fn generated_theme_palettes_are_complete_and_follow_system_inheritance() {
         );
     }
 }
+
+#[test]
+fn ui_font_defaults_migrate_and_custom_fonts_validate() {
+    let mut payload = serde_json::to_value(Preferences::default()).unwrap();
+    payload["app"].as_object_mut().unwrap().remove("fontFamily");
+    let mut prefs: Preferences = serde_json::from_value(payload).unwrap();
+    assert_eq!(prefs.app.font_family, ".SystemUIFont");
+    prefs.app.font_family = "Inter".into();
+    assert!(validate(&prefs).is_ok());
+    let encoded = serde_json::to_string(&prefs).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Preferences>(&encoded).unwrap(),
+        prefs
+    );
+    for invalid in ["", "bad\0font", "font;script"] {
+        prefs.app.font_family = invalid.into();
+        assert_eq!(validate(&prefs), Err(PreferencesError::InvalidInput));
+    }
+}

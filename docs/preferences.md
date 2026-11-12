@@ -95,7 +95,15 @@ to apply it immediately; Remove resets an active extension theme to System.
 
 Iceon imports Zed theme JSON/JSONC and license data only. It never runs extension
 plugins, WASM, language servers, or scripts. UI surfaces, accents, semantic colors,
-and editor surfaces are mapped into GPUI tokens; unsupported syntax scopes and
+editor surfaces, supported syntax styles, terminal ANSI/default colors, cursor and
+selection are mapped into native GPUI tokens. Terminal and logs inherit these
+colors in Match mode; explicit terminal Dark/Light modes remain overrides.
+Unsupported syntax scopes and
 Zed-only features retain native defaults. Metrics/status meaning is unchanged.
 Missing installed themes safely use the saved Dark/Light fallback. Existing
 embedded non-default palette preferences migrate to System.
+
+General → UI Font Family selects installed fonts for application chrome and controls.
+Editor → Font Family uses the same searchable native font picker for YAML editors
+and diffs. UI, editor and terminal fonts remain independent, persist across restarts,
+and can each be reset; older preferences retain the native system UI font.

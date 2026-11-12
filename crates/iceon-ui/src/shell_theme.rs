@@ -422,8 +422,7 @@ fn apply_zed_theme(colors: &mut ThemeColor, theme: &iceon_core::zed_themes::ZedT
     }
 }
 
-/// Only editor chrome is translated here. Zed syntax scopes/font styles are
-/// not imported: the kit's built-in syntax palette remains the mode default.
+/// Project data-only Zed syntax into the pinned kit highlighter schema.
 fn apply_zed_editor(theme: &mut Theme, zed: &iceon_core::zed_themes::ZedTheme) {
     let style = &mut std::sync::Arc::make_mut(&mut theme.highlight_theme).style;
     macro_rules! editor {
@@ -440,6 +439,96 @@ fn apply_zed_editor(theme: &mut Theme, zed: &iceon_core::zed_themes::ZedTheme) {
     editor!("editor.active_line_number", editor_active_line_number);
     editor!("editor.gutter.background", editor_gutter_background);
     editor!("editor.invisible", editor_invisible);
+    // The pinned kit exposes the serde adapter used by its derive macros. Keep
+    // this bridge local: ThemeStyle has no public constructor in 0.9.0.
+    use gpui_kit::private::serde_json;
+    if let Some(syntax) = zed.style.get("syntax").and_then(|v| v.as_object()) {
+        let mut base = serde_json::to_value(&style.syntax).expect("syntax serializes");
+        for (scope, token) in syntax {
+            let Some(target) = base.get_mut(scope) else {
+                continue;
+            };
+            let Some(token) = token.as_object() else {
+                continue;
+            };
+            let mut merged = if target.is_object() {
+                target.clone()
+            } else {
+                serde_json::json!({})
+            };
+            for field in ["color", "font_style", "font_weight"] {
+                let Some(value) = token.get(field) else {
+                    continue;
+                };
+                let value = if field == "color" {
+                    let Some((rgb, alpha)) = value.as_str().and_then(parse_zed_color) else {
+                        continue;
+                    };
+                    serde_json::to_value(neutral(rgb, alpha)).expect("color serializes")
+                } else {
+                    value.clone()
+                };
+                let mut candidate = merged.clone();
+                candidate[field] = value;
+                if serde_json::from_value::<gpui_kit::component::highlighter::ThemeStyle>(
+                    candidate.clone(),
+                )
+                .is_ok()
+                {
+                    merged = candidate;
+                }
+            }
+            if merged.is_object() {
+                *target = merged;
+            }
+        }
+        if let Ok(syntax) = serde_json::from_value(base) {
+            style.syntax = syntax;
+        }
+    }
+}
+
+/// Resolve terminal tokens without interpreting escape sequences or loading code.
+fn console_palette(
+    theme: &Theme,
+    zed: Option<&iceon_core::zed_themes::ZedTheme>,
+) -> crate::preference_runtime::TerminalPalette {
+    let mut palette = crate::preference_runtime::TerminalPalette::default_for(theme.mode.is_dark());
+    palette.background = theme.colors.background;
+    palette.foreground = theme.colors.foreground;
+    palette.cursor = theme.colors.caret;
+    palette.cursor_text = palette.background;
+    palette.selection = theme.colors.selection;
+    if let Some(zed) = zed {
+        palette.background = zed_color(zed, "terminal.background").unwrap_or(palette.background);
+        palette.foreground = zed_color(zed, "terminal.foreground").unwrap_or(palette.foreground);
+        palette.cursor_text = palette.background;
+        if let Some(player) = zed
+            .style
+            .get("players")
+            .and_then(|v| v.as_array())
+            .and_then(|v| v.first())
+            && let Some((rgb, alpha)) = player
+                .get("cursor")
+                .and_then(|v| v.as_str())
+                .and_then(parse_zed_color)
+        {
+            palette.cursor = neutral(rgb, alpha);
+        }
+        for (index, name) in [
+            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+        ]
+        .iter()
+        .enumerate()
+        {
+            for (offset, prefix) in [(0, ""), (8, "bright_")] {
+                if let Some(color) = zed_color(zed, &format!("terminal.ansi.{prefix}{name}")) {
+                    palette.ansi[index + offset] = color;
+                }
+            }
+        }
+    }
+    palette
 }
 
 /// Default semantic tag roles, applied after legacy palettes but before Zed tokens.
@@ -497,7 +586,29 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
     // Reload even when the mode is unchanged: custom -> custom and custom ->
     // default must not inherit any of the previous palette's component roles.
     Theme::change(mode, None, cx);
+    let fonts = cx
+        .try_global::<crate::preferences_view::GlobalPreferencesState>()
+        .map(|state| {
+            (
+                state.preferences.app.font_family.clone(),
+                state.preferences.editor.clone(),
+            )
+        })
+        .map(|(ui, editor)| {
+            let ui = if ui == ".SystemUIFont" {
+                gpui_kit::SharedString::from(ui)
+            } else {
+                crate::preference_runtime::font_family(&ui, cx)
+            };
+            let mono = crate::preference_runtime::font_family(&editor.font_family, cx);
+            (ui, mono, editor.font_size)
+        });
     Theme::update(cx, |theme| {
+        if let Some((ui, mono, size)) = fonts {
+            theme.font_family = ui;
+            theme.mono_font_family = mono;
+            theme.mono_font_size = gpui_kit::px(f32::from(size));
+        }
         brand_colors(&mut theme.colors, mode);
         custom_colors(&mut theme.colors, selected);
         semantic_tag_colors(&mut theme.colors, mode);
@@ -513,6 +624,10 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
             apply_zed_editor(theme, zed);
         }
     });
+    cx.set_global(crate::preference_runtime::ConsoleTheme(console_palette(
+        Theme::global(cx),
+        zed.as_ref(),
+    )));
     if let Some(window) = window {
         window.set_background_appearance(background_appearance());
     }
@@ -537,6 +652,74 @@ mod tests {
                 .map(|(key, value)| ((*key).into(), (*value).into()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn zed_console_tokens_and_partial_syntax_preserve_fallbacks() {
+        use gpui_kit::private::serde_json::json;
+        let mut zed = zed_fixture(
+            "dark",
+            &[
+                ("terminal.background", "#123456"),
+                ("terminal.foreground", "#abcdef"),
+                ("terminal.ansi.red", "#f00"),
+                ("terminal.ansi.bright_red", "#ff8888"),
+                ("terminal.ansi.green", "invalid"),
+            ],
+        );
+        zed.style.insert(
+            "players".into(),
+            json!([{"cursor":"#fedcba", "selection":"#11223380"}]),
+        );
+        zed.style.insert(
+            "syntax".into(),
+            json!({
+                "property": {"color":"#123", "font_weight":700},
+                "string": {"color":"bad", "font_style":"italic"},
+                "comment": {"color":"#abc", "font_weight":123},
+                "unknown.scope": {"color":"#fff"}
+            }),
+        );
+        let mut theme = super::Theme::default();
+        theme.highlight_theme = gpui_kit::component::highlighter::HighlightTheme::default_dark();
+        let original = theme.highlight_theme.style.syntax.clone();
+        super::apply_zed_theme(&mut theme.colors, &zed);
+        super::apply_zed_editor(&mut theme, &zed);
+        let syntax = &theme.highlight_theme.style.syntax;
+        assert_eq!(
+            syntax.style("property").unwrap().color,
+            Some(neutral(0x112233, 1.))
+        );
+        assert_eq!(
+            syntax.style("property").unwrap().font_weight,
+            Some(gpui_kit::FontWeight::BOLD)
+        );
+        assert_eq!(
+            syntax.style("string").unwrap().color,
+            original.style("string").unwrap().color
+        );
+        assert_eq!(
+            syntax.style("string").unwrap().font_style,
+            Some(gpui_kit::FontStyle::Italic)
+        );
+        assert_eq!(
+            syntax.style("comment").unwrap().color,
+            Some(neutral(0xaabbcc, 1.))
+        );
+        let palette = super::console_palette(&theme, Some(&zed));
+        assert_eq!(palette.background, neutral(0x123456, 1.));
+        assert_eq!(palette.foreground, neutral(0xabcdef, 1.));
+        assert_eq!(palette.cursor, neutral(0xfedcba, 1.));
+        assert_eq!(palette.cursor_text, palette.background);
+        assert_eq!(palette.selection, neutral(0x112233, 128. / 255.));
+        assert_eq!(palette.ansi[1], neutral(0xff0000, 1.));
+        assert_eq!(palette.ansi[9], neutral(0xff8888, 1.));
+        assert_eq!(
+            palette.ansi[2],
+            crate::preference_runtime::TerminalPalette::default_for(true).ansi[2]
+        );
+        let fresh = super::console_palette(&theme, None);
+        assert_ne!(fresh.ansi[1], palette.ansi[1]);
     }
 
     #[test]

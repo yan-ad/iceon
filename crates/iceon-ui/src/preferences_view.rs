@@ -312,6 +312,7 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
         });
     }
 
+    crate::shell_theme::apply(gpui_kit::component::theme::Theme::global(cx).mode, None, cx);
     cx.refresh_windows();
 }
 
@@ -319,6 +320,8 @@ pub struct PreferencesWindow {
     focus_handle: FocusHandle,
     timezone_select: Entity<TimezoneSelectState>,
     terminal_font_select: Entity<SelectState<SearchableVec<String>>>,
+    ui_font_select: Entity<SelectState<SearchableVec<String>>>,
+    editor_font_select: Entity<SelectState<SearchableVec<String>>>,
     section: usize,
     themes_settings: Entity<crate::themes_settings::ThemesSettings>,
     kubernetes_preferences: Entity<kubernetes_preferences::KubernetesPreferencesView>,
@@ -351,42 +354,69 @@ impl PreferencesWindow {
             },
         )
         .detach();
-        let terminal_font = current_prefs(cx).terminal.font_family;
-        let mut fonts = cx.text_system().all_font_names();
-        fonts.push(terminal_font.clone());
-        fonts.sort_unstable();
-        fonts.dedup();
-        let terminal_font_select = cx.new(|cx| {
-            let mut state =
-                SelectState::new(SearchableVec::new(fonts), None, window, cx).searchable(true);
-            state.set_selected_value(&terminal_font, window, cx);
-            state
-        });
-        cx.subscribe(
-            &terminal_font_select,
-            |_, _, event: &SelectEvent<SearchableVec<String>>, cx| {
-                if let SelectEvent::Confirm(Some(font)) = event {
-                    mutate_preferences(cx, |prefs| prefs.terminal.font_family = font.clone());
-                }
-            },
-        )
-        .detach();
+        let terminal_font_select =
+            Self::font_select(current_prefs(cx).terminal.font_family, window, cx);
+        let ui_font_select = Self::font_select(current_prefs(cx).app.font_family, window, cx);
+        let editor_font_select =
+            Self::font_select(current_prefs(cx).editor.font_family, window, cx);
+        for (selector, target) in [
+            (&terminal_font_select, 0),
+            (&ui_font_select, 1),
+            (&editor_font_select, 2),
+        ] {
+            cx.subscribe(
+                selector,
+                move |_, _, event: &SelectEvent<SearchableVec<String>>, cx| {
+                    if let SelectEvent::Confirm(Some(font)) = event {
+                        mutate_preferences(cx, |prefs| match target {
+                            0 => prefs.terminal.font_family = font.clone(),
+                            1 => prefs.app.font_family = font.clone(),
+                            _ => prefs.editor.font_family = font.clone(),
+                        });
+                    }
+                },
+            )
+            .detach();
+        }
         let kubernetes_preferences =
             cx.new(|cx| kubernetes_preferences::KubernetesPreferencesView::new(window, cx));
         Self {
             focus_handle,
             timezone_select,
             terminal_font_select,
+            ui_font_select,
+            editor_font_select,
             section: 0,
             themes_settings: cx.new(|cx| crate::themes_settings::ThemesSettings::new(window, cx)),
             kubernetes_preferences,
         }
     }
 
+    fn font_select(
+        font: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SelectState<SearchableVec<String>>> {
+        let mut fonts = cx.text_system().all_font_names();
+        fonts.push(font.clone());
+        fonts.push(Preferences::default().app.font_family);
+        fonts.push(Preferences::default().editor.font_family);
+        fonts.sort_unstable();
+        fonts.dedup();
+        cx.new(|cx| {
+            let mut state =
+                SelectState::new(SearchableVec::new(fonts), None, window, cx).searchable(true);
+            state.set_selected_value(&font, window, cx);
+            state
+        })
+    }
+
     fn build_pages(&self, cx: &App) -> Vec<SettingPage> {
         let defaults = Preferences::default();
         let timezone_select = self.timezone_select.clone();
         let terminal_font_select = self.terminal_font_select.clone();
+        let ui_font_select = self.ui_font_select.clone();
+        let editor_font_select = self.editor_font_select.clone();
 
         let app_page = SettingPage::new("General")
             .icon(IconName::Settings2)
@@ -395,6 +425,19 @@ impl PreferencesWindow {
             .groups([
                 SettingGroup::new()
                     .items([
+                        SettingItem::new("UI Font Family", SettingField::render(move |options, _, _| {
+                                Select::new(&ui_font_select)
+                                    .accessibility_label("UI font family")
+                                    .search_placeholder("Search installed fonts...")
+                                    .menu_max_h(px(320.0))
+                                    .with_size(options.size())
+                                    .w(px(240.0))
+                                    .when(options.layout() == Axis::Vertical, |el| el.w_full())
+                            }).on_reset(
+                                |cx| current_prefs(cx).app.font_family != Preferences::default().app.font_family,
+                                |_, cx| mutate_preferences(cx, |prefs| prefs.app.font_family = Preferences::default().app.font_family),
+                            ))
+                            .description("Font for navigation, tables, dialogs and application controls. Reset restores the native system font."),
                         SettingItem::new(
                             "Timezone",
                             SettingField::render(move |options, _, _| {
@@ -545,18 +588,27 @@ impl PreferencesWindow {
                     .items([
                         SettingItem::new(
                             "Font Family",
-                            SettingField::input(
-                                |cx: &App| SharedString::from(current_prefs(cx).editor.font_family),
-                                |val: SharedString, cx: &mut App| {
-                                    mutate_preferences(cx, |prefs| {
-                                        let trimmed = val.trim();
-                                        if !trimmed.is_empty() {
-                                            prefs.editor.font_family = trimmed.to_string();
-                                        }
-                                    });
+                            SettingField::render(move |options, _, _| {
+                                Select::new(&editor_font_select)
+                                    .accessibility_label("Editor font family")
+                                    .search_placeholder("Search installed fonts...")
+                                    .menu_max_h(px(320.0))
+                                    .with_size(options.size())
+                                    .w(px(240.0))
+                                    .when(options.layout() == Axis::Vertical, |el| el.w_full())
+                            })
+                            .on_reset(
+                                |cx| {
+                                    current_prefs(cx).editor.font_family
+                                        != Preferences::default().editor.font_family
                                 },
-                            )
-                            .default_value(SharedString::from(defaults.editor.font_family)),
+                                |_, cx| {
+                                    mutate_preferences(cx, |prefs| {
+                                        prefs.editor.font_family =
+                                            Preferences::default().editor.font_family
+                                    })
+                                },
+                            ),
                         )
                         .description(
                             "Monospace font family used in YAML editors and resource diffs.",
@@ -810,10 +862,15 @@ impl Render for PreferencesWindow {
                 state.set_selected_value(&timezone, window, cx);
             });
         }
-        let font = current_prefs(cx).terminal.font_family;
-        if self.terminal_font_select.read(cx).selected_value() != Some(&font) {
-            self.terminal_font_select
-                .update(cx, |state, cx| state.set_selected_value(&font, window, cx));
+        let prefs = current_prefs(cx);
+        for (selector, font) in [
+            (&self.terminal_font_select, prefs.terminal.font_family),
+            (&self.ui_font_select, prefs.app.font_family),
+            (&self.editor_font_select, prefs.editor.font_family),
+        ] {
+            if selector.read(cx).selected_value() != Some(&font) {
+                selector.update(cx, |state, cx| state.set_selected_value(&font, window, cx));
+            }
         }
         let error = cx
             .try_global::<GlobalPreferencesState>()

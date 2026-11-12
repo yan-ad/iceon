@@ -525,6 +525,17 @@ impl IceonApp {
         if cx.theme().mode != mode {
             shell_theme::apply(mode, Some(window), cx);
         }
+        let ui_font = &self.preferences_draft.app.font_family;
+        let ui_family = if ui_font == ".SystemUIFont" {
+            SharedString::from(".SystemUIFont")
+        } else {
+            preference_runtime::font_family(ui_font, cx)
+        };
+        if cx.theme().font_family != ui_family {
+            gpui_kit::component::theme::Theme::update(cx, |theme| {
+                theme.font_family = ui_family;
+            });
+        }
         // All Editor widgets use the kit's dedicated code font tokens, not UI typography.
         let editor = self.preferences_draft.editor.clone();
         let family = preference_runtime::font_family(&editor.font_family, cx);

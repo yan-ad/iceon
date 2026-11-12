@@ -68,6 +68,8 @@ include!(concat!(env!("OUT_DIR"), "/themes.rs"));
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AppPreferences {
+    #[serde(default = "default_ui_font_family")]
+    pub font_family: String,
     pub theme: AppTheme,
     pub timezone: String,
     pub persistent_search: bool,
@@ -80,9 +82,14 @@ pub struct AppPreferences {
     pub restore_last_page: bool,
 }
 
+fn default_ui_font_family() -> String {
+    ".SystemUIFont".into()
+}
+
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
+            font_family: default_ui_font_family(),
             theme: AppTheme::System,
             timezone: "system".into(),
             persistent_search: false,
@@ -338,6 +345,9 @@ fn validate(p: &Preferences) -> Result<()> {
                     .unwrap_or(true)
         })
     {
+        return Err(PreferencesError::InvalidInput);
+    }
+    if !valid_font_family(&p.app.font_family) {
         return Err(PreferencesError::InvalidInput);
     }
     if !(10..=50).contains(&p.editor.font_size)

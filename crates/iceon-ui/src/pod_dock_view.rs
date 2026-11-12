@@ -1317,10 +1317,8 @@ impl IceonApp {
                     cx,
                 );
                 let log_font_size = f32::from(terminal_preferences.font_size);
-                let (log_bg, log_fg) = crate::preference_runtime::terminal_colors(
-                    terminal_preferences.theme,
-                    cx.theme().mode.is_dark(),
-                );
+                let log_palette =
+                    crate::preference_runtime::terminal_palette(terminal_preferences.theme, cx);
                 el.when(logs, |el| {
                     el.child(
                         h_flex()
@@ -1447,7 +1445,7 @@ impl IceonApp {
                         .flex_1()
                         .min_h_0()
                         .min_w_0()
-                        .bg(rgb(log_bg))
+                        .bg(log_palette.background)
                         .overflow_hidden()
                         .when(logs, |el| {
                             el.on_scroll(cx.listener(move |this, _: &ScrollEvent, _, cx| {
@@ -1479,7 +1477,7 @@ impl IceonApp {
                                                     .px_2()
                                                     .font_family(log_font.clone())
                                                     .text_size(px(log_font_size))
-                                                    .text_color(rgb(log_fg))
+                                                    .text_color(log_palette.foreground)
                                                     .line_height(px(log_font_size * 1.5))
                                                     .whitespace_nowrap()
                                                     .child(gpui_kit::base::SelectableText::new(
