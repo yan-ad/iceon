@@ -1284,7 +1284,7 @@ impl ResourceTable {
                         .disabled(!logs)
                         .xsmall()
                         .ghost()
-                        .icon(IconName::FileText)
+                        .icon(crate::action_icons::logs())
                         .tooltip("View pod logs")
                         .accessibility_label("View pod logs")
                         .on_click(self.action(move |this, _, window, cx| {
@@ -1332,7 +1332,7 @@ impl ResourceTable {
                             .xsmall()
                             .ghost()
                             .text_color(cx.theme().danger)
-                            .icon(IconName::RefreshCw)
+                            .icon(crate::action_icons::refresh())
                             .tooltip("Restart workload")
                             .accessibility_label("Restart workload")
                             .on_click(self.action(move |this, _, window, cx| {
@@ -1523,7 +1523,7 @@ impl ResourceTable {
                             .xsmall()
                             .ghost()
                             .text_color(cx.theme().danger)
-                            .icon(IconName::Delete)
+                            .icon(crate::action_icons::delete())
                             .tooltip("Delete resource")
                             .accessibility_label("Delete resource")
                             .on_click(self.action(move |this, _, window, cx| {

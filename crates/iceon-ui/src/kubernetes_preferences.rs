@@ -297,7 +297,7 @@ impl KubernetesPreferencesView {
                     .child(
                         Button::new("helm-reload")
                             .small()
-                            .icon(IconName::RefreshCw)
+                            .icon(crate::action_icons::refresh())
                             .accessibility_label("Load or refresh Helm repositories")
                             .label(if self.busy {
                                 "Working…"
@@ -335,7 +335,7 @@ impl KubernetesPreferencesView {
                     .child(
                         Button::new(("helm-remove", ix))
                             .small()
-                            .icon(IconName::Delete)
+                            .icon(crate::action_icons::delete())
                             .accessibility_label(format!("Remove Helm repository {}", repo.name))
                             .label("Remove")
                             .danger()
@@ -405,7 +405,7 @@ impl KubernetesPreferencesView {
                     .child(
                         Button::new(("kubeconfig-remove", ix))
                             .small()
-                            .icon(IconName::Delete)
+                            .icon(crate::action_icons::delete())
                             .accessibility_label("Remove kubeconfig source")
                             .label("Remove source")
                             .on_click(cx.listener(move |_, _, _, cx| {

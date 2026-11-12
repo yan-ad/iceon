@@ -1446,7 +1446,7 @@ impl IceonApp {
                         )
                         .xsmall()
                         .danger()
-                        .icon(IconName::RefreshCw)
+                        .icon(crate::action_icons::refresh())
                         .tooltip("Restart")
                         .accessibility_label("Restart")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -1524,7 +1524,7 @@ impl IceonApp {
                     .disabled(!self.inspector_can(PermissionAction::Delete))
                     .xsmall()
                     .danger()
-                    .icon(IconName::Delete)
+                    .icon(crate::action_icons::delete())
                     .tooltip("Delete")
                     .accessibility_label("Delete")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1672,7 +1672,7 @@ impl IceonApp {
                             .disabled(!self.inspector_can(PermissionAction::Logs))
                             .xsmall()
                             .primary()
-                            .icon(IconName::FileText)
+                            .icon(crate::action_icons::logs())
                             .tooltip("Logs")
                             .accessibility_label("Logs")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1716,7 +1716,7 @@ impl IceonApp {
                             .disabled(!self.inspector_can(PermissionAction::Attach))
                             .xsmall()
                             .ghost()
-                            .icon(IconName::SquareTerminal)
+                            .icon(crate::action_icons::attach())
                             .tooltip("Attach")
                             .accessibility_label("Attach")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1739,7 +1739,7 @@ impl IceonApp {
                         .disabled(!self.inspector_can(PermissionAction::Delete))
                         .xsmall()
                         .danger()
-                        .icon(IconName::Delete)
+                        .icon(crate::action_icons::force_delete())
                         .tooltip("Force Delete (0s)")
                         .accessibility_label("Force Delete (0s)")
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -1762,7 +1762,7 @@ impl IceonApp {
                             .disabled(!self.inspector_can(PermissionAction::Patch))
                             .xsmall()
                             .danger()
-                            .icon(IconName::Delete)
+                            .icon(crate::action_icons::delete())
                             .tooltip("Strip Finalizers")
                             .accessibility_label("Strip Finalizers")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2640,7 +2640,9 @@ impl IceonApp {
                                                 )
                                                 .xsmall()
                                                 .primary()
-                                                .label("Logs")
+                                                .icon(crate::action_icons::logs())
+                                                .tooltip("Logs")
+                                                .accessibility_label("Logs")
                                                 .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
@@ -2694,7 +2696,9 @@ impl IceonApp {
                                                 )
                                                 .xsmall()
                                                 .ghost()
-                                                .label("Attach")
+                                                .icon(crate::action_icons::attach())
+                                                .tooltip("Attach")
+                                                .accessibility_label("Attach")
                                                 .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
@@ -3174,7 +3178,9 @@ impl IceonApp {
                                                             ))
                                                             .xsmall()
                                                             .primary()
-                                                            .label("Logs")
+                                                            .icon(crate::action_icons::logs())
+                                                            .tooltip("Logs")
+                                                            .accessibility_label("Logs")
                                                             .on_click(cx.listener(
                                                                 move |this, _, window, cx| {
                                                                     this.open_pod_stream_for_pod(

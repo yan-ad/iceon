@@ -330,7 +330,7 @@ impl Render for ThemesSettings {
                             Button::new(SharedString::from(format!("uninstall-{id}")))
                                 .small()
                                 .ghost()
-                                .icon(IconName::Delete)
+                                .icon(crate::action_icons::delete())
                                 .tooltip(format!("Uninstall {name}"))
                                 .accessibility_label(format!("Uninstall {name}"))
                                 .disabled(loading)

@@ -2385,12 +2385,12 @@ impl IceonApp {
                                 .when_some(self.bulk_delete.message.clone(), |group, message| group.child(div().max_w(px(620.0)).text_xs().child(message)))
                                 .child(h_flex().gap_2().items_center()
                                     .when(selected > 0, |actions| actions
-                                    .child(Button::new("delete-checked-resources").outline().rounded_full().icon(gpui_kit_assets::IconName::Trash)
+                                    .child(Button::new("delete-checked-resources").outline().rounded_full().icon(crate::action_icons::delete())
                                         .accessibility_label(format!("Delete {selected} selected resources"))
                                         .disabled(selected == 0 || deleting || kind == ResourceKind::Nodes)
                                         .tooltip(format!("Delete {selected} selected resources · normal grace periods"))
                                         .on_click(cx.listener(|app, _, window, cx| { cx.stop_propagation(); app.confirm_bulk_delete(false, window, cx); })))
-                                    .child(Button::new("force-delete-checked-resources").danger().rounded_full().icon(IconName::TriangleAlert)
+                                    .child(Button::new("force-delete-checked-resources").danger().rounded_full().icon(crate::action_icons::force_delete())
                                         .accessibility_label(format!("Force delete {selected} selected pods"))
                                         .disabled(selected == 0 || deleting || kind != ResourceKind::Pods)
                                         .tooltip(format!("Force delete {selected} selected pods · zero grace period; finalizers remain"))
@@ -2563,7 +2563,7 @@ impl IceonApp {
                 Button::new("reload-cluster-section-btn")
                     .xsmall()
                     .ghost()
-                    .icon(IconName::RefreshCw)
+                    .icon(crate::action_icons::refresh())
                     .tooltip("Refresh")
                     .accessibility_label("Refresh")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -3406,7 +3406,7 @@ impl IceonApp {
                                                             ))
                                                             .xsmall()
                                                             .ghost()
-                                                            .icon(IconName::Delete)
+                                                            .icon(crate::action_icons::delete())
                                                             .tooltip("Preview ServiceAccount deletion plan")
                                                             .accessibility_label("Preview ServiceAccount deletion plan")
                                                             .on_click(cx.listener(

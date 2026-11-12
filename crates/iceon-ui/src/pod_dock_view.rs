@@ -1016,11 +1016,13 @@ impl IceonApp {
                     .label(console_tab_title(&title))
                     .aria_label(tooltip.clone())
                     .prefix(
-                        gpui_kit::component::Icon::new(if tab.mode == PodStreamMode::Logs {
-                            IconName::FileText
-                        } else {
-                            IconName::SquareTerminal
-                        })
+                        match tab.mode {
+                            PodStreamMode::Logs => crate::action_icons::logs(),
+                            PodStreamMode::Attach => crate::action_icons::attach(),
+                            PodStreamMode::Shell => {
+                                gpui_kit::component::Icon::new(IconName::SquareTerminal)
+                            }
+                        }
                         .small(),
                     )
                     .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
@@ -1113,6 +1115,13 @@ impl IceonApp {
                     let owner = menu_owner.clone();
                     menu = menu.item(
                         PopupMenuItem::new(label)
+                            .icon(match mode {
+                                PodStreamMode::Logs => crate::action_icons::logs(),
+                                PodStreamMode::Attach => crate::action_icons::attach(),
+                                PodStreamMode::Shell => {
+                                    gpui_kit::component::Icon::new(IconName::SquareTerminal)
+                                }
+                            })
                             .disabled(!menu_owner.upgrade().is_some_and(|owner| {
                                 let app = owner.read(cx);
                                 duplicate_key

@@ -536,7 +536,7 @@ impl IceonApp {
         v_flex().size_full().min_h_0().min_w_0()
             .child(div().px_2().py_1().text_xs().child(format!("{:?} · {} · {}", tab.kind(), tab.name(), tab.namespace().unwrap_or("cluster-scoped"))))
             .child(h_flex().gap_2().px_2().py_1().flex_wrap()
-                .when(!creating, |toolbar| toolbar.child(Button::new("yaml-reload").small().icon(IconName::RefreshCw).accessibility_label("Reload YAML").ghost().label("Reload").disabled(!readable || !valid || busy).on_click(cx.listener(move |app, _, window, cx| {
+                .when(!creating, |toolbar| toolbar.child(Button::new("yaml-reload").small().icon(crate::action_icons::refresh()).accessibility_label("Reload YAML").ghost().label("Reload").disabled(!readable || !valid || busy).on_click(cx.listener(move |app, _, window, cx| {
                     if is_dirty { app.confirm_destructive_action("Reload YAML?", "Discard this buffer and read current reviewed fields from the server?", "Reload", window, cx, move |app, window, cx| app.run_yaml_operation(key, EditMode::Read, false, window, cx)); }
                     else { app.run_yaml_operation(key, EditMode::Read, false, window, cx); }
                 }))))
