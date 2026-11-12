@@ -51,6 +51,7 @@ gpui_kit_assets::icon_assets!(
         SlidersHorizontal,
         Square,
         Timer,
+        Download,
         Trash,
         UserCog,
         Users,
@@ -100,7 +101,12 @@ mod tests {
 
     #[test]
     fn extra_and_default_component_icons_are_embedded() {
-        for icon in [IconName::Pencil, IconName::Trash, IconName::Check] {
+        for icon in [
+            IconName::Pencil,
+            IconName::Trash,
+            IconName::Check,
+            IconName::Download,
+        ] {
             let path = icon.path();
             let bytes = AppAssets.load(&path).unwrap().expect("embedded SVG");
             assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));

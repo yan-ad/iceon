@@ -10,3 +10,5 @@ pub mod runtime;
 pub mod secrets;
 pub mod tls;
 pub mod zed_themes;
+
+pub mod updates;

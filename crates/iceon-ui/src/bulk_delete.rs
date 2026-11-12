@@ -27,7 +27,8 @@ impl IceonApp {
             .as_ref()
             .map(|table| table.read(cx).selected_targets())
             .unwrap_or_default();
-        if targets.is_empty()
+        if targets.iter().any(|target| !self.can_delete_target(target))
+            || targets.is_empty()
             || (force
                 && targets
                     .iter()
@@ -72,7 +73,10 @@ impl IceonApp {
             .as_ref()
             .map(|table| table.read(cx).selected_targets())
             .unwrap_or_default();
-        if targets.iter().any(|target| !current.contains(target)) {
+        if targets
+            .iter()
+            .any(|target| !current.contains(target) || !self.can_delete_target(target))
+        {
             return;
         }
 
@@ -86,7 +90,7 @@ impl IceonApp {
             let mut failures = Vec::new();
             for target in targets {
                 let read_id = owner.update_in(cx, |app, _, _| {
-                    (app.bulk_delete.active == Some(batch) && app.cluster_session.as_ref().is_some_and(|current| current.cluster_id == session.cluster_id && current.session_id == session.session_id)).then(|| app.next_operation_id())
+                    (app.can_delete_target(&target) && app.bulk_delete.active == Some(batch) && app.cluster_session.as_ref().is_some_and(|current| current.cluster_id == session.cluster_id && current.session_id == session.session_id)).then(|| app.next_operation_id())
                 }).ok().flatten();
                 let Some(read_id) = read_id else { break; };
                 let result = if force {

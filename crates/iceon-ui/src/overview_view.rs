@@ -20,6 +20,7 @@ use gpui_kit::{
 };
 use iceon_core::connection::{
     ResourceItem, ResourceKind, ResourcePage, details::ResourceReference,
+    permissions::PermissionAction,
 };
 use std::rc::Rc;
 
@@ -149,6 +150,25 @@ fn loading_card(label: &str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// Authorization denials are an expected absence, not a dashboard error.
+fn overview_error(error: &str) -> Option<String> {
+    let messages: Vec<_> = error
+        .split("; ")
+        .filter(|message| {
+            let lower = message.to_ascii_lowercase();
+            ![
+                "forbidden",
+                "unauthorized",
+                "permission denied",
+                "access denied",
+            ]
+            .iter()
+            .any(|denial| lower.contains(denial))
+        })
+        .collect();
+    (!messages.is_empty()).then(|| messages.join("; "))
+}
+
 impl IceonApp {
     fn overview_workload_card(
         &self,
@@ -227,6 +247,12 @@ impl IceonApp {
                             namespace: item.namespace.clone(),
                             uid: item.uid.clone(),
                         };
+                        let inspectable = self.can_action(
+                            kind,
+                            PermissionAction::Get,
+                            item.namespace.as_deref(),
+                            Some(&item.name),
+                        );
                         div()
                             .id((
                                 SharedString::from(format!("overview-square-{kind:?}")),
@@ -235,13 +261,22 @@ impl IceonApp {
                             .size(px(9.))
                             .rounded(px(2.))
                             .bg(color(state, cx))
-                            .cursor_pointer()
+                            .when(inspectable, |square| square.cursor_pointer())
                             .tooltip(move |window, cx| {
                                 Tooltip::new(details.clone()).build(window, cx)
                             })
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.open_resource_inspector(reference.clone(), window, cx)
-                            }))
+                            .when(inspectable, |square| {
+                                square.on_click(cx.listener(move |app, _, window, cx| {
+                                    if app.can_action(
+                                        kind,
+                                        PermissionAction::Get,
+                                        reference.namespace.as_deref(),
+                                        Some(&reference.name),
+                                    ) {
+                                        app.open_resource_inspector(reference.clone(), window, cx);
+                                    }
+                                }))
+                            })
                     })),
             )
             .when(page.is_none(), |card| {
@@ -394,15 +429,45 @@ impl IceonApp {
             .into_any_element()
     }
     pub(crate) fn render_overview_dashboard(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let snap = self.overview_snapshot.clone();
-        let workloads = [
+        if !self.access_ready() {
+            return v_flex()
+                .size_full()
+                .p_4()
+                .gap_4()
+                .child(div().text_sm().child(self.access_message()))
+                .child(Skeleton::new().h(px(44.)))
+                .child(
+                    Button::new("overview-refresh-access")
+                        .ghost()
+                        .small()
+                        .label("Retry access check")
+                        .on_click(cx.listener(|app, _, window, cx| app.refresh_access(window, cx))),
+                )
+                .into_any_element();
+        }
+        // Never project cached data from a previously authorized scope.
+        let mut snap = self.overview_snapshot.clone();
+        if !self.can_list(ResourceKind::Nodes) {
+            snap.nodes = None;
+        }
+        if !self.can_list(ResourceKind::Pods) {
+            snap.pods = None;
+        }
+        if !self.can_list(ResourceKind::Events) {
+            snap.events = None;
+        }
+        let workloads: Vec<_> = [
             (&snap.pods, ResourceKind::Pods),
             (&snap.deployments, ResourceKind::Deployments),
             (&snap.daemonsets, ResourceKind::DaemonSets),
             (&snap.statefulsets, ResourceKind::StatefulSets),
+            (&snap.replicasets, ResourceKind::ReplicaSets),
             (&snap.jobs, ResourceKind::Jobs),
             (&snap.cronjobs, ResourceKind::CronJobs),
-        ];
+        ]
+        .into_iter()
+        .filter(|(_, kind)| self.can_list(*kind))
+        .collect();
         let attention = workloads
             .iter()
             .filter_map(|(page, kind)| {
@@ -433,7 +498,9 @@ impl IceonApp {
                 .count()
         });
         let owner = cx.entity().downgrade();
-        let events = if let Some(page) = snap.events.as_ref() {
+        let events = if !self.can_list(ResourceKind::Events) {
+            div().into_any_element()
+        } else if let Some(page) = snap.events.as_ref() {
             let table = self
                 .overview_events_table
                 .get_or_insert_with(|| {
@@ -469,189 +536,119 @@ impl IceonApp {
                 .child("Events unavailable")
                 .into_any_element()
         };
+        let mut stats = Vec::new();
+        if !workloads.is_empty() {
+            stats.push(stat(
+                "Needs attention",
+                if workloads.iter().all(|(page, _)| page.is_some()) {
+                    attention.to_string()
+                } else {
+                    "—".into()
+                },
+                "Authorized workload issues",
+                self.cluster_loading,
+                cx,
+            ));
+        }
+        if self.can_list(ResourceKind::Nodes) {
+            stats.push(stat(
+                "Nodes ready",
+                ready
+                    .map(|n| format!("{n} / {}", count(snap.nodes.as_ref())))
+                    .unwrap_or_else(|| "—".into()),
+                "Loaded nodes",
+                self.cluster_loading,
+                cx,
+            ));
+        }
+        if self.can_list(ResourceKind::Pods) {
+            stats.push(stat(
+                "Pods running",
+                running
+                    .map(|n| format!("{n} / {}", count(snap.pods.as_ref())))
+                    .unwrap_or_else(|| "—".into()),
+                "Selected namespace scope",
+                self.cluster_loading,
+                cx,
+            ));
+        }
+        if self.can_list(ResourceKind::Events) {
+            stats.push(stat(
+                "Warning events",
+                warning.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
+                "Loaded event records, not an hourly rate",
+                self.cluster_loading,
+                cx,
+            ));
+        }
+        let mut columns = [Vec::new(), Vec::new()];
+        for (label, section, kind, page) in [
+            ("Pods", "pods", ResourceKind::Pods, snap.pods.as_ref()),
+            (
+                "Deployments",
+                "deployments",
+                ResourceKind::Deployments,
+                snap.deployments.as_ref(),
+            ),
+            (
+                "CronJobs",
+                "cron-jobs",
+                ResourceKind::CronJobs,
+                snap.cronjobs.as_ref(),
+            ),
+            (
+                "StatefulSets",
+                "stateful-sets",
+                ResourceKind::StatefulSets,
+                snap.statefulsets.as_ref(),
+            ),
+            (
+                "ReplicaSets",
+                "replica-sets",
+                ResourceKind::ReplicaSets,
+                snap.replicasets.as_ref(),
+            ),
+            (
+                "DaemonSets",
+                "daemon-sets",
+                ResourceKind::DaemonSets,
+                snap.daemonsets.as_ref(),
+            ),
+            ("Jobs", "jobs", ResourceKind::Jobs, snap.jobs.as_ref()),
+        ]
+        .into_iter()
+        .filter(|(_, _, kind, _)| self.can_list(*kind))
+        {
+            let column = if columns[0].len() <= columns[1].len() {
+                0
+            } else {
+                1
+            };
+            columns[column].push(self.overview_workload_card(label, section, kind, page, cx));
+        }
         v_flex()
-            .size_full()
-            .min_h_0()
-            .p_4()
-            .gap_4()
-            .overflow_y_scrollbar()
-            .when_some(self.cluster_error.clone(), |el, error| {
-                el.child(crate::empty_state::error_state(error))
-            })
-            .child(
-                h_flex()
-                    .w_full()
-                    .flex_wrap()
-                    .rounded(px(12.))
-                    .bg(cx.theme().secondary)
-                    .child(stat(
-                        "Needs attention",
-                        if workloads.iter().all(|(page, _)| page.is_some()) {
-                            attention.to_string()
-                        } else {
-                            "—".into()
-                        },
-                        "Observed workload issues",
-                        self.cluster_loading,
-                        cx,
-                    ))
-                    .child(stat(
-                        "Nodes ready",
-                        ready
-                            .map(|n| format!("{n} / {}", count(snap.nodes.as_ref())))
-                            .unwrap_or_else(|| "—".into()),
-                        "Loaded nodes",
-                        self.cluster_loading,
-                        cx,
-                    ))
-                    .child(stat(
-                        "Pods running",
-                        running
-                            .map(|n| format!("{n} / {}", count(snap.pods.as_ref())))
-                            .unwrap_or_else(|| "—".into()),
-                        "Selected namespace scope",
-                        self.cluster_loading,
-                        cx,
-                    ))
-                    .child(stat(
-                        "Warning events",
-                        warning.map(|n| n.to_string()).unwrap_or_else(|| "—".into()),
-                        "Loaded event records, not an hourly rate",
-                        self.cluster_loading,
-                        cx,
-                    ))
-                    .child(stat(
-                        "Security findings",
-                        "—".into(),
-                        "Not scanned",
-                        false,
-                        cx,
-                    )),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Workloads"),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(
-                        "Hover for details · click a square to inspect · + means partial inventory",
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_4()
-                    .items_start()
-                    .min_w_0()
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_4()
-                            .child(self.overview_workload_card(
-                                "Pods",
-                                "pods",
-                                ResourceKind::Pods,
-                                snap.pods.as_ref(),
-                                cx,
-                            ))
-                            .child(self.overview_workload_card(
-                                "CronJobs",
-                                "cron-jobs",
-                                ResourceKind::CronJobs,
-                                snap.cronjobs.as_ref(),
-                                cx,
-                            ))
-                            .child(self.overview_workload_card(
-                                "ReplicaSets",
-                                "replica-sets",
-                                ResourceKind::ReplicaSets,
-                                snap.replicasets.as_ref(),
-                                cx,
-                            )),
-                    )
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_4()
-                            .child(self.overview_workload_card(
-                                "Deployments",
-                                "deployments",
-                                ResourceKind::Deployments,
-                                snap.deployments.as_ref(),
-                                cx,
-                            ))
-                            .child(self.overview_workload_card(
-                                "StatefulSets",
-                                "stateful-sets",
-                                ResourceKind::StatefulSets,
-                                snap.statefulsets.as_ref(),
-                                cx,
-                            ))
-                            .child(self.overview_workload_card(
-                                "DaemonSets",
-                                "daemon-sets",
-                                ResourceKind::DaemonSets,
-                                snap.daemonsets.as_ref(),
-                                cx,
-                            ))
-                            .child(self.overview_workload_card(
-                                "Jobs",
-                                "jobs",
-                                ResourceKind::Jobs,
-                                snap.jobs.as_ref(),
-                                cx,
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Capacity"),
-            )
-            .child(
-                h_flex()
-                    .gap_4()
-                    .child(self.overview_capacity(false, cx))
-                    .child(self.overview_capacity(true, cx)),
-            )
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Events"),
-                    )
-                    .child(
-                        Button::new("overview-all-events")
-                            .ghost()
-                            .small()
-                            .label("Show all")
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                if let Some(session) = &app.cluster_session {
-                                    app.navigate(
-                                        Route::Cluster {
-                                            cluster_id: session.cluster_id.clone(),
-                                            section: "events".into(),
-                                        },
-                                        true,
-                                        window,
-                                        cx,
-                                    );
+            .size_full().min_h_0().p_4().gap_4().overflow_y_scrollbar()
+            .when_some(self.cluster_error.as_deref().and_then(overview_error), |el, error| el.child(crate::empty_state::error_state(error)))
+            .when(!stats.is_empty(), |el| el.child(h_flex().w_full().flex_wrap().rounded(px(12.)).bg(cx.theme().secondary).children(stats)))
+            .when(!workloads.is_empty(), |el| el
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Workloads"))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Hover for details · permitted resources can be inspected · + means partial inventory"))
+                .child(h_flex().gap_4().items_start().min_w_0().children(columns.into_iter().filter(|column| !column.is_empty()).map(|cards| v_flex().flex_1().min_w_0().gap_4().children(cards)))))
+            .when(self.can_list(ResourceKind::Nodes), |el| el
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Capacity"))
+                .child(h_flex().gap_4().child(self.overview_capacity(false, cx)).child(self.overview_capacity(true, cx))))
+            .when(self.can_list(ResourceKind::Events), |el| el
+                .child(h_flex().justify_between().items_center()
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Events"))
+                    .child(Button::new("overview-all-events").ghost().small().label("Show all")
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            if app.route_allowed("events")
+                                && let Some(session) = &app.cluster_session {
+                                    app.navigate(Route::Cluster { cluster_id: session.cluster_id.clone(), section: "events".into() }, true, window, cx);
                                 }
-                            })),
-                    ),
-            )
-            .child(events)
+                        }))))
+                .child(events))
+            .when(workloads.is_empty() && !self.can_list(ResourceKind::Nodes) && !self.can_list(ResourceKind::Events), |el| el.child(div().text_sm().text_color(cx.theme().muted_foreground).child("No overview resources are available in this scope.")))
             .into_any_element()
     }
 }
@@ -659,6 +656,18 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     use super::{Health, count, health};
+    #[test]
+    fn authorization_failures_are_not_dashboard_errors() {
+        assert_eq!(super::overview_error("Pods: Forbidden"), None);
+        assert_eq!(
+            super::overview_error("Events: Unauthorized; Pods: access denied"),
+            None
+        );
+        assert_eq!(
+            super::overview_error("Events: Forbidden; Nodes: timed out"),
+            Some("Nodes: timed out".into())
+        );
+    }
     use iceon_core::connection::{ResourceItem, ResourceKind};
     fn item(status: &str, columns: &[(&str, &str)]) -> ResourceItem {
         ResourceItem {

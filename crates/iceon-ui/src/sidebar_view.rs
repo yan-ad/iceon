@@ -175,6 +175,9 @@ impl IceonApp {
             let group_id = group.id;
             let leaf = group.children.is_empty();
             if leaf {
+                if !self.access_ready() || !self.route_allowed(group.default_child) {
+                    continue;
+                }
                 let cid = cluster_id.to_owned();
                 resources.push(menu_item(
                     format!("page-{group_id}"),
@@ -195,28 +198,34 @@ impl IceonApp {
                     }),
                 ));
             } else {
-                resources.extend(group.children.iter().map(|child| {
-                    let cid = cluster_id.to_owned();
-                    let destination = child.id;
-                    menu_item(
-                        format!("child-{destination}"),
-                        child.label,
-                        Some(section_icon(destination)),
-                        active == destination,
-                        None,
-                        cx.listener(move |app, _, window, cx| {
-                            app.navigate(
-                                Route::Cluster {
-                                    cluster_id: cid.clone(),
-                                    section: destination.into(),
-                                },
-                                true,
-                                window,
-                                cx,
+                resources.extend(
+                    group
+                        .children
+                        .iter()
+                        .filter(|child| self.access_ready() && self.route_allowed(child.id))
+                        .map(|child| {
+                            let cid = cluster_id.to_owned();
+                            let destination = child.id;
+                            menu_item(
+                                format!("child-{destination}"),
+                                child.label,
+                                Some(section_icon(destination)),
+                                active == destination,
+                                None,
+                                cx.listener(move |app, _, window, cx| {
+                                    app.navigate(
+                                        Route::Cluster {
+                                            cluster_id: cid.clone(),
+                                            section: destination.into(),
+                                        },
+                                        true,
+                                        window,
+                                        cx,
+                                    )
+                                }),
                             )
                         }),
-                    )
-                }));
+                );
 
                 if group_id == "custom-resources" {
                     for (api_group, definitions) in
@@ -224,6 +233,16 @@ impl IceonApp {
                             self.custom_definitions_page.as_ref(),
                         )
                     {
+                        let definitions: Vec<_> = definitions
+                            .into_iter()
+                            .filter(|definition| {
+                                self.access_ready()
+                                    && self.route_allowed(&format!("crd:{}", definition.name))
+                            })
+                            .collect();
+                        if definitions.is_empty() {
+                            continue;
+                        }
                         let contains_active = definitions
                             .iter()
                             .any(|definition| *active == format!("crd:{}", definition.name));
@@ -289,7 +308,10 @@ impl IceonApp {
                             }
                         }
                     }
-                    if self.custom_discovery_loading {
+                    if self.access_ready()
+                        && self.route_allowed("custom-resource-definitions")
+                        && self.custom_discovery_loading
+                    {
                         resources.push(
                             menu_item(
                                 "crd-loading",
@@ -302,7 +324,10 @@ impl IceonApp {
                             .pl(px(32.0)),
                         );
                     }
-                    if self.custom_discovery_error.is_some() {
+                    if self.access_ready()
+                        && self.route_allowed("custom-resource-definitions")
+                        && self.custom_discovery_error.is_some()
+                    {
                         resources.push(
                             menu_item(
                                 "crd-retry",
@@ -318,6 +343,9 @@ impl IceonApp {
                         );
                     }
                 }
+            }
+            if resources.is_empty() {
+                continue;
             }
             groups.push(NavigationGroup::new(
                 if leaf { "" } else { group.label },

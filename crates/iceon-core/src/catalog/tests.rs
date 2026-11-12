@@ -7,6 +7,85 @@ pub(super) fn save_fixture(engine: &CatalogEngine, store: &Store) {
 }
 use super::*;
 
+#[test]
+fn access_versions_survive_reload_and_unrelated_catalog_saves() {
+    let (dir, engine, input) = fixture();
+    let snapshot = import(&engine, &input).unwrap();
+    let id = &snapshot.clusters[0].id;
+    assert_eq!(engine.last_known_api_version(id).unwrap(), None);
+    let target = engine.connection_target(id).unwrap();
+    engine
+        .record_access_version(&target, "v1.32.4+k3s1")
+        .unwrap();
+    assert_eq!(import(&engine, &input).unwrap(), snapshot);
+    add(&engine, "other").unwrap();
+    let restarted = CatalogEngine::new(dir.path().join("data"));
+    assert_eq!(
+        restarted.last_known_api_version(id).unwrap().as_deref(),
+        Some("v1.32.4+k3s1")
+    );
+    assert_eq!(restarted.access_versions().unwrap().len(), 1);
+    restarted.record_access_version(&target, "v1.33.0").unwrap();
+    assert_eq!(
+        engine.last_known_api_version(id).unwrap().as_deref(),
+        Some("v1.33.0")
+    );
+    assert_eq!(
+        engine.record_access_version(&target, "bad\nversion"),
+        Err(CatalogError::InvalidInput)
+    );
+}
+
+#[test]
+fn access_versions_prune_removed_and_changed_sources_without_resurrecting_targets() {
+    let (_dir, engine, input) = fixture();
+    let id = import(&engine, &input).unwrap().clusters[0].id.clone();
+    let target = engine.connection_target(&id).unwrap();
+    engine.record_access_version(&target, "v1.32.0").unwrap();
+    let mut stale = target.clone();
+    stale.provenance_path = input.with_file_name("old-alias.yaml");
+    assert_eq!(
+        engine.record_access_version(&stale, "v1.99.0"),
+        Err(CatalogError::NotFound)
+    );
+    assert_eq!(
+        engine.record_access_version_if_source(&target, "v1.99.0", Some([0; 32])),
+        Err(CatalogError::InputUnavailable)
+    );
+    // Same context and canonical path, but a changed server invalidates the version.
+    fs::write(&input, CONFIG.replace("secret-server", "new-server")).unwrap();
+    import(&engine, &input).unwrap();
+    assert!(engine.access_versions().unwrap().is_empty());
+    engine.record_access_version(&target, "v1.33.0").unwrap();
+    engine.remove(RemoveRequest { id: id.clone() }).unwrap();
+    assert!(engine.access_versions().unwrap().is_empty());
+    assert_eq!(
+        engine.record_access_version(&target, "v1.34.0"),
+        Err(CatalogError::NotFound)
+    );
+    import(&engine, &input).unwrap();
+    assert_eq!(engine.last_known_api_version(&id).unwrap(), None);
+}
+
+#[test]
+fn access_version_table_is_added_to_existing_catalogs() {
+    let (dir, engine, input) = fixture();
+    let id = import(&engine, &input).unwrap().clusters[0].id.clone();
+    let connection = rusqlite::Connection::open(dir.path().join("data/catalog.sqlite3")).unwrap();
+    connection
+        .execute_batch("DROP TABLE cluster_access_versions")
+        .unwrap();
+    drop(connection);
+    let restarted = CatalogEngine::new(dir.path().join("data"));
+    assert_eq!(restarted.last_known_api_version(&id).unwrap(), None);
+    let target = restarted.connection_target(&id).unwrap();
+    restarted.record_access_version(&target, "v1.32.0").unwrap();
+    assert_eq!(
+        engine.last_known_api_version(&id).unwrap().as_deref(),
+        Some("v1.32.0")
+    );
+}
+
 pub(super) const CONFIG: &str = "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\n  cluster:\n    server: https://secret-server.invalid\n    certificate-authority-data: SECRET_CERT\ncontexts:\n- name: development\n  context:\n    cluster: fixture\n    user: secret-user\nusers:\n- name: secret-user\n  user:\n    token: SECRET_TOKEN\n    exec:\n      command: NEVER_EXECUTE\n";
 pub(super) fn fixture() -> (tempfile::TempDir, CatalogEngine, PathBuf) {
     let dir = tempfile::tempdir().unwrap();

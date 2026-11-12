@@ -37,6 +37,7 @@ struct ResourceProjection {
     selected: usize,
     deleting: Option<u64>,
     delete_message: Option<String>,
+    access_revision: u64,
 }
 
 fn resource_projection(app: &IceonApp, cx: &App) -> Option<ResourceProjection> {
@@ -68,6 +69,7 @@ fn resource_projection(app: &IceonApp, cx: &App) -> Option<ResourceProjection> {
             .unwrap_or_default(),
         deleting: app.bulk_delete.active,
         delete_message: app.bulk_delete.message.clone(),
+        access_revision: app.access_revision(),
     })
 }
 

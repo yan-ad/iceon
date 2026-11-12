@@ -30,6 +30,7 @@ gpui_kit::actions!(
         CloseWindow,
         ToggleSidebar,
         CommandPalette,
+        CheckForUpdates,
         Back,
         Forward,
         // Menu-only placeholders: never register listeners or key bindings.
@@ -190,6 +191,9 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(ToggleSidebar, |this, _: &ToggleSidebar, _, cx| {
         this.sidebar_collapsed = !this.sidebar_collapsed;
         cx.notify();
+    });
+    register!(CheckForUpdates, |this, _: &CheckForUpdates, window, cx| {
+        this.check_for_updates(window, cx);
     });
     register!(CommandPalette, |this, _: &CommandPalette, window, cx| {
         this.toggle_command_palette(window, cx);
@@ -358,6 +362,9 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
+                this.check_for_updates(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
@@ -599,6 +606,8 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
             MenuItem::action("Toggle Full Screen", FullScreen),
         ]),
         Menu::new("Help").items([
+            MenuItem::action("Check for Updates…", CheckForUpdates),
+            MenuItem::separator(),
             MenuItem::action("Documentation", Documentation),
             MenuItem::action("Licenses", Licenses),
             MenuItem::separator(),
@@ -614,6 +623,17 @@ mod tests {
         bindings, menu_model, owned_menu, quick_access_menu,
     };
     use gpui_kit::{Action, KeyBinding, MenuItem};
+
+    #[test]
+    fn help_exposes_check_for_updates() {
+        let menus = menu_model(true, Capabilities::default());
+        let help = menus
+            .iter()
+            .find(|menu| menu.name.as_ref() == "Help")
+            .unwrap();
+        assert!(help.items.iter().any(|item| matches!(item, MenuItem::Action { name, action, .. }
+            if name.as_ref() == "Check for Updates…" && action.name() == super::CheckForUpdates.name())));
+    }
 
     #[test]
     fn quick_access_menu_is_small_and_safe() {

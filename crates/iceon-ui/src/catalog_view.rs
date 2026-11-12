@@ -93,16 +93,19 @@ impl IceonApp {
                 let mut snapshot = catalog.list_with_preferences(&preferences)?;
                 let _ = connection.project_catalog_statuses(&mut snapshot);
                 let health = connection.cluster_health_snapshot().unwrap_or_default();
-                Ok::<_, iceon_core::catalog::CatalogError>((snapshot, health))
+                let versions = catalog.access_versions()?;
+                Ok::<_, iceon_core::catalog::CatalogError>((snapshot, health, versions))
             })
             .await;
             let _ = owner.update(cx, |app, cx| {
                 app.catalog_refresh_pending = false;
                 let changed = match result {
-                    Ok(Ok((snapshot, health))) => {
+                    Ok(Ok((snapshot, health, versions))) => {
                         let changed = app.catalog_snapshot != snapshot
+                            || app.cluster_versions != versions
                             || app.cluster_health != health
                             || app.catalog_error.is_some();
+                        app.cluster_versions = versions;
                         app.cluster_health = health;
                         app.catalog_snapshot = snapshot;
                         app.catalog_error = None;

@@ -92,6 +92,17 @@ pub enum CatalogError {
     StoreCorrupt,
     OpenFailed,
 }
+// Only an opaque digest is retained, never source bytes, endpoints or credentials.
+// Include canonical resolution so retargeted aliases invalidate cached versions.
+fn access_source_identity(source: &Path, alias: &Path) -> Result<String> {
+    if fs::canonicalize(alias).map_err(|_| CatalogError::InputUnavailable)? != source {
+        return Err(CatalogError::InputUnavailable);
+    }
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(bounded_read(source, MAX_INPUT)?)
+    ))
+}
 /// Legacy serialized pin metadata only; no catalog operation accepts this type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -258,6 +269,86 @@ pub struct CatalogEngine {
     operations: Mutex<()>,
 }
 impl CatalogEngine {
+    /// Last version observed by an explicit successful connection, if the saved
+    /// target and its kubeconfig are unchanged. Prefer `access_versions` for UI refreshes.
+    pub fn last_known_api_version(&self, id: &str) -> Result<Option<String>> {
+        if !valid_name(id) {
+            return Err(CatalogError::InvalidInput);
+        }
+        Ok(self.access_versions()?.remove(id))
+    }
+
+    /// Load one metadata snapshot for in-memory headers; never call this per render.
+    /// This performs no discovery, network requests, or authentication execution.
+    pub fn access_versions(&self) -> Result<HashMap<String, String>> {
+        self.namespace_cache_storage(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(storage::sql_error)?;
+            storage::reconcile_access_versions(&transaction)?;
+            let versions = {
+                let mut statement = transaction
+                    .prepare("SELECT id, api_version FROM cluster_access_versions LIMIT 1001")
+                    .map_err(storage::sql_error)?;
+                statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(storage::sql_error)?
+                    .collect::<std::result::Result<HashMap<String, String>, _>>()
+                    .map_err(storage::sql_error)?
+            };
+            transaction.commit().map_err(storage::sql_error)?;
+            Ok(versions)
+        })
+    }
+
+    /// Conditional metadata-only write. Removed/replaced targets cannot be resurrected.
+    /// Callers must first validate their current session and the connected source.
+    #[allow(dead_code)] // Convenience API; the connect path supplies a validated source identity.
+    pub(crate) fn record_access_version(
+        &self,
+        target: &ConnectionTarget,
+        version: &str,
+    ) -> Result<()> {
+        self.record_access_version_if_source(target, version, None)
+    }
+
+    pub(crate) fn record_access_version_if_source(
+        &self,
+        target: &ConnectionTarget,
+        version: &str,
+        expected_source: Option<[u8; 32]>,
+    ) -> Result<()> {
+        if !valid_name(version) {
+            return Err(CatalogError::InvalidInput);
+        }
+        self.namespace_cache_storage(|connection| {
+            let transaction = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(storage::sql_error)?;
+            let store = storage::load(&transaction)?;
+            let record = store.clusters.iter().find(|record| {
+                Path::new(&record.source_path) == target.source_path
+                    && Path::new(&record.provenance_path) == target.provenance_path
+                    && record.context_name == target.context_name
+            }).ok_or(CatalogError::NotFound)?;
+            let identity = access_source_identity(&target.source_path, &target.provenance_path)?;
+            if let Some(expected) = expected_source {
+                let bytes = bounded_read(&target.source_path, MAX_INPUT)?;
+                let mut hash = Sha256::new();
+                for part in [target.source_path.to_string_lossy().as_bytes(), target.provenance_path.to_string_lossy().as_bytes(), target.context_name.as_bytes(), &bytes] {
+                    hash.update((part.len() as u64).to_le_bytes());
+                    hash.update(part);
+                }
+                if <[u8; 32]>::from(hash.finalize()) != expected
+                    || format!("{:x}", Sha256::digest(&bytes)) != identity
+                {
+                    return Err(CatalogError::InputUnavailable);
+                }
+            }
+            transaction.execute("INSERT INTO cluster_access_versions (id, source_alias, source_identity, api_version) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(id) DO UPDATE SET source_alias=excluded.source_alias, source_identity=excluded.source_identity, api_version=excluded.api_version",
+                rusqlite::params![record.id, record.provenance_path, identity, version]).map_err(storage::sql_error)?;
+            transaction.commit().map_err(storage::sql_error)
+        })
+    }
     pub(crate) fn namespace_cache_storage<T>(
         &self,
         operation: impl FnOnce(&mut rusqlite::Connection) -> Result<T>,
@@ -373,6 +464,7 @@ impl CatalogEngine {
                 .ok_or(CatalogError::LimitExceeded)?;
             storage::save(&transaction, &store)?;
         }
+        storage::reconcile_access_versions(&transaction)?;
         transaction.commit().map_err(storage::sql_error)?;
         Ok(store.snapshot(self.home.as_deref(), discovery_error))
     }

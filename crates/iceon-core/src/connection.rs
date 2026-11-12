@@ -722,33 +722,55 @@ impl ConnectionEngine {
             Ok((client, version, source))
         })
         .await;
-        let mut state = self
-            .session
-            .lock()
-            .map_err(|_| ConnectionError::StoreUnavailable)?;
-        let session = current_mut(&mut state, &request)?;
-        match result {
-            Ok((client, version, source)) => {
-                self.health.register(
-                    request.cluster_id.clone(),
-                    target.clone(),
-                    source,
-                    client.clone(),
-                    version.clone(),
-                )?;
-                session.client = Some(client);
-                session.snapshot.status = "connected";
-                session.snapshot.api_version = Some(version);
-                session.snapshot.error = None;
+        let mut connected_source = None;
+        let snapshot = {
+            let mut state = self
+                .session
+                .lock()
+                .map_err(|_| ConnectionError::StoreUnavailable)?;
+            let session = current_mut(&mut state, &request)?;
+            match result {
+                Ok((client, version, source)) => {
+                    connected_source = Some(source);
+                    self.health.register(
+                        request.cluster_id.clone(),
+                        target.clone(),
+                        source,
+                        client.clone(),
+                        version.clone(),
+                    )?;
+                    session.client = Some(client);
+                    session.snapshot.status = "connected";
+                    session.snapshot.api_version = Some(version);
+                    session.snapshot.error = None;
+                }
+                Err(error) => {
+                    session.client = None;
+                    session.snapshot.status = "error";
+                    session.snapshot.api_version = None;
+                    session.snapshot.error = Some(error);
+                }
             }
-            Err(error) => {
-                session.client = None;
-                session.snapshot.status = "error";
-                session.snapshot.api_version = None;
-                session.snapshot.error = Some(error);
-            }
+            session.snapshot.clone()
+        };
+        // Only the explicit connection path persists observations. Never hold the
+        // session mutex during disk I/O; cache failure must not fail a connection.
+        if let Some(version) = snapshot.api_version.clone()
+            && health::source_identity(target.clone()).await.ok() == connected_source
+        {
+            let catalog = self.catalog.clone();
+            let _ = crate::runtime::spawn_blocking(move || {
+                if !cancel.is_cancelled() {
+                    let _ = catalog.record_access_version_if_source(
+                        &target,
+                        &version,
+                        connected_source,
+                    );
+                }
+            })
+            .await;
         }
-        Ok(session.snapshot.clone())
+        Ok(snapshot)
     }
     pub fn cancel_resources(&self, request: ResourceRequest) -> Result<()> {
         transport::validate_resource_request(&request)?;

@@ -24,6 +24,7 @@ use iceon_core::connection::{
         DrainDisposition, DrainExecuteRequest, DrainOutcomeState, DrainResult, DrainReview,
         DrainReviewRequest, DrainState,
     },
+    permissions::PermissionAction,
     pod_runtime::PodStreamMode,
     pods::{PodAction, PodDetails, PodEventsState, PodMutationRequest, PodRequest},
     resource_edit::{EditMode, EditRequest, EditResult},
@@ -148,12 +149,137 @@ impl IceonApp {
         });
     }
 
+    /// UI gating only; core authorization and identity preconditions remain authoritative.
+    pub(crate) fn can_reference_action(
+        &self,
+        reference: &ResourceReference,
+        action: PermissionAction,
+    ) -> bool {
+        self.can_action(
+            reference.kind,
+            PermissionAction::Get,
+            reference.namespace.as_deref(),
+            Some(&reference.name),
+        ) && self.can_action(
+            reference.kind,
+            action,
+            reference.namespace.as_deref(),
+            Some(&reference.name),
+        )
+    }
+    pub(crate) fn can_delete_target(&self, target: &DeleteTarget) -> bool {
+        [PermissionAction::Get, PermissionAction::Delete]
+            .into_iter()
+            .all(|action| {
+                self.can_action(
+                    target.kind,
+                    action,
+                    target.namespace.as_deref(),
+                    Some(&target.name),
+                )
+            })
+    }
+    fn inspector_can(&self, action: PermissionAction) -> bool {
+        self.inspector
+            .detail
+            .as_ref()
+            .is_some_and(|detail| self.can_reference_action(&detail.reference, action))
+    }
+    pub(crate) fn can_workload_action(
+        &self,
+        reference: &ResourceReference,
+        action: WorkloadAction,
+    ) -> bool {
+        self.can_reference_action(reference, PermissionAction::Get)
+            && if action == WorkloadAction::Trigger {
+                self.can_action(
+                    ResourceKind::Jobs,
+                    PermissionAction::Create,
+                    reference.namespace.as_deref(),
+                    None,
+                )
+            } else {
+                self.can_reference_action(reference, PermissionAction::Patch)
+            }
+    }
+    fn can_execute_drain(&self) -> bool {
+        self.inspector.drain_review.as_ref().is_some_and(|review| {
+            review.can_drain
+                && self.can_review_drain(&review.reference)
+                && review
+                    .pods
+                    .iter()
+                    .filter(|pod| pod.disposition == DrainDisposition::Evict)
+                    .all(|pod| {
+                        [PermissionAction::Get, PermissionAction::Evict]
+                            .into_iter()
+                            .all(|action| {
+                                self.can_action(
+                                    ResourceKind::Pods,
+                                    action,
+                                    Some(&pod.namespace),
+                                    Some(&pod.name),
+                                )
+                            })
+                    })
+        })
+    }
+    pub(crate) fn can_review_drain(&self, reference: &ResourceReference) -> bool {
+        self.can_reference_action(reference, PermissionAction::Patch)
+            && self.can_action(ResourceKind::Pods, PermissionAction::List, None, None)
+    }
+
     pub(crate) fn open_resource_inspector(
         &mut self,
         reference: ResourceReference,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        for action in [
+            PermissionAction::Get,
+            PermissionAction::Patch,
+            PermissionAction::Delete,
+        ] {
+            self.review_resource_access(
+                reference.kind,
+                action,
+                reference.namespace.as_deref(),
+                Some(&reference.name),
+                window,
+                cx,
+            );
+        }
+        if reference.kind == ResourceKind::CronJobs {
+            self.review_resource_access(
+                ResourceKind::Jobs,
+                PermissionAction::Create,
+                reference.namespace.as_deref(),
+                None,
+                window,
+                cx,
+            );
+        }
+        if reference.kind == ResourceKind::Pods {
+            for action in [
+                PermissionAction::Logs,
+                PermissionAction::Exec,
+                PermissionAction::Attach,
+                PermissionAction::PortForward,
+                PermissionAction::Update,
+            ] {
+                self.review_resource_access(
+                    reference.kind,
+                    action,
+                    reference.namespace.as_deref(),
+                    Some(&reference.name),
+                    window,
+                    cx,
+                );
+            }
+        }
+        if !self.can_reference_action(&reference, PermissionAction::Get) {
+            return;
+        }
         self.inspector.target = Some(InspectorTarget::Resource(reference.clone()));
         self.inspector_open = true;
         self.inspector.loading = true;
@@ -313,6 +439,9 @@ impl IceonApp {
     }
 
     pub(crate) fn load_inspector_yaml(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.inspector_can(PermissionAction::Get) {
+            return;
+        }
         self.inspector.edit_load = None;
         self.inspector.action_message = Some("Loading YAML…".into());
         cx.notify();
@@ -392,6 +521,9 @@ impl IceonApp {
     }
 
     fn apply_inspector_yaml(&mut self, dry_run: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.inspector_can(PermissionAction::Patch) {
+            return;
+        }
         let Some(loaded) = self.inspector.edit_load.clone() else {
             return;
         };
@@ -468,6 +600,25 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if ![
+            PermissionAction::Get,
+            match action {
+                PodAction::Delete | PodAction::ForceDelete => PermissionAction::Delete,
+                PodAction::Finalize => PermissionAction::Patch,
+                PodAction::Replace => PermissionAction::Update,
+            },
+        ]
+        .into_iter()
+        .all(|action| {
+            self.can_action(
+                ResourceKind::Pods,
+                action,
+                Some(&target.namespace),
+                Some(&target.name),
+            )
+        }) {
+            return;
+        }
         let PodTarget {
             namespace, name, ..
         } = &target;
@@ -489,6 +640,25 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if ![
+            PermissionAction::Get,
+            match action {
+                PodAction::Delete | PodAction::ForceDelete => PermissionAction::Delete,
+                PodAction::Finalize => PermissionAction::Patch,
+                PodAction::Replace => PermissionAction::Update,
+            },
+        ]
+        .into_iter()
+        .all(|action| {
+            self.can_action(
+                ResourceKind::Pods,
+                action,
+                Some(&target.namespace),
+                Some(&target.name),
+            )
+        }) {
+            return;
+        }
         let PodTarget {
             namespace,
             name,
@@ -552,6 +722,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_workload_action(&reference, action) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -665,6 +838,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_reference_action(&reference, PermissionAction::Patch) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -729,6 +905,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_review_drain(&reference) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -746,9 +925,21 @@ impl IceonApp {
         };
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.node_drain_review(req).await;
-            let _ = this.update_in(cx, |this, _, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 match result {
                     Ok(review) => {
+                        for pod in &review.pods {
+                            for action in [PermissionAction::Get, PermissionAction::Evict] {
+                                this.review_resource_access(
+                                    ResourceKind::Pods,
+                                    action,
+                                    Some(&pod.namespace),
+                                    Some(&pod.name),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
                         this.inspector.drain_result = None;
                         this.inspector.drain_review = Some(review);
                     }
@@ -783,6 +974,9 @@ impl IceonApp {
     }
 
     fn execute_node_drain(&mut self, plan_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_execute_drain() {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -826,6 +1020,16 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_reference_action(&reference, PermissionAction::Get)
+            || !self.can_action(
+                ResourceKind::Pods,
+                PermissionAction::List,
+                reference.namespace.as_deref(),
+                None,
+            )
+        {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -896,6 +1100,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_delete_target(&target) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -938,6 +1145,9 @@ impl IceonApp {
     }
 
     fn delete_inspected_resource(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.inspector_can(PermissionAction::Delete) {
+            return;
+        }
         let Some(detail) = self.inspector.detail.clone() else {
             return;
         };
@@ -1230,6 +1440,9 @@ impl IceonApp {
             .when(can_restart, |el| {
                 el.child(
                     Button::new("insp-restart-btn")
+                        .disabled(
+                            !self.can_workload_action(&detail.reference, WorkloadAction::Restart),
+                        )
                         .xsmall()
                         .danger()
                         .icon(IconName::RefreshCw)
@@ -1243,6 +1456,9 @@ impl IceonApp {
             .when(can_suspend, |el| {
                 el.child(
                     Button::new("insp-suspend-btn")
+                        .disabled(
+                            !self.can_workload_action(&detail.reference, WorkloadAction::Suspend),
+                        )
                         .xsmall()
                         .danger()
                         .icon(IconName::Pause)
@@ -1254,6 +1470,9 @@ impl IceonApp {
                 )
                 .child(
                     Button::new("insp-resume-btn")
+                        .disabled(
+                            !self.can_workload_action(&detail.reference, WorkloadAction::Resume),
+                        )
                         .xsmall()
                         .outline()
                         .icon(IconName::Play)
@@ -1267,6 +1486,9 @@ impl IceonApp {
             .when(can_trigger, |el| {
                 el.child(
                     Button::new("insp-trigger-btn")
+                        .disabled(
+                            !self.can_workload_action(&detail.reference, WorkloadAction::Trigger),
+                        )
                         .xsmall()
                         .primary()
                         .icon(IconName::Play)
@@ -1288,15 +1510,17 @@ impl IceonApp {
                     .icon(gpui_kit_assets::IconName::Pencil)
                     .tooltip("Edit YAML")
                     .accessibility_label("Edit YAML")
-                    .disabled(!iceon_core::connection::resource_edit::supports_yaml_edit(
-                        kind,
-                    ))
+                    .disabled(
+                        !self.inspector_can(PermissionAction::Get)
+                            || !iceon_core::connection::resource_edit::supports_yaml_edit(kind),
+                    )
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.edit_inspected_yaml(window, cx);
                     })),
             )
             .child(
                 Button::new("insp-delete-btn")
+                    .disabled(!self.inspector_can(PermissionAction::Delete))
                     .xsmall()
                     .danger()
                     .icon(IconName::Delete)
@@ -1319,6 +1543,7 @@ impl IceonApp {
             )
             .child(
                 Button::new("insp-scale-btn")
+                    .disabled(!self.inspector_can(PermissionAction::Patch))
                     .xsmall()
                     .primary()
                     .label("Scale")
@@ -1334,6 +1559,7 @@ impl IceonApp {
             .items_center()
             .child(
                 Button::new("insp-cordon-btn")
+                    .disabled(!self.inspector_can(PermissionAction::Patch))
                     .xsmall()
                     .outline()
                     .label("Cordon")
@@ -1343,6 +1569,7 @@ impl IceonApp {
             )
             .child(
                 Button::new("insp-uncordon-btn")
+                    .disabled(!self.inspector_can(PermissionAction::Patch))
                     .xsmall()
                     .outline()
                     .label("Uncordon")
@@ -1352,6 +1579,13 @@ impl IceonApp {
             )
             .child(
                 Button::new("insp-drain-review-btn")
+                    .disabled(
+                        !self
+                            .inspector
+                            .detail
+                            .as_ref()
+                            .is_some_and(|d| self.can_review_drain(&d.reference)),
+                    )
                     .xsmall()
                     .danger()
                     .label("Drain")
@@ -1372,6 +1606,7 @@ impl IceonApp {
             )
             .child(
                 Button::new("insp-svc-fwd-btn")
+                    .disabled(!self.inspector_can(PermissionAction::Get))
                     .xsmall()
                     .primary()
                     .label("Port-Forward")
@@ -1433,6 +1668,7 @@ impl IceonApp {
                     let c_attach = cname;
                     row.child(
                         Button::new("insp-pod-quick-logs")
+                            .disabled(!self.inspector_can(PermissionAction::Logs))
                             .xsmall()
                             .primary()
                             .icon(IconName::FileText)
@@ -1454,6 +1690,7 @@ impl IceonApp {
                     )
                     .child(
                         Button::new("insp-pod-quick-shell")
+                            .disabled(!self.inspector_can(PermissionAction::Exec))
                             .xsmall()
                             .outline()
                             .icon(IconName::SquareTerminal)
@@ -1475,6 +1712,7 @@ impl IceonApp {
                     )
                     .child(
                         Button::new("insp-pod-quick-attach")
+                            .disabled(!self.inspector_can(PermissionAction::Attach))
                             .xsmall()
                             .ghost()
                             .icon(IconName::SquareTerminal)
@@ -1497,6 +1735,7 @@ impl IceonApp {
                 })
                 .child(
                     Button::new("insp-pod-force-delete")
+                        .disabled(!self.inspector_can(PermissionAction::Delete))
                         .xsmall()
                         .danger()
                         .icon(IconName::Delete)
@@ -1519,6 +1758,7 @@ impl IceonApp {
                 .when(is_terminating && has_finalizers, |row| {
                     row.child(
                         Button::new("insp-pod-strip-finalizers")
+                            .disabled(!self.inspector_can(PermissionAction::Patch))
                             .xsmall()
                             .danger()
                             .icon(IconName::Delete)
@@ -2003,7 +2243,7 @@ impl IceonApp {
                     .when_some(review.plan_id.clone(), |row, pid| {
                         row.child(
                             Button::new("confirm-node-drain-btn")
-                                .disabled(!review.can_drain)
+                                .disabled(!self.can_execute_drain())
                                 .xsmall()
                                 .danger()
                                 .label("Confirm & Execute Eviction Plan")
@@ -2394,6 +2634,9 @@ impl IceonApp {
                                                     "pod-logs-{}",
                                                     c.name
                                                 )))
+                                                .disabled(
+                                                    !self.inspector_can(PermissionAction::Logs),
+                                                )
                                                 .xsmall()
                                                 .primary()
                                                 .label("Logs")
@@ -2418,6 +2661,9 @@ impl IceonApp {
                                                     "pod-shell-{}",
                                                     c.name
                                                 )))
+                                                .disabled(
+                                                    !self.inspector_can(PermissionAction::Exec),
+                                                )
                                                 .xsmall()
                                                 .outline()
                                                 .label("Shell")
@@ -2442,6 +2688,9 @@ impl IceonApp {
                                                     "pod-attach-{}",
                                                     c.name
                                                 )))
+                                                .disabled(
+                                                    !self.inspector_can(PermissionAction::Attach),
+                                                )
                                                 .xsmall()
                                                 .ghost()
                                                 .label("Attach")
@@ -2513,6 +2762,9 @@ impl IceonApp {
                                             "pod-fwd-{}-{port_num}",
                                             c.name
                                         )))
+                                        .disabled(
+                                            !self.inspector_can(PermissionAction::PortForward),
+                                        )
                                         .xsmall()
                                         .outline()
                                         .label(port_label)
@@ -3207,7 +3459,10 @@ impl IceonApp {
                                     .xsmall()
                                     .outline()
                                     .label("Server Dry-Run")
-                                    .disabled(self.inspector.edit_load.is_none())
+                                    .disabled(
+                                        self.inspector.edit_load.is_none()
+                                            || !self.inspector_can(PermissionAction::Patch),
+                                    )
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.apply_inspector_yaml(true, window, cx);
                                     })),
@@ -3217,7 +3472,10 @@ impl IceonApp {
                                     .xsmall()
                                     .primary()
                                     .label("Apply Changes")
-                                    .disabled(self.inspector.edit_load.is_none())
+                                    .disabled(
+                                        self.inspector.edit_load.is_none()
+                                            || !self.inspector_can(PermissionAction::Patch),
+                                    )
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.apply_inspector_yaml(false, window, cx);
                                     })),
@@ -3240,6 +3498,7 @@ impl IceonApp {
                             )
                             .child(
                                 Button::new("yaml-reload-btn")
+                                    .disabled(!self.inspector_can(PermissionAction::Get))
                                     .xsmall()
                                     .ghost()
                                     .label("Reload")

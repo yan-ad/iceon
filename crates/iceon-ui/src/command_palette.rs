@@ -15,6 +15,7 @@ use gpui_kit::{
 fn destinations(
     clusters: &[iceon_core::catalog::ClusterSummary],
     current: &Route,
+    allowed: impl Fn(&str) -> bool,
 ) -> Vec<(String, Vec<String>, Route)> {
     let mut entries = vec![("Secrets".into(), vec!["vault".into()], Route::Secrets)];
     entries.extend(clusters.iter().map(|cluster| {
@@ -32,16 +33,21 @@ fn destinations(
         _ => clusters.first().map(|cluster| cluster.id.clone()),
     };
     if let Some(cluster_id) = cluster_id {
-        entries.extend(iceon_core::catalog::SECTIONS.iter().map(|section| {
-            (
-                format!("Section · {}", destination_label(section)),
-                vec![(*section).into()],
-                Route::Cluster {
-                    cluster_id: cluster_id.clone(),
-                    section: (*section).into(),
-                },
-            )
-        }));
+        entries.extend(
+            iceon_core::catalog::SECTIONS
+                .iter()
+                .filter(|section| allowed(section))
+                .map(|section| {
+                    (
+                        format!("Section · {}", destination_label(section)),
+                        vec![(*section).into()],
+                        Route::Cluster {
+                            cluster_id: cluster_id.clone(),
+                            section: (*section).into(),
+                        },
+                    )
+                }),
+        );
     }
     entries
 }
@@ -64,7 +70,11 @@ impl IceonApp {
         cx.notify();
     }
     pub(crate) fn render_search_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let destinations = destinations(&self.catalog_snapshot.clusters, self.history.current());
+        let destinations = destinations(
+            &self.catalog_snapshot.clusters,
+            self.history.current(),
+            |section| self.access_ready() && self.route_allowed(section),
+        );
         let items = destinations
             .iter()
             .map(|(label, keywords, _)| {
@@ -82,8 +92,14 @@ impl IceonApp {
             .placeholder("Jump to cluster or section…")
             .items(items)
             .on_confirm(move |index, window, cx| {
-                if let Some((_, _, route)) = destinations.get(index.row) {
+                if let Some((label, _, route)) = destinations.get(index.row) {
                     let _ = owner.update(cx, |app, cx| {
+                        if label.starts_with("Section · ")
+                            && let Route::Cluster { section, .. } = route
+                            && (!app.access_ready() || !app.route_allowed(section))
+                        {
+                            return;
+                        }
                         app.close_command_palette(window, cx);
                         app.navigate(route.clone(), true, window, cx);
                     });
@@ -110,9 +126,32 @@ mod tests {
     use super::{Route, destinations};
     #[test]
     fn no_cluster_has_only_global_routes() {
-        let entries = destinations(&[], &Route::Setup);
+        let entries = destinations(&[], &Route::Setup, |_| true);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].2, Route::Secrets);
+    }
+    #[test]
+    fn denied_sections_are_omitted_not_global_routes() {
+        let entries = destinations(
+            &[],
+            &Route::Cluster {
+                cluster_id: "active".into(),
+                section: "pods".into(),
+            },
+            |_| false,
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].2, Route::Secrets);
+        let entries = destinations(
+            &[],
+            &Route::Cluster {
+                cluster_id: "active".into(),
+                section: "pods".into(),
+            },
+            |section| section == "pods",
+        );
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(&entries[1].2, Route::Cluster { section, .. } if section == "pods"));
     }
     #[test]
     fn sections_target_the_current_cluster_and_are_not_truncated() {
@@ -122,6 +161,7 @@ mod tests {
                 cluster_id: "active".into(),
                 section: "pods".into(),
             },
+            |_| true,
         );
         assert_eq!(entries.len(), 1 + iceon_core::catalog::SECTIONS.len());
         for (_, _, route) in entries.iter().skip(1) {

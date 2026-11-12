@@ -217,11 +217,28 @@ async fn session_open_is_metadata_only_and_camel_case_wire_contract_is_closed() 
     );
 }
 #[tokio::test]
+async fn background_health_does_not_overwrite_persisted_access_version() {
+    let (_root, catalog, engine, id, _) = fixture();
+    connected(&engine, id.clone(), fake(normal)).await;
+    let target = catalog.connection_target(&id).unwrap();
+    catalog.record_access_version(&target, "v1.30.0").unwrap();
+    engine.refresh_cluster_health().await.unwrap();
+    assert_eq!(
+        catalog.last_known_api_version(&id).unwrap().as_deref(),
+        Some("v1.30.0")
+    );
+}
+
+#[tokio::test]
 async fn success_scoped_resources_truncation_empty_and_redaction() {
-    let (_root, _catalog, engine, id, _) = fixture();
-    let snapshot = connected(&engine, id, fake(normal)).await;
+    let (_root, catalog, engine, id, _) = fixture();
+    let snapshot = connected(&engine, id.clone(), fake(normal)).await;
     assert_eq!(snapshot.status, "connected");
     assert_eq!(snapshot.api_version.as_deref(), Some("v1.36.0"));
+    assert_eq!(
+        catalog.last_known_api_version(&id).unwrap().as_deref(),
+        Some("v1.36.0")
+    );
     let nodes = engine
         .resources(resource(&snapshot, ResourceKind::Nodes))
         .await

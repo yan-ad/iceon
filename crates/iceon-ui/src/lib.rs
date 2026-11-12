@@ -27,6 +27,7 @@ mod pod_columns;
 pub mod pod_dock_view;
 mod preference_runtime;
 pub mod preferences_view;
+mod rbac_access;
 #[cfg(debug_assertions)]
 mod render_performance_probe;
 mod resource_pagination;
@@ -40,6 +41,7 @@ mod shell_theme;
 mod sidebar_view;
 mod terminal_surface;
 mod tray;
+mod update_check;
 mod workspace_dock;
 mod yaml_dock;
 
@@ -71,6 +73,7 @@ use pod_dock_view::PodDockTab;
 use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
+    pub(crate) update_check_running: bool,
     pub(crate) bulk_delete: bulk_delete::BulkDeleteState,
     pub(crate) yaml_dock_tabs: Vec<yaml_dock::YamlDockTab>,
     pub(crate) active_yaml_tab: Option<u64>,
@@ -88,6 +91,8 @@ pub struct IceonApp {
     pub(crate) catalog_snapshot: CatalogSnapshot,
     pub(crate) catalog_error: Option<String>,
     pub(crate) catalog_refresh_pending: bool,
+    pub(crate) cluster_versions: std::collections::HashMap<String, String>,
+    pub(crate) helm_operation: u64,
     pub(crate) cluster_health: Vec<iceon_core::connection::health::ClusterHealthSnapshot>,
 
     pub(crate) history: NavigationHistory,
@@ -106,6 +111,8 @@ pub struct IceonApp {
     pub(crate) preferences_draft: Preferences,
     pub(crate) preferences_error: Option<String>,
 
+    pub(crate) access: rbac_access::AccessState,
+    pub(crate) cluster_connect_generation: u64,
     pub(crate) cluster_session: Option<ConnectionSnapshot>,
     pub(crate) active_cluster_section: String,
     pub(crate) namespaces: Vec<String>,
@@ -214,6 +221,7 @@ impl IceonApp {
                 discovery_error: None,
             });
 
+        let cluster_versions = catalog.access_versions().unwrap_or_default();
         let mut cluster_order = Vec::new();
         for cluster in &catalog_snapshot.clusters {
             if !cluster_order.contains(&cluster.id) {
@@ -319,6 +327,7 @@ impl IceonApp {
         });
 
         let mut app = Self {
+            update_check_running: false,
             bulk_delete: bulk_delete::BulkDeleteState::default(),
             yaml_dock_tabs: vec![],
             active_yaml_tab: None,
@@ -335,6 +344,8 @@ impl IceonApp {
             catalog_snapshot,
             catalog_error: None,
             catalog_refresh_pending: false,
+            cluster_versions,
+            helm_operation: 0,
             cluster_health: Vec::new(),
             history: NavigationHistory::new(initial_route.clone()),
             cluster_order,
@@ -350,6 +361,8 @@ impl IceonApp {
             runtime_editor_preferences: None,
             preferences_draft: preferences_draft.clone(),
             preferences_error: None,
+            access: rbac_access::AccessState::default(),
+            cluster_connect_generation: 0,
             cluster_session: None,
             active_cluster_section: "overview".into(),
             namespaces: vec![],

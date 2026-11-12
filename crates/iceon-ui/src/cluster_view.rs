@@ -218,7 +218,6 @@ use iceon_core::connection::{
         HelmRequest, HelmView,
         install::{HelmInstallRequest, HelmInstallResult},
     },
-    namespace_cache::NamespaceRefreshRequest,
     pod_sync::PodSyncRequest,
     rbac::RbacUsersRequest,
     rbac_management::{
@@ -1008,6 +1007,8 @@ impl IceonApp {
         }
 
         self.stop_active_pod_sync();
+        self.access = crate::rbac_access::AccessState::default();
+        self.cluster_session = None;
         self.cluster_loading = true;
         self.namespaces.clear();
         self.resource_page = None;
@@ -1026,7 +1027,8 @@ impl IceonApp {
         cx.notify();
 
         let connection = self.connection.clone();
-        let ns_read_id = self.next_operation_id();
+        let connect_generation = self.next_operation_id();
+        self.cluster_connect_generation = connect_generation;
         cx.spawn_in(window, async move |this, cx| {
             let opened = match connection
                 .open(OpenRequest {
@@ -1037,6 +1039,9 @@ impl IceonApp {
                 Ok(snap) => snap,
                 Err(err) => {
                     let _ = this.update_in(cx, |this, _, cx| {
+                        if this.cluster_connect_generation != connect_generation {
+                            return;
+                        }
                         this.cluster_loading = false;
                         this.cluster_error = Some(format!("Failed to open cluster: {err:?}"));
                         cx.notify();
@@ -1059,31 +1064,25 @@ impl IceonApp {
                 connected = connection.connect(scope.clone()).await;
             }
 
-            let ns_list = match connection.namespace_cache_get(scope).await {
-                Ok(Some(cached)) => cached.names,
-                _ => connection
-                    .namespace_cache_refresh(NamespaceRefreshRequest {
-                        cluster_id: opened.cluster_id.clone(),
-                        session_id: opened.session_id.clone(),
-                        read_id: ns_read_id,
-                    })
-                    .await
-                    .map(|snap| snap.names)
-                    .unwrap_or_default(),
-            };
-
             let _ = this.update_in(cx, |this, window, cx| {
+                if this.cluster_connect_generation != connect_generation {
+                    return;
+                }
                 this.cluster_loading = false;
                 match connected {
                     Ok(snap) => {
                         let status = snap.status;
                         let err = snap.error;
+                        if snap.status == "connected"
+                            && let Some(version) = snap.api_version.as_ref()
+                        {
+                            this.cluster_versions
+                                .insert(snap.cluster_id.clone(), version.clone());
+                        }
                         this.cluster_session = Some(snap);
-                        this.namespaces = ns_list;
                         this.refresh_catalog(cx);
                         if status == "connected" {
-                            this.discover_custom_resources(window, cx);
-                            this.load_active_cluster_section(window, cx);
+                            this.refresh_access(window, cx);
                         } else if let Some(e) = err {
                             this.cluster_error = Some(format!("Connection error: {e:?}"));
                         }
@@ -1123,6 +1122,18 @@ impl IceonApp {
         self.stop_active_pod_sync();
         self.cancel_resource_pagination();
         let section = self.active_cluster_section.clone();
+        if !self.ensure_access(window, cx) {
+            self.cluster_loading = true;
+            cx.notify();
+            return;
+        }
+        if !self.route_allowed(&section) {
+            self.cluster_loading = false;
+            self.resource_page = None;
+            self.cluster_error = Some(self.access_message().into());
+            cx.notify();
+            return;
+        }
 
         if section == "overview"
             || section == "workloads-overview"
@@ -1186,7 +1197,10 @@ impl IceonApp {
             ResourceKind::Jobs,
             ResourceKind::CronJobs,
             ResourceKind::Events,
-        ];
+        ]
+        .into_iter()
+        .filter(|kind| self.can_list(*kind))
+        .collect::<Vec<_>>();
         let request_session = session.clone();
         let request_namespace = namespace.clone();
         let is_current = move |app: &Self| {
@@ -1344,6 +1358,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.ensure_access(window, cx) || !self.can_list(kind) {
+            return;
+        }
         if let Some(table) = &self.resource_table {
             table.update(cx, |table, cx| table.clear_selection(cx));
         }
@@ -1420,6 +1437,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.ensure_access(window, cx) || !self.can_list(kind) {
+            return;
+        }
         let Some(session) = self
             .cluster_session
             .clone()
@@ -1489,6 +1509,14 @@ impl IceonApp {
     }
 
     fn start_pod_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.resource_allowed(
+            ResourceKind::Pods,
+            iceon_core::connection::permissions::PermissionAction::Watch,
+            self.selected_namespace.as_deref(),
+            None,
+        ) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -1612,9 +1640,12 @@ impl IceonApp {
             return;
         };
         let read_id = self.next_operation_id();
+        self.helm_operation = read_id;
+        let section = self.active_cluster_section.clone();
+        let namespace = self.selected_namespace.clone();
         let req = HelmRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
             view,
             namespace: if view == HelmView::Releases {
                 self.selected_namespace.clone()
@@ -1626,6 +1657,8 @@ impl IceonApp {
         let helm_preferences =
             iceon_core::connection::helm::HelmPreferences::from(&self.preferences_draft);
         let connection = self.connection.clone();
+        self.helm_page = None;
+        self.cluster_error = None;
         self.cluster_loading = true;
         cx.notify();
 
@@ -1634,6 +1667,16 @@ impl IceonApp {
                 .helm_table_with_preferences(req, helm_preferences)
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
+                if this.helm_operation != read_id
+                    || this.active_cluster_section != section
+                    || this.selected_namespace != namespace
+                    || !this.cluster_session.as_ref().is_some_and(|current| {
+                        current.cluster_id == session.cluster_id
+                            && current.session_id == session.session_id
+                    })
+                {
+                    return;
+                }
                 this.cluster_loading = false;
                 match result {
                     Ok(page) => {
@@ -2183,10 +2226,12 @@ impl IceonApp {
                     .w_full()
                     .child(self.render_cluster_section_body(&section, active_kind, window, cx))
                     .when_some(
-                        self.cluster_error.clone().filter(|_| active_kind.is_none() && parse_custom_resource_target(&section).is_none() && !matches!(section.as_str(), "overview" | "workloads-overview" | "workloads/overview")),
+                        self.cluster_error.clone().filter(|_| active_kind.is_none() && parse_custom_resource_target(&section).is_none() && !matches!(section.as_str(), "helm-charts" | "helm-releases" | "helm/charts" | "helm/releases") && !matches!(section.as_str(), "overview" | "workloads-overview" | "workloads/overview")),
                         |el, error| el.child(crate::empty_state::error_state(error)),
                     )
-                    .when_some(active_kind, |el, kind| {
+                    .when_some(active_kind.filter(|kind| self.can_list(*kind)), |el, kind| {
+                        let create_namespace = if namespaced_kind(kind) { self.selected_namespace.as_deref() } else { None };
+                        let can_create = self.can_action(kind, iceon_core::connection::permissions::PermissionAction::Create, create_namespace, None);
                         el.child(
                             v_flex().absolute().right(px(20.0)).bottom(px(20.0)).occlude().gap_2()
                                 .when_some(self.bulk_delete.message.clone(), |group, message| group.child(div().max_w(px(620.0)).text_xs().child(message)))
@@ -2201,7 +2246,7 @@ impl IceonApp {
                                         .disabled(selected == 0 || deleting || kind != ResourceKind::Pods)
                                         .tooltip(format!("Force delete {selected} selected pods · zero grace period; finalizers remain"))
                                         .on_click(cx.listener(|app, _, window, cx| { cx.stop_propagation(); app.confirm_bulk_delete(true, window, cx); })))
-                                    .child(
+                                    .when(can_create, |actions| actions.child(
                                     Button::new("open-create-yaml-btn")
                                         .primary()
                                         .rounded_full()
@@ -2213,7 +2258,7 @@ impl IceonApp {
                                             cx.stop_propagation();
                                             this.open_create_yaml_tab(kind, window, cx);
                                         })),
-                                )),
+                                ))),
                         )
                     }),
             )
@@ -2448,6 +2493,20 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if matches!(
+            section,
+            "overview" | "workloads-overview" | "workloads/overview"
+        ) {
+            return self.render_overview_dashboard(cx);
+        }
+        if !self.access_ready() || !self.route_allowed(section) {
+            return crate::empty_state::empty_state(
+                IconName::LayoutDashboard,
+                "Access not available",
+                self.access_message(),
+            )
+            .into_any_element();
+        }
         if section == "overview"
             || section == "workloads-overview"
             || section == "workloads/overview"
@@ -2462,6 +2521,15 @@ impl IceonApp {
             || section == "helm/charts"
             || section == "helm/releases"
         {
+            if let Some(error) = self.cluster_error.clone() {
+                return div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::empty_state::error_state(error))
+                    .into_any_element();
+            }
             return self.render_helm_body(window, cx).into_any_element();
         }
         if section == "users" || section == "access-control/users" {

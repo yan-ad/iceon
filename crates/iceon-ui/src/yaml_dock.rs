@@ -11,6 +11,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use iceon_core::connection::permissions::PermissionAction;
 use iceon_core::connection::{
     ResourceKind,
     create::{CreateCancelRequest, CreateRequest},
@@ -95,6 +96,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_reference_action(&reference, PermissionAction::Get) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -153,6 +157,9 @@ impl IceonApp {
                 .clone()
                 .unwrap_or_else(|| "default".into())
         });
+        if !self.can_action(kind, PermissionAction::Create, namespace.as_deref(), None) {
+            return;
+        }
         let target = YamlTarget::Create { kind, namespace };
         if let Some(key) = self
             .yaml_dock_tabs
@@ -272,6 +279,23 @@ impl IceonApp {
         if !self.yaml_lease_valid(&self.yaml_dock_tabs[index]) {
             return;
         }
+        let target = &self.yaml_dock_tabs[index].target;
+        let allowed = match target {
+            YamlTarget::Edit(reference) => self.can_reference_action(
+                reference,
+                if mode == EditMode::Read {
+                    PermissionAction::Get
+                } else {
+                    PermissionAction::Patch
+                },
+            ),
+            YamlTarget::Create { kind, namespace } => {
+                self.can_action(*kind, PermissionAction::Create, namespace.as_deref(), None)
+            }
+        };
+        if !allowed {
+            return;
+        }
         if self.yaml_dock_tabs[index].operation.is_some() {
             return;
         }
@@ -380,6 +404,10 @@ impl IceonApp {
         let Some(index) = self.yaml_dock_tabs.iter().position(|tab| tab.key == key) else {
             return;
         };
+        let tab = &self.yaml_dock_tabs[index];
+        if !self.can_action(tab.kind(), PermissionAction::Create, tab.namespace(), None) {
+            return;
+        }
         if !self.yaml_lease_valid(&self.yaml_dock_tabs[index])
             || self
                 .yaml_dock_tabs
@@ -481,8 +509,26 @@ impl IceonApp {
             .iter()
             .any(|t| t.operation.is_some() && self.yaml_lease_valid(t));
         let creating = matches!(tab.target, YamlTarget::Create { .. });
-        let save_disabled = !valid || busy || (!creating && tab.loaded.is_none()) || !is_dirty;
-        let close_disabled = !valid || busy || (is_dirty && !creating && tab.loaded.is_none());
+        let readable = match &tab.target {
+            YamlTarget::Edit(reference) => {
+                self.can_reference_action(reference, PermissionAction::Get)
+            }
+            _ => false,
+        };
+        let writable = match &tab.target {
+            YamlTarget::Edit(reference) => {
+                self.can_reference_action(reference, PermissionAction::Patch)
+            }
+            YamlTarget::Create { kind, namespace } => {
+                self.can_action(*kind, PermissionAction::Create, namespace.as_deref(), None)
+            }
+        };
+        let save_disabled =
+            !writable || !valid || busy || (!creating && tab.loaded.is_none()) || !is_dirty;
+        let close_disabled = (is_dirty && !writable)
+            || !valid
+            || busy
+            || (is_dirty && !creating && tab.loaded.is_none());
         let editor = tab.editor.clone();
         let message = if valid {
             tab.message.clone()
@@ -492,7 +538,7 @@ impl IceonApp {
         v_flex().size_full().min_h_0().min_w_0()
             .child(div().px_2().py_1().text_xs().child(format!("{:?} · {} · {}", tab.kind(), tab.name(), tab.namespace().unwrap_or("cluster-scoped"))))
             .child(h_flex().gap_2().px_2().py_1().flex_wrap()
-                .when(!creating, |toolbar| toolbar.child(Button::new("yaml-reload").small().icon(IconName::RefreshCw).accessibility_label("Reload YAML").ghost().label("Reload").disabled(!valid || busy).on_click(cx.listener(move |app, _, window, cx| {
+                .when(!creating, |toolbar| toolbar.child(Button::new("yaml-reload").small().icon(IconName::RefreshCw).accessibility_label("Reload YAML").ghost().label("Reload").disabled(!readable || !valid || busy).on_click(cx.listener(move |app, _, window, cx| {
                     if is_dirty { app.confirm_destructive_action("Reload YAML?", "Discard this buffer and read current reviewed fields from the server?", "Reload", window, cx, move |app, window, cx| app.run_yaml_operation(key, EditMode::Read, false, window, cx)); }
                     else { app.run_yaml_operation(key, EditMode::Read, false, window, cx); }
                 }))))

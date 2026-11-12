@@ -128,3 +128,12 @@ Protocol references:
 - [Exact older verifier implementation](https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.14.0/plugins/updater/src/updater.rs)
 - [Minisign Rust implementation](https://github.com/jedisct1/rust-minisign/tree/0.9.1)
 - [NSIS](https://nsis.sourceforge.io/Docs/)
+
+## Native update checks
+
+Use **Help → Check for Updates…** or the download icon beside global search.
+Iceon explicitly checks the stable GitHub release feed, compares semantic versions,
+and offers the fixed official Releases page. This is advisory metadata over HTTPS,
+not authenticated installer verification or automatic installation. No installer is
+downloaded or executed by this action. Checks have bounded response size and timeout;
+failures are shown without changing application data.

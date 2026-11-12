@@ -34,6 +34,46 @@ pub(super) fn sql_error(error: rusqlite::Error) -> CatalogError {
         _ => CatalogError::StoreUnavailable,
     }
 }
+// Deliberately no FK: catalog saves replace all cluster rows. Reconcile only after
+// the replacement, so unrelated saves cannot erase successful access metadata.
+fn ensure_access_versions(connection: &Connection) -> Result<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS cluster_access_versions (id TEXT PRIMARY KEY NOT NULL, source_alias TEXT NOT NULL, source_identity TEXT NOT NULL CHECK(length(source_identity)=64), api_version TEXT NOT NULL CHECK(length(api_version) BETWEEN 1 AND 256)) STRICT;").map_err(sql_error)
+}
+
+pub(super) fn reconcile_access_versions(connection: &Connection) -> Result<()> {
+    let rows = {
+        let mut statement = connection.prepare("SELECT v.id, c.source_path, c.source_alias, v.source_alias, v.source_identity FROM cluster_access_versions v LEFT JOIN clusters c ON c.id=v.id LIMIT 1001").map_err(sql_error)?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(sql_error)?
+    };
+    if rows.len() > MAX_ENTRIES {
+        return Err(CatalogError::StoreCorrupt);
+    }
+    for (id, source, alias, saved_alias, identity) in rows {
+        let valid = source.zip(alias).is_some_and(|(source, alias)| {
+            alias == saved_alias
+                && access_source_identity(Path::new(&source), Path::new(&alias))
+                    .is_ok_and(|current| current == identity)
+        });
+        if !valid {
+            connection
+                .execute("DELETE FROM cluster_access_versions WHERE id=?1", [id])
+                .map_err(sql_error)?;
+        }
+    }
+    Ok(())
+}
 pub(super) fn ensure_namespace_cache(connection: &Connection) -> Result<()> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS namespace_snapshots (identity TEXT PRIMARY KEY NOT NULL CHECK(length(identity)=64), names TEXT NOT NULL CHECK(length(names)<=70000), fetched_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, partial INTEGER NOT NULL CHECK(partial IN (0,1))) STRICT;").map_err(sql_error)
 }
@@ -245,6 +285,7 @@ pub(super) fn open(directory: &Path) -> Result<Connection> {
     }
     upgrade(&mut connection)?;
     ensure_namespace_cache(&connection)?;
+    ensure_access_versions(&connection)?;
     load(&connection)?;
     Ok(connection)
 }

@@ -18,6 +18,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use iceon_core::connection::{
+    ResourceKind,
+    permissions::PermissionAction,
     pod_runtime::{
         PodForwardRequest, PodForwardStopRequest, PodInputRequest, PodResizeRequest,
         PodStartRequest, PodStreamMode, PodStreamRequest,
@@ -174,9 +176,51 @@ pub fn shell_option_path(label: &str) -> &'static str {
     }
 }
 
+fn stream_permission(mode: PodStreamMode) -> PermissionAction {
+    match mode {
+        PodStreamMode::Logs => PermissionAction::Logs,
+        PodStreamMode::Shell => PermissionAction::Exec,
+        PodStreamMode::Attach => PermissionAction::Attach,
+    }
+}
+
 impl IceonApp {
     /// Opens a Pod Logs or Shell stream directly from a Pod table row or collection item
     /// by resolving the Pod's UID and container list first via `pod_detail`.
+    pub(crate) fn can_pod_stream(&self, namespace: &str, name: &str, mode: PodStreamMode) -> bool {
+        self.can_action(
+            ResourceKind::Pods,
+            PermissionAction::Get,
+            Some(namespace),
+            Some(name),
+        ) && self.can_action(
+            ResourceKind::Pods,
+            stream_permission(mode),
+            Some(namespace),
+            Some(name),
+        )
+    }
+    fn review_pod_stream_access(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        mode: PodStreamMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        for action in [PermissionAction::Get, stream_permission(mode)] {
+            self.review_resource_access(
+                ResourceKind::Pods,
+                action,
+                Some(namespace),
+                Some(name),
+                window,
+                cx,
+            );
+        }
+        self.can_pod_stream(namespace, name, mode)
+    }
+
     pub(crate) fn open_pod_stream_for_pod(
         &mut self,
         namespace: String,
@@ -185,6 +229,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.review_pod_stream_access(&namespace, &pod_name, mode, window, cx) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -317,6 +364,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.review_pod_stream_access(&namespace, &pod_name, mode, window, cx) {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -489,6 +539,15 @@ impl IceonApp {
         let Some(existing) = self.pod_dock_tabs.get(index).cloned() else {
             return;
         };
+        if !self.review_pod_stream_access(
+            &existing.namespace,
+            &existing.pod_name,
+            existing.mode,
+            window,
+            cx,
+        ) {
+            return;
+        }
         if !existing.id.starts_with("opening-") {
             let _ = self.connection.pod_stream_close(PodStreamRequest {
                 cluster_id: session.cluster_id.clone(),
@@ -547,6 +606,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.review_pod_stream_access(&namespace, &pod_name, mode, window, cx) {
+            return;
+        }
         let connection = self.connection.clone();
         let req = PodStartRequest {
             cluster_id: cluster_id.clone(),
@@ -793,6 +855,29 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        for action in [PermissionAction::Get, PermissionAction::PortForward] {
+            self.review_resource_access(
+                ResourceKind::Pods,
+                action,
+                Some(&namespace),
+                Some(&pod_name),
+                window,
+                cx,
+            );
+        }
+        if ![PermissionAction::Get, PermissionAction::PortForward]
+            .into_iter()
+            .all(|action| {
+                self.can_action(
+                    ResourceKind::Pods,
+                    action,
+                    Some(&namespace),
+                    Some(&pod_name),
+                )
+            })
+        {
+            return;
+        }
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -1027,7 +1112,7 @@ impl IceonApp {
             .icon(IconName::Plus)
             .tooltip("New console session")
             .accessibility_label("New console session")
-            .dropdown_menu(move |mut menu, _, _| {
+            .dropdown_menu(move |mut menu, _, cx| {
                 let owner = menu_owner.clone();
                 menu = menu.item(PopupMenuItem::new("Device Terminal").on_click(
                     move |_, window, cx| {
@@ -1042,7 +1127,16 @@ impl IceonApp {
                     let owner = menu_owner.clone();
                     menu = menu.item(
                         PopupMenuItem::new(label)
-                            .disabled(duplicate_key.is_none())
+                            .disabled(!menu_owner.upgrade().is_some_and(|owner| {
+                                let app = owner.read(cx);
+                                duplicate_key
+                                    .and_then(|key| {
+                                        app.pod_dock_tabs.iter().find(|tab| tab.key == key)
+                                    })
+                                    .is_some_and(|tab| {
+                                        app.can_pod_stream(&tab.namespace, &tab.pod_name, mode)
+                                    })
+                            }))
                             .on_click(move |_, window, cx| {
                                 let _ = owner.update(cx, |this, cx| {
                                     if let Some(key) = duplicate_key {
@@ -1365,6 +1459,11 @@ impl IceonApp {
                             })
                             .child(
                                 Button::new("pod-console-reconnect")
+                                    .disabled(!self.can_pod_stream(
+                                        &tab.namespace,
+                                        &tab.pod_name,
+                                        tab.mode,
+                                    ))
                                     .small()
                                     .ghost()
                                     .icon(IconName::Undo2)
@@ -1810,6 +1909,22 @@ fn feed_tab_output(tab: &mut PodDockTab, chunk: &str, cx: &mut Context<IceonApp>
 #[cfg(test)]
 mod chunk_tests {
     use super::append_log_chunk;
+    #[test]
+    fn pod_console_modes_gate_the_matching_named_subresource() {
+        assert_eq!(
+            super::stream_permission(super::PodStreamMode::Logs),
+            super::PermissionAction::Logs
+        );
+        assert_eq!(
+            super::stream_permission(super::PodStreamMode::Shell),
+            super::PermissionAction::Exec
+        );
+        assert_eq!(
+            super::stream_permission(super::PodStreamMode::Attach),
+            super::PermissionAction::Attach
+        );
+    }
+
     #[test]
     fn console_labels_are_bounded_without_losing_shell_suffix() {
         assert_eq!(super::console_tab_title("icekube — fish"), "icekube — fish");

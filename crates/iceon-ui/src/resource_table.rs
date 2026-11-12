@@ -24,7 +24,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use iceon_core::connection::{
     ResourceItem, ResourceKind, ResourcePage, details::ResourceReference, node_actions::NodeAction,
-    pod_runtime::PodStreamMode, workload_actions::WorkloadAction,
+    permissions::PermissionAction, pod_runtime::PodStreamMode, workload_actions::WorkloadAction,
 };
 use std::{cell::Cell, cmp::Ordering, collections::HashMap, rc::Rc};
 
@@ -429,7 +429,12 @@ pub(crate) struct ResourceTable {
 }
 
 impl ResourceTable {
-    pub(crate) fn new(owner: WeakEntity<IceonApp>, _cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(owner: WeakEntity<IceonApp>, cx: &mut Context<Self>) -> Self {
+        // Access reviews update the owner without changing the cached page/scope.
+        // Redraw this independently cached entity so newly reviewed actions reveal.
+        if let Some(app) = owner.upgrade() {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+        }
         Self {
             owner,
             selection_enabled: true,
@@ -497,7 +502,7 @@ impl ResourceTable {
     }
     fn render_selection_checkbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::base::{Checkbox as BaseCheckbox, CheckboxState};
-        let total = self.loaded_targets().len();
+        let total = self.selectable_targets(cx).len();
         let state = selection_state(self.selected.len(), total);
         let active = state != CheckboxState::Unchecked;
         let owner = cx.entity().downgrade();
@@ -536,13 +541,24 @@ impl ResourceTable {
                 cx.stop_propagation();
                 let _ = owner.update(cx, |table, cx| {
                     table.selected = if next == CheckboxState::Checked {
-                        table.loaded_targets()
+                        table.selectable_targets(cx)
                     } else {
                         Vec::new()
                     };
                     table.selection_changed(cx);
                 });
             })
+    }
+
+    fn selectable_targets(&self, cx: &App) -> Vec<DeleteTarget> {
+        self.loaded_targets()
+            .into_iter()
+            .filter(|target| {
+                self.owner
+                    .upgrade()
+                    .is_some_and(|owner| owner.read(cx).can_delete_target(target))
+            })
+            .collect()
     }
 
     fn loaded_targets(&self) -> Vec<DeleteTarget> {
@@ -797,7 +813,11 @@ impl ResourceTable {
         self.cache.stats.row_renders += 1;
         // The render/sync path installs this once per kind. Visible rows only borrow
         // geometry; scrolling does not allocate or rebuild column metadata.
-        let target = deletion_target(kind, item);
+        let target = deletion_target(kind, item).filter(|target| {
+            self.owner
+                .upgrade()
+                .is_some_and(|owner| owner.read(cx).can_delete_target(target))
+        });
         let selected = target
             .as_ref()
             .is_some_and(|target| self.selected.contains(target));
@@ -844,6 +864,11 @@ impl ResourceTable {
                                     cx.stop_propagation();
                                     if let Some(target) = &target {
                                         if *checked {
+                                            if !table.owner.upgrade().is_some_and(|owner| {
+                                                owner.read(cx).can_delete_target(target)
+                                            }) {
+                                                return;
+                                            }
                                             if !table.selected.contains(target) {
                                                 table.selected.push(target.clone());
                                             }
@@ -999,6 +1024,42 @@ impl ResourceTable {
         idx: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let allowed = |action| {
+            self.owner.upgrade().is_some_and(|owner| {
+                owner
+                    .read(cx)
+                    .can_action(kind, action, item.namespace.as_deref(), Some(&item.name))
+            })
+        };
+        let get = allowed(PermissionAction::Get);
+        let patch = get && allowed(PermissionAction::Patch);
+        let delete = get && allowed(PermissionAction::Delete);
+        let logs = get && allowed(PermissionAction::Logs);
+        let exec = get && allowed(PermissionAction::Exec);
+        let trigger = get
+            && self.owner.upgrade().is_some_and(|owner| {
+                owner.read(cx).can_action(
+                    ResourceKind::Jobs,
+                    PermissionAction::Create,
+                    item.namespace.as_deref(),
+                    None,
+                )
+            });
+        let drain = patch
+            && self.owner.upgrade().is_some_and(|owner| {
+                owner
+                    .read(cx)
+                    .can_action(ResourceKind::Pods, PermissionAction::List, None, None)
+            });
+        let forward = get
+            && self.owner.upgrade().is_some_and(|owner| {
+                owner.read(cx).can_action(
+                    ResourceKind::Pods,
+                    PermissionAction::List,
+                    item.namespace.as_deref(),
+                    None,
+                )
+            });
         let is_pod = kind == ResourceKind::Pods;
         let can_restart = matches!(
             kind,
@@ -1057,6 +1118,7 @@ impl ResourceTable {
             .when(is_pod, |row| {
                 row.child(
                     Button::new(SharedString::from(format!("row-pod-logs-{idx}")))
+                        .disabled(!logs)
                         .xsmall()
                         .ghost()
                         .icon(IconName::FileText)
@@ -1074,6 +1136,7 @@ impl ResourceTable {
                 )
                 .child(
                     Button::new(SharedString::from(format!("row-pod-shell-{idx}")))
+                        .disabled(!exec)
                         .xsmall()
                         .ghost()
                         .icon(IconName::SquareTerminal)
@@ -1102,6 +1165,7 @@ impl ResourceTable {
                     };
                     row.child(
                         Button::new(SharedString::from(format!("row-wl-restart-{idx}")))
+                            .disabled(!patch)
                             .xsmall()
                             .ghost()
                             .text_color(cx.theme().danger)
@@ -1147,6 +1211,7 @@ impl ResourceTable {
                     };
                     row.child(
                         Button::new(SharedString::from(format!("row-cj-trigger-{idx}")))
+                            .disabled(!trigger)
                             .xsmall()
                             .ghost()
                             .icon(IconName::Play)
@@ -1177,6 +1242,7 @@ impl ResourceTable {
                     };
                     row.child(
                         Button::new(SharedString::from(format!("row-svc-fwd-{idx}")))
+                            .disabled(!forward)
                             .xsmall()
                             .ghost()
                             .icon(IconName::Network)
@@ -1218,6 +1284,7 @@ impl ResourceTable {
                     };
                     row.child(
                         Button::new(SharedString::from(format!("row-node-cordon-{idx}")))
+                            .disabled(!patch)
                             .xsmall()
                             .ghost()
                             .icon(if node_schedulable {
@@ -1239,6 +1306,7 @@ impl ResourceTable {
                     )
                     .child(
                         Button::new(SharedString::from(format!("row-node-drain-{idx}")))
+                            .disabled(!drain)
                             .xsmall()
                             .ghost()
                             .icon(IconName::ArrowDown)
@@ -1261,6 +1329,7 @@ impl ResourceTable {
                 let cid = current_cid;
                 row.child(
                     Button::new(SharedString::from(format!("row-crd-inst-{idx}")))
+                        .disabled(true)
                         .xsmall()
                         .ghost()
                         .icon(IconName::GalleryVerticalEnd)
@@ -1287,6 +1356,7 @@ impl ResourceTable {
                 |row, target| {
                     row.child(
                         Button::new(SharedString::from(format!("row-del-{idx}")))
+                            .disabled(!delete)
                             .xsmall()
                             .ghost()
                             .text_color(cx.theme().danger)
