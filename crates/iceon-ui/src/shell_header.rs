@@ -576,7 +576,8 @@ impl IceonApp {
                                                 .child(breadcrumb_separator(cx))
                                                  .child(
                                                      self.namespace_dropdown("titlebar-namespace-select", current_namespace.clone(), cx),
-                                                 ),
+                                                 )
+                                                 .child(self.render_status_breadcrumb(cx)),
                                         )
                                     })
                                     .when(selected_id.is_none(), |bar| {

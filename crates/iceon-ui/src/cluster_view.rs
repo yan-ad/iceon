@@ -14,7 +14,7 @@ use gpui_kit::component::{
     input::Input,
     resizable::{HandleEdge, resize_handle},
     scroll::ScrollableElement as _,
-    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
+    select::{SearchableVec, SelectEvent, SelectItem, SelectState},
     tag::Tag,
     v_flex,
 };
@@ -151,35 +151,6 @@ impl SelectItem for NamespaceChoice {
 }
 
 pub(crate) type NamespaceSelectState = SelectState<SearchableVec<NamespaceChoice>>;
-
-pub(crate) fn create_status_select(
-    window: &mut Window,
-    cx: &mut Context<IceonApp>,
-) -> Entity<NamespaceSelectState> {
-    let select = cx.new(|cx| {
-        SelectState::new(
-            SearchableVec::new(Vec::<NamespaceChoice>::new()),
-            None,
-            window,
-            cx,
-        )
-    });
-    cx.subscribe_in(
-        &select,
-        window,
-        |this, _, event: &SelectEvent<SearchableVec<NamespaceChoice>>, window, cx| {
-            let SelectEvent::Confirm(Some(status)) = event else {
-                return;
-            };
-            this.selected_status_filter = (status != "All").then(|| status.clone());
-            this.current_continue_token = None;
-            this.continue_token_history.clear();
-            this.reload_active_section(window, cx);
-        },
-    )
-    .detach();
-    select
-}
 
 pub(crate) fn create_namespace_select(
     window: &mut Window,
@@ -2442,6 +2413,75 @@ impl IceonApp {
         }
     }
 
+    pub(crate) fn focus_resource_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.history.current(), Route::Cluster { .. })
+            && section_to_resource_kind(&self.active_cluster_section).is_some()
+            && !self.console_focus.contains_focused(window, cx)
+        {
+            self.resource_filter_input
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn render_status_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let statuses = section_to_resource_kind(&self.active_cluster_section)
+            .and_then(|kind| resource_view_by_kind(kind).map(|view| view.statuses))
+            .unwrap_or(&[]);
+        let owner = cx.entity().downgrade();
+        h_flex()
+            .items_center()
+            .gap_2()
+            .when(!statuses.is_empty(), |row| {
+                row.child(
+                    gpui_kit::component::Icon::new(IconName::ChevronRight)
+                        .xsmall()
+                        .text_color(cx.theme().muted_foreground),
+                )
+                .child(
+                    Button::new("breadcrumb-status")
+                        .ghost()
+                        .xsmall()
+                        .text_color(cx.theme().sidebar_foreground)
+                        .label(
+                            self.selected_status_filter
+                                .clone()
+                                .unwrap_or_else(|| "All Status".into()),
+                        )
+                        .accessibility_label("Filter resource status")
+                        .dropdown_menu(move |mut menu, _, cx| {
+                            let selected = owner
+                                .upgrade()
+                                .and_then(|app| app.read(cx).selected_status_filter.clone());
+                            for status in std::iter::once(None)
+                                .chain(statuses.iter().map(|status| Some((*status).to_owned())))
+                            {
+                                let owner = owner.clone();
+                                menu = menu.item(
+                                    gpui_kit::component::menu::PopupMenuItem::new(
+                                        status.clone().unwrap_or_else(|| "All Status".into()),
+                                    )
+                                    .checked(selected == status)
+                                    .on_click(
+                                        move |_, window, cx| {
+                                            let _ = owner.update(cx, |app, cx| {
+                                                app.selected_status_filter = status.clone();
+                                                app.current_continue_token = None;
+                                                app.continue_token_history.clear();
+                                                app.reload_active_section(window, cx);
+                                            });
+                                        },
+                                    ),
+                                );
+                            }
+                            menu
+                        }),
+                )
+            })
+    }
+
     pub(crate) fn render_header_resource_controls(
         &mut self,
         window: &mut Window,
@@ -2452,39 +2492,20 @@ impl IceonApp {
         let dock_count = self.pod_dock_tabs.len() + self.port_forwards.len();
         self.sync_namespace_select(window, cx);
 
-        let statuses = active_kind
-            .and_then(|kind| resource_view_by_kind(kind).map(|view| view.statuses))
-            .unwrap_or(&[]);
-        let show_status_select = !statuses.is_empty();
-        let status_options: Vec<NamespaceChoice> = std::iter::once("All")
-            .chain(statuses.iter().copied())
-            .map(|name| NamespaceChoice { name: name.into() })
-            .collect();
-        if self.status_select_items != status_options {
-            self.status_select.update(cx, |state, cx| {
-                state.set_items(SearchableVec::new(status_options.clone()), window, cx);
-            });
-            self.status_select_items = status_options.clone();
-        }
-        let status_value = self
-            .selected_status_filter
-            .clone()
-            .unwrap_or_else(|| "All".into());
-        if self.status_select.read(cx).selected_value() != Some(&status_value) {
-            self.status_select.update(cx, |state, cx| {
-                state.set_selected_value(&status_value, window, cx);
-            });
-        }
-
         h_flex()
+            .h_full()
             .gap_2()
             .items_center()
             .flex_shrink_0()
             .when(active_kind.is_some(), |el| {
                 el.child(
-                    div().w(px(200.0)).child(
+                    div().w(px(240.0)).h_full().child(
                         Input::new(&self.resource_filter_input)
-                            .xsmall()
+                            .h_full()
+                            .appearance(false)
+                            .bordered(false)
+                            .focus_bordered(false)
+                            .prefix(gpui_kit::component::Icon::new(IconName::Search).small())
                             .cleanable(true),
                     ),
                 )
@@ -2533,19 +2554,6 @@ impl IceonApp {
                     )
                 },
             )
-            .when(show_status_select, |el| {
-                el.child(
-                    div().w(px(120.0)).child(
-                        Select::new(&self.status_select)
-                            .id("status-select")
-                            .xsmall()
-                            .w_full()
-                            .placeholder("Status")
-                            .search_placeholder("Filter statuses…")
-                            .menu_width(px(190.0)),
-                    ),
-                )
-            })
             .when(dock_count > 0, |el| {
                 el.child(
                     Button::new("toggle-pod-dock-btn")

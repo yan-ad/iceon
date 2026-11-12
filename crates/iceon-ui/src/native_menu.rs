@@ -31,6 +31,7 @@ gpui_kit::actions!(
         ToggleSidebar,
         CommandPalette,
         ThemePicker,
+        FocusResourceSearch,
         CheckForUpdates,
         Back,
         Forward,
@@ -133,6 +134,7 @@ fn bindings(macos: bool) -> Vec<KeyBinding> {
     bind!("b", ToggleSidebar);
     bind!("k", CommandPalette);
     bind!("*", ThemePicker);
+    bind!("f", FocusResourceSearch);
     bind!("[", Back);
     bind!("]", Forward);
     bind!("r", Reload);
@@ -205,6 +207,12 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(CheckForUpdates, |this, _: &CheckForUpdates, window, cx| {
         this.check_for_updates(window, cx);
     });
+    register!(
+        FocusResourceSearch,
+        |this, _: &FocusResourceSearch, window, cx| {
+            this.focus_resource_search(window, cx);
+        }
+    );
     register!(ThemePicker, |this, _: &ThemePicker, window, cx| {
         this.toggle_theme_picker(window, cx);
     });
@@ -381,6 +389,7 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
                 this.check_for_updates(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &FocusResourceSearch, window, cx| { this.focus_resource_search(window,cx); }))
             .on_action(cx.listener(|this, _: &ThemePicker, window, cx| { this.toggle_theme_picker(window,cx); }))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
