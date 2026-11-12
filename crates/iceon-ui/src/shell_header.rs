@@ -2,8 +2,7 @@
 //! popup dismissal and accessibility; the application remains the authority for routing.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, IndexPath, Sizable as _, TitleBar,
-    breadcrumb::BreadcrumbItem,
+    ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::DropdownMenu as _,
@@ -97,12 +96,10 @@ fn opened_path(section: &str) -> Vec<(String, String)> {
 }
 
 fn breadcrumb_separator(cx: &App) -> impl IntoElement {
-    div()
+    Icon::new(IconName::ChevronRight)
+        .xsmall()
         .flex_shrink_0()
-        .mx_1()
-        .size(px(4.0))
-        .rounded_full()
-        .bg(cx.theme().muted_foreground)
+        .text_color(cx.theme().muted_foreground)
 }
 
 fn cluster_dot(color: &str) -> Hsla {
@@ -306,7 +303,7 @@ impl IceonApp {
                                                 .role(gpui_kit::accesskit::Role::Navigation)
                                                 .aria_label("Workspace breadcrumb")
                                                 .items_center()
-                                                .gap_1p5()
+                                                .gap_2()
                                                 .child(
                                                     Button::new("titlebar-cluster-select-btn")
                                                         .ghost()
@@ -328,9 +325,14 @@ impl IceonApp {
                                                 )
                                                 .children(opened_path(&self.active_cluster_section).into_iter().enumerate().map(|(index, (label, section))| {
                                                     let cluster_id = cluster.id.clone();
-                                                    h_flex().id(("breadcrumb-path", index)).items_center()
+                                                    h_flex().id(("breadcrumb-path", index)).items_center().gap_2()
                                                         .child(breadcrumb_separator(cx))
-                                                        .child(BreadcrumbItem::new(label)
+                                                        // Use the same button size as the cluster and namespace:
+                                                        // BreadcrumbItem otherwise inherits the larger title-bar font.
+                                                        .child(Button::new(("titlebar-breadcrumb", index))
+                                                            .ghost()
+                                                            .xsmall()
+                                                            .label(label)
                                                             .text_color(cx.theme().sidebar_foreground)
                                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                                 this.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: section.clone() }, true, window, cx);
