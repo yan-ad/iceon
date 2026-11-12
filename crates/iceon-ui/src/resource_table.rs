@@ -11,8 +11,9 @@ use crate::{
     resource_scroll::{ResourceScrollScope, ResourceScrollState},
 };
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, VirtualListScrollHandle,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     h_flex,
     resizable::{HandleEdge, resize_handle},
     scroll::{ScrollableElement as _, ScrollbarAxis},
@@ -26,6 +27,23 @@ use iceon_core::connection::{
     pod_runtime::PodStreamMode, workload_actions::WorkloadAction,
 };
 use std::{cell::Cell, cmp::Ordering, collections::HashMap, rc::Rc};
+
+fn deletion_target(kind: ResourceKind, item: &ResourceItem) -> Option<DeleteTarget> {
+    if kind == ResourceKind::Nodes {
+        return None;
+    }
+
+    Some(DeleteTarget {
+        kind,
+        name: item.name.clone(),
+        namespace: item.namespace.clone(),
+        uid: item.uid.clone().filter(|value| !value.is_empty())?,
+        resource_version: item
+            .resource_version
+            .clone()
+            .filter(|value| !value.is_empty())?,
+    })
+}
 
 // Geometry, sorting and drag state belong to this entity, never to the shell.
 #[derive(Clone)]
@@ -384,6 +402,8 @@ impl TableCache {
 
 pub(crate) struct ResourceTable {
     owner: WeakEntity<IceonApp>,
+    selected: Vec<DeleteTarget>,
+    selection_lease: String,
     cache: TableCache,
     scroll: VirtualListScrollHandle,
     scroll_state: ResourceScrollState,
@@ -396,6 +416,8 @@ impl ResourceTable {
     pub(crate) fn new(owner: WeakEntity<IceonApp>, _cx: &mut Context<Self>) -> Self {
         Self {
             owner,
+            selected: Vec::new(),
+            selection_lease: String::new(),
             cache: TableCache::default(),
             scroll: VirtualListScrollHandle::new(),
             scroll_state: ResourceScrollState::default(),
@@ -414,14 +436,55 @@ impl ResourceTable {
             .data
             .as_ref()
             .is_none_or(|old| old.scope != data.scope);
+        if scope_changed {
+            self.selected.clear();
+        }
         let scroll = self.scroll_state.for_scope(data.scope.clone());
         if self.cache.update(data) {
+            let loaded = self.loaded_targets();
+            self.selected.retain(|target| loaded.contains(target));
             self.scroll = scroll;
             if scope_changed {
                 self.horizontal_scroll = ScrollHandle::default();
             }
             cx.notify();
         }
+    }
+
+    pub(crate) fn selected_targets(&self) -> Vec<DeleteTarget> {
+        self.selected.clone()
+    }
+    pub(crate) fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        if !self.selected.is_empty() {
+            self.selected.clear();
+            cx.notify();
+        }
+    }
+    pub(crate) fn sync_selection_lease(&mut self, lease: String, cx: &mut Context<Self>) {
+        if self.selection_lease != lease {
+            self.selection_lease = lease;
+            self.clear_selection(cx);
+        }
+    }
+    fn selection_changed(&self, cx: &mut Context<Self>) {
+        let owner = self.owner.clone();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |_, cx| cx.notify());
+        });
+        cx.notify();
+    }
+    fn loaded_targets(&self) -> Vec<DeleteTarget> {
+        let Some(data) = &self.cache.data else {
+            return Vec::new();
+        };
+        let Some(page) = &data.page else {
+            return Vec::new();
+        };
+        self.cache
+            .indices
+            .iter()
+            .filter_map(|index| deletion_target(data.scope.kind, &page.items[*index]))
+            .collect()
     }
 
     #[cfg(debug_assertions)]
@@ -662,6 +725,10 @@ impl ResourceTable {
         self.cache.stats.row_renders += 1;
         // The render/sync path installs this once per kind. Visible rows only borrow
         // geometry; scrolling does not allocate or rebuild column metadata.
+        let target = deletion_target(kind, item);
+        let selected = target
+            .as_ref()
+            .is_some_and(|target| self.selected.contains(target));
         let layout = self.layouts.get(&kind).expect("resource column layout");
         let reference = ResourceReference {
             kind,
@@ -690,6 +757,31 @@ impl ResourceTable {
             .border_b_1()
             .border_color(cx.theme().border)
             .items_center()
+            .child(
+                div()
+                    .w(px(36.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("select-resource-{idx}")))
+                            .checked(selected)
+                            .disabled(target.is_none())
+                            .on_click(cx.listener(move |table, checked: &bool, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(target) = &target {
+                                    if *checked {
+                                        if !table.selected.contains(target) {
+                                            table.selected.push(target.clone());
+                                        }
+                                    } else {
+                                        table.selected.retain(|candidate| candidate != target);
+                                    }
+                                    table.selection_changed(cx);
+                                }
+                            })),
+                    ),
+            )
             .child(
                 table_cell(
                     layout.width("name"),
@@ -1181,7 +1273,7 @@ impl Render for ResourceTable {
                     .scrollbar(&self.horizontal_scroll, ScrollbarAxis::Horizontal)
                     .child(
                         v_flex()
-                            .min_w(px(layout.total()))
+                            .min_w(px(layout.total() + 36.0))
                             .w_full()
                             .flex_1()
                             .min_h_0()
@@ -1193,6 +1285,32 @@ impl Render for ResourceTable {
                                     .border_color(cx.theme().border)
                                     .items_center()
                                     .flex_shrink_0()
+                                    .child(
+                                        div()
+                                            .w(px(36.0))
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .justify_center()
+                                            .child(
+                                                Checkbox::new("select-loaded-resources")
+                                                    .checked(
+                                                        !self.loaded_targets().is_empty()
+                                                            && self.selected.len()
+                                                                == self.loaded_targets().len(),
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        |table, checked: &bool, _, cx| {
+                                                            cx.stop_propagation();
+                                                            table.selected = if *checked {
+                                                                table.loaded_targets()
+                                                            } else {
+                                                                Vec::new()
+                                                            };
+                                                            table.selection_changed(cx);
+                                                        },
+                                                    )),
+                                            ),
+                                    )
                                     .children(
                                         layout.columns.iter().filter(|c| c.key != "actions").map(
                                             |column| {
@@ -1260,6 +1378,32 @@ impl Render for ResourceTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn checklist_requires_reviewed_identity_and_never_selects_nodes() {
+        let mut row = item("web", "production", "Running", "nginx");
+        assert!(deletion_target(ResourceKind::Pods, &row).is_some());
+        assert!(deletion_target(ResourceKind::Nodes, &row).is_none());
+        row.uid = None;
+        assert!(deletion_target(ResourceKind::Pods, &row).is_none());
+        row.uid = Some("uid-web".into());
+        row.resource_version = Some(String::new());
+        assert!(deletion_target(ResourceKind::Pods, &row).is_none());
+    }
+
+    #[::core::prelude::v1::test]
+    fn checklist_identity_changes_on_replacement_or_new_resource_version() {
+        let mut row = item("web", "production", "Running", "nginx");
+        let snapshot = deletion_target(ResourceKind::Pods, &row).unwrap();
+        row.uid = Some("replacement-uid".into());
+        assert_ne!(
+            Some(snapshot.clone()),
+            deletion_target(ResourceKind::Pods, &row)
+        );
+        row.uid = Some(snapshot.uid.clone());
+        row.resource_version = Some("8".into());
+        assert_ne!(Some(snapshot), deletion_target(ResourceKind::Pods, &row));
+    }
 
     fn scope(query: &str, status: Option<&str>) -> ResourceScrollScope {
         ResourceScrollScope {

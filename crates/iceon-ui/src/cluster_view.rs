@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::inspector_view::editor_surface::EditorSurface;
 use crate::navigation::resource_view_by_kind;
 use gpui_kit::component::{
-    ActiveTheme as _, ColorName, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, ColorName, Disableable as _, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
@@ -1225,6 +1225,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(table) = &self.resource_table {
+            table.update(cx, |table, cx| table.clear_selection(cx));
+        }
         self.cancel_resource_pagination();
         self.stop_active_pod_sync();
         self.current_continue_token = None;
@@ -2012,6 +2015,12 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let section = self.active_cluster_section.clone();
+        let selected = self
+            .resource_table
+            .as_ref()
+            .map(|table| table.read(cx).selected_targets().len())
+            .unwrap_or_default();
+        let deleting = self.bulk_delete.active.is_some();
         let active_kind = section_to_resource_kind(&section);
         v_flex()
             .size_full()
@@ -2033,12 +2042,18 @@ impl IceonApp {
                     )
                     .when_some(active_kind, |el, kind| {
                         el.child(
-                            div()
-                                .absolute()
-                                .right(px(20.0))
-                                .bottom(px(20.0))
-                                .occlude()
-                                .child(
+                            v_flex().absolute().right(px(20.0)).bottom(px(20.0)).occlude().gap_2()
+                                .when_some(self.bulk_delete.message.clone(), |group, message| group.child(div().max_w(px(620.0)).text_xs().child(message)))
+                                .child(h_flex().gap_2().items_center()
+                                    .child(Button::new("delete-checked-resources").outline().label(format!("Delete ({selected})"))
+                                        .disabled(selected == 0 || deleting || kind == ResourceKind::Nodes)
+                                        .tooltip("Delete checked, loaded rows with normal grace periods")
+                                        .on_click(cx.listener(|app, _, window, cx| { cx.stop_propagation(); app.confirm_bulk_delete(false, window, cx); })))
+                                    .child(Button::new("force-delete-checked-resources").danger().label(format!("Force Delete ({selected})"))
+                                        .disabled(selected == 0 || deleting || kind != ResourceKind::Pods)
+                                        .tooltip("Pods only: zero grace period; finalizers are not removed")
+                                        .on_click(cx.listener(|app, _, window, cx| { cx.stop_propagation(); app.confirm_bulk_delete(true, window, cx); })))
+                                    .child(
                                     Button::new("open-create-yaml-btn")
                                         .primary()
                                         .rounded_full()
@@ -2051,7 +2066,7 @@ impl IceonApp {
                                             cx.stop_propagation();
                                             this.open_create_yaml_tab(kind, window, cx);
                                         })),
-                                ),
+                                )),
                         )
                     }),
             )
@@ -2659,8 +2674,19 @@ impl IceonApp {
         kind: ResourceKind,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some(table) = &self.resource_table {
+            let lease = self
+                .cluster_session
+                .as_ref()
+                .map(|session| session.session_id.clone())
+                .unwrap_or_default();
+            table.update(cx, |table, cx| table.sync_selection_lease(lease, cx));
+        }
         let has_rows = !self.filtered_resource_items(kind, cx).is_empty();
         if !has_rows {
+            if let Some(table) = &self.resource_table {
+                table.update(cx, |table, cx| table.clear_selection(cx));
+            }
             let query = self
                 .resource_filter_input
                 .read(cx)

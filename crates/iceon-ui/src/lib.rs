@@ -3,6 +3,7 @@
 mod age_label;
 mod app_assets;
 pub mod badge;
+mod bulk_delete;
 pub mod catalog_view;
 pub mod cluster_view;
 mod command_palette;
@@ -66,6 +67,7 @@ use pod_dock_view::PodDockTab;
 use secrets_view::SecretsWorkspaceState;
 
 pub struct IceonApp {
+    pub(crate) bulk_delete: bulk_delete::BulkDeleteState,
     pub(crate) yaml_dock_tabs: Vec<yaml_dock::YamlDockTab>,
     pub(crate) active_yaml_tab: Option<u64>,
     pub(crate) local_terminal_active: bool,
@@ -316,6 +318,7 @@ impl IceonApp {
         });
 
         let mut app = Self {
+            bulk_delete: bulk_delete::BulkDeleteState::default(),
             yaml_dock_tabs: vec![],
             active_yaml_tab: None,
             local_terminal_active: true,

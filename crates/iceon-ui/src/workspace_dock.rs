@@ -34,6 +34,9 @@ struct ResourceProjection {
     error: Option<String>,
     sync_id: Option<String>,
     preferences_revision: u64,
+    selected: usize,
+    deleting: Option<u64>,
+    delete_message: Option<String>,
 }
 
 fn resource_projection(app: &IceonApp, cx: &App) -> Option<ResourceProjection> {
@@ -58,6 +61,13 @@ fn resource_projection(app: &IceonApp, cx: &App) -> Option<ResourceProjection> {
         error: app.cluster_error.clone(),
         sync_id: app.active_pod_sync_id.clone(),
         preferences_revision: app.preferences_revision,
+        selected: app
+            .resource_table
+            .as_ref()
+            .map(|table| table.read(cx).selected_targets().len())
+            .unwrap_or_default(),
+        deleting: app.bulk_delete.active,
+        delete_message: app.bulk_delete.message.clone(),
     })
 }
 
