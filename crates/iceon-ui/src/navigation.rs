@@ -796,8 +796,18 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
             },
             ColumnDef {
                 key: "containers",
-                label: "Ready",
-                width: 90.0,
+                label: "Containers",
+                width: 140.0,
+            },
+            ColumnDef {
+                key: "cpu",
+                label: "CPU",
+                width: 96.0,
+            },
+            ColumnDef {
+                key: "memory",
+                label: "Memory",
+                width: 110.0,
             },
             ColumnDef {
                 key: "restarts",

@@ -85,6 +85,7 @@ fn fixture_page() -> Rc<ResourcePage> {
                 created_at: None,
                 columns: [("image".into(), format!("offline/image-{index:03}:fixture"))].into(),
                 node: None,
+                containers: Vec::new(),
             })
             .collect(),
         truncated: false,

@@ -345,9 +345,19 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
         ],
         Pods => &[
             ColumnDef {
-                header: "Ready",
-                key: "ready",
-                width: 80.0,
+                header: "Containers",
+                key: "containers",
+                width: 140.0,
+            },
+            ColumnDef {
+                header: "CPU",
+                key: "cpu",
+                width: 96.0,
+            },
+            ColumnDef {
+                header: "Memory",
+                key: "memory",
+                width: 110.0,
             },
             ColumnDef {
                 header: "Restarts",
@@ -3602,6 +3612,20 @@ pub(crate) fn default_yaml_template(kind: ResourceKind, namespace: &str) -> Stri
 mod tests {
     use super::{columns_for_kind, default_yaml_template};
     use iceon_core::connection::ResourceKind;
+
+    #[test]
+    fn pod_columns_show_containers_and_usage_before_restarts() {
+        let keys: Vec<_> = columns_for_kind(ResourceKind::Pods)
+            .iter()
+            .map(|column| column.key)
+            .collect();
+        let containers = keys.iter().position(|key| *key == "containers").unwrap();
+        let cpu = keys.iter().position(|key| *key == "cpu").unwrap();
+        let memory = keys.iter().position(|key| *key == "memory").unwrap();
+        let restarts = keys.iter().position(|key| *key == "restarts").unwrap();
+        assert!(containers < cpu && cpu < memory && memory < restarts);
+        assert!(!keys.contains(&"ready"));
+    }
 
     #[test]
     fn columns_and_templates_cover_core_resource_kinds() {

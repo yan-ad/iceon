@@ -146,6 +146,11 @@ pub(super) async fn resources(
     }
     if request.kind == ResourceKind::Nodes {
         metrics = Some(super::metrics::enrich(client, &mut items, cancel).await?);
+    } else if request.kind == ResourceKind::Pods {
+        metrics = Some(
+            super::metrics::enrich_pods(client, &mut items, request.namespace.as_deref(), cancel)
+                .await?,
+        );
     }
     let truncated = continuation.is_some();
     items.sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));

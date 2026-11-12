@@ -117,6 +117,7 @@ mod tests {
                     created_at: None,
                     columns: Default::default(),
                     node: None,
+                    containers: Vec::new(),
                 })
                 .collect(),
         }

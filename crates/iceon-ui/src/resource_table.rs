@@ -896,7 +896,21 @@ impl ResourceTable {
                 )
             })
             .children(cols.iter().map(|c| {
-                if kind == ResourceKind::Namespaces && c.key == "labels" {
+                if kind == ResourceKind::Pods && c.key == "containers" {
+                    table_cell(layout.width(c.key), false, true, cx.theme().border)
+                        .child(crate::pod_columns::containers(item, idx, cx))
+                        .into_any_element()
+                } else if kind == ResourceKind::Pods && matches!(c.key, "cpu" | "memory") {
+                    table_cell(layout.width(c.key), false, true, cx.theme().border)
+                        .text_xs()
+                        .child(crate::selectable_text::selectable_text(
+                            item.columns
+                                .get(c.key)
+                                .cloned()
+                                .unwrap_or_else(|| "N/A".into()),
+                        ))
+                        .into_any_element()
+                } else if kind == ResourceKind::Namespaces && c.key == "labels" {
                     let extra_count = item
                         .columns
                         .get("labels")
@@ -1491,6 +1505,7 @@ mod tests {
             created_at: None,
             columns: [("image".into(), image.into())].into(),
             node: None,
+            containers: Vec::new(),
         }
     }
 

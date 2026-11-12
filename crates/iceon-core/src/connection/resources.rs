@@ -425,7 +425,13 @@ pub(super) fn project(kind: ResourceKind, value: Value) -> Result<ResourceItem, 
     {
         insert(&mut columns, "controlledBy", owner.name);
     }
+    let containers = if kind == ResourceKind::Pods {
+        super::container_summary::project(&value)
+    } else {
+        Vec::new()
+    };
     Ok(ResourceItem {
+        containers,
         name,
         uid,
         resource_version,
@@ -843,7 +849,7 @@ fn insert(c: &mut BTreeMap<String, String>, k: &str, v: String) {
         c.insert(k.into(), v);
     }
 }
-fn bounded(s: &str) -> String {
+pub(super) fn bounded(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars().filter(|c| !c.is_control() && !matches!(*c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) {
         if out.len() + c.len_utf8() > 256 {

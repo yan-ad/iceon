@@ -109,6 +109,7 @@ mod tests {
                 created_at: None,
                 status: "Established".into(),
                 node: None,
+                containers: Vec::new(),
                 columns: [
                     (
                         "group".into(),

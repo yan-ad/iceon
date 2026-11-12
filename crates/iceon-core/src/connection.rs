@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 mod auth;
 mod config;
+pub mod container_summary;
 pub mod create;
 #[cfg(test)]
 mod create_tests;
@@ -334,6 +335,7 @@ pub struct ResourceItem {
     pub created_at: Option<String>,
     pub columns: std::collections::BTreeMap<String, String>,
     pub node: Option<NodeInfo>,
+    pub containers: Vec<container_summary::ContainerSummary>,
 }
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

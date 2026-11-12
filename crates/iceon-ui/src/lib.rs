@@ -21,6 +21,7 @@ mod kubectl_tools;
 mod local_console;
 mod native_menu;
 pub mod navigation;
+mod pod_columns;
 pub mod pod_dock_view;
 mod preference_runtime;
 pub mod preferences_view;
