@@ -1445,8 +1445,8 @@ impl IceonApp {
                             !self.can_workload_action(&detail.reference, WorkloadAction::Restart),
                         )
                         .xsmall()
-                        .danger()
-                        .icon(crate::action_icons::refresh())
+                        .ghost()
+                        .icon(crate::action_icons::refresh().text_color(cx.theme().danger))
                         .tooltip("Restart")
                         .accessibility_label("Restart")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -1461,8 +1461,11 @@ impl IceonApp {
                             !self.can_workload_action(&detail.reference, WorkloadAction::Suspend),
                         )
                         .xsmall()
-                        .danger()
-                        .icon(IconName::Pause)
+                        .ghost()
+                        .icon(
+                            gpui_kit::component::Icon::new(IconName::Pause)
+                                .text_color(cx.theme().danger),
+                        )
                         .tooltip("Suspend")
                         .accessibility_label("Suspend")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -1475,7 +1478,7 @@ impl IceonApp {
                             !self.can_workload_action(&detail.reference, WorkloadAction::Resume),
                         )
                         .xsmall()
-                        .outline()
+                        .ghost()
                         .icon(IconName::Play)
                         .tooltip("Resume")
                         .accessibility_label("Resume")
@@ -1491,7 +1494,7 @@ impl IceonApp {
                             !self.can_workload_action(&detail.reference, WorkloadAction::Trigger),
                         )
                         .xsmall()
-                        .primary()
+                        .ghost()
                         .icon(IconName::Play)
                         .tooltip("Trigger Run")
                         .accessibility_label("Trigger Run")
@@ -1523,8 +1526,8 @@ impl IceonApp {
                 Button::new("insp-delete-btn")
                     .disabled(!self.inspector_can(PermissionAction::Delete))
                     .xsmall()
-                    .danger()
-                    .icon(crate::action_icons::delete())
+                    .ghost()
+                    .icon(crate::action_icons::delete().text_color(cx.theme().danger))
                     .tooltip("Delete")
                     .accessibility_label("Delete")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1546,8 +1549,12 @@ impl IceonApp {
                 Button::new("insp-scale-btn")
                     .disabled(!self.inspector_can(PermissionAction::Patch))
                     .xsmall()
-                    .primary()
-                    .label("Scale")
+                    .ghost()
+                    .icon(gpui_kit::component::Icon::new(
+                        gpui_kit_assets::IconName::ArrowUpDown,
+                    ))
+                    .tooltip("Scale")
+                    .accessibility_label("Scale")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.run_workload_action(WorkloadAction::Scale, window, cx);
                     })),
@@ -1562,8 +1569,12 @@ impl IceonApp {
                 Button::new("insp-cordon-btn")
                     .disabled(!self.inspector_can(PermissionAction::Patch))
                     .xsmall()
-                    .outline()
-                    .label("Cordon")
+                    .ghost()
+                    .icon(
+                        gpui_kit::component::Icon::new(IconName::Ban).text_color(cx.theme().danger),
+                    )
+                    .tooltip("Cordon")
+                    .accessibility_label("Cordon")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.run_node_action(NodeAction::Cordon, window, cx);
                     })),
@@ -1572,8 +1583,10 @@ impl IceonApp {
                 Button::new("insp-uncordon-btn")
                     .disabled(!self.inspector_can(PermissionAction::Patch))
                     .xsmall()
-                    .outline()
-                    .label("Uncordon")
+                    .ghost()
+                    .icon(gpui_kit::component::Icon::new(IconName::Check))
+                    .tooltip("Uncordon")
+                    .accessibility_label("Uncordon")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.run_node_action(NodeAction::Uncordon, window, cx);
                     })),
@@ -1588,8 +1601,13 @@ impl IceonApp {
                             .is_some_and(|d| self.can_review_drain(&d.reference)),
                     )
                     .xsmall()
-                    .danger()
-                    .label("Drain")
+                    .ghost()
+                    .icon(
+                        gpui_kit::component::Icon::new(IconName::ArrowDown)
+                            .text_color(cx.theme().danger),
+                    )
+                    .tooltip("Drain")
+                    .accessibility_label("Drain")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.review_node_drain(window, cx);
                     })),
@@ -1609,8 +1627,10 @@ impl IceonApp {
                 Button::new("insp-svc-fwd-btn")
                     .disabled(!self.inspector_can(PermissionAction::Get))
                     .xsmall()
-                    .primary()
-                    .label("Port-Forward")
+                    .ghost()
+                    .icon(gpui_kit::component::Icon::new(IconName::Network))
+                    .tooltip("Port-Forward")
+                    .accessibility_label("Port-Forward")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.start_service_forward(window, cx);
                     })),
@@ -1671,7 +1691,7 @@ impl IceonApp {
                         Button::new("insp-pod-quick-logs")
                             .disabled(!self.inspector_can(PermissionAction::Logs))
                             .xsmall()
-                            .primary()
+                            .ghost()
                             .icon(crate::action_icons::logs())
                             .tooltip("Logs")
                             .accessibility_label("Logs")
@@ -1693,7 +1713,7 @@ impl IceonApp {
                         Button::new("insp-pod-quick-shell")
                             .disabled(!self.inspector_can(PermissionAction::Exec))
                             .xsmall()
-                            .outline()
+                            .ghost()
                             .icon(IconName::SquareTerminal)
                             .tooltip("Shell")
                             .accessibility_label("Shell")
@@ -1738,8 +1758,8 @@ impl IceonApp {
                     Button::new("insp-pod-force-delete")
                         .disabled(!self.inspector_can(PermissionAction::Delete))
                         .xsmall()
-                        .danger()
-                        .icon(crate::action_icons::force_delete())
+                        .ghost()
+                        .icon(crate::action_icons::force_delete().text_color(cx.theme().danger))
                         .tooltip("Force Delete (0s)")
                         .accessibility_label("Force Delete (0s)")
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -1761,8 +1781,8 @@ impl IceonApp {
                         Button::new("insp-pod-strip-finalizers")
                             .disabled(!self.inspector_can(PermissionAction::Patch))
                             .xsmall()
-                            .danger()
-                            .icon(crate::action_icons::delete())
+                            .ghost()
+                            .icon(crate::action_icons::delete().text_color(cx.theme().danger))
                             .tooltip("Strip Finalizers")
                             .accessibility_label("Strip Finalizers")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2639,7 +2659,7 @@ impl IceonApp {
                                                     !self.inspector_can(PermissionAction::Logs),
                                                 )
                                                 .xsmall()
-                                                .primary()
+                                                .ghost()
                                                 .icon(crate::action_icons::logs())
                                                 .tooltip("Logs")
                                                 .accessibility_label("Logs")
@@ -2668,8 +2688,10 @@ impl IceonApp {
                                                     !self.inspector_can(PermissionAction::Exec),
                                                 )
                                                 .xsmall()
-                                                .outline()
-                                                .label("Shell")
+                                                .ghost()
+                                                .icon(IconName::SquareTerminal)
+                                                .tooltip("Shell")
+                                                .accessibility_label("Shell")
                                                 .on_click(listener_cx.listener(
                                                     move |this, _, window, cx| {
                                                         this.open_pod_stream(
@@ -2771,8 +2793,10 @@ impl IceonApp {
                                             !self.inspector_can(PermissionAction::PortForward),
                                         )
                                         .xsmall()
-                                        .outline()
-                                        .label(port_label)
+                                        .ghost()
+                                        .icon(IconName::Network)
+                                        .tooltip(port_label.clone())
+                                        .accessibility_label(port_label)
                                         .on_click(
                                             listener_cx.listener(move |this, _, window, cx| {
                                                 this.start_pod_forward(
@@ -3177,7 +3201,7 @@ impl IceonApp {
                                                                 format!("col-pod-logs-{idx}"),
                                                             ))
                                                             .xsmall()
-                                                            .primary()
+                                                            .ghost()
                                                             .icon(crate::action_icons::logs())
                                                             .tooltip("Logs")
                                                             .accessibility_label("Logs")
@@ -3198,8 +3222,10 @@ impl IceonApp {
                                                                 format!("col-pod-shell-{idx}"),
                                                             ))
                                                             .xsmall()
-                                                            .outline()
-                                                            .label("Shell")
+                                                            .ghost()
+                                                            .icon(IconName::SquareTerminal)
+                                                            .tooltip("Shell")
+                                                            .accessibility_label("Shell")
                                                             .on_click(cx.listener(
                                                                 move |this, _, window, cx| {
                                                                     this.open_pod_stream_for_pod(

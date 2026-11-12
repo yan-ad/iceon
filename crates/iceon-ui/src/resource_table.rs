@@ -1672,6 +1672,98 @@ impl Render for ResourceTable {
                                                 });
                                             });
                                         }
+                                        if kind != ResourceKind::Events {
+                                            let targets: Vec<_> = visible_range
+                                                .clone()
+                                                .take(64)
+                                                .filter_map(|idx| {
+                                                    let item = page
+                                                        .as_ref()?
+                                                        .items
+                                                        .get(*indices.get(idx)?)?;
+                                                    Some((
+                                                        item.namespace.clone(),
+                                                        item.name.clone(),
+                                                    ))
+                                                })
+                                                .collect();
+                                            let owner = this.owner.clone();
+                                            let source = page.clone();
+                                            window.defer(cx, move |window, cx| {
+                                                let _ = owner.update(cx, |app, cx| {
+                                                    if !source
+                                                        .as_ref()
+                                                        .zip(app.resource_page.as_ref())
+                                                        .is_some_and(|(source, current)| {
+                                                            std::rc::Rc::ptr_eq(source, current)
+                                                        })
+                                                    {
+                                                        return;
+                                                    }
+                                                    for (namespace, name) in targets {
+                                                        for action in [
+                                                            PermissionAction::Get,
+                                                            PermissionAction::Patch,
+                                                            PermissionAction::Delete,
+                                                        ] {
+                                                            app.review_resource_access(
+                                                                kind,
+                                                                action,
+                                                                namespace.as_deref(),
+                                                                Some(&name),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                        if kind == ResourceKind::Pods {
+                                                            for action in [
+                                                                PermissionAction::Logs,
+                                                                PermissionAction::Exec,
+                                                            ] {
+                                                                app.review_resource_access(
+                                                                    kind,
+                                                                    action,
+                                                                    namespace.as_deref(),
+                                                                    Some(&name),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            }
+                                                        }
+                                                        if kind == ResourceKind::CronJobs {
+                                                            app.review_resource_access(
+                                                                ResourceKind::Jobs,
+                                                                PermissionAction::Create,
+                                                                namespace.as_deref(),
+                                                                None,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                        if kind == ResourceKind::Services {
+                                                            app.review_resource_access(
+                                                                ResourceKind::Pods,
+                                                                PermissionAction::List,
+                                                                namespace.as_deref(),
+                                                                None,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                        if kind == ResourceKind::Nodes {
+                                                            app.review_resource_access(
+                                                                ResourceKind::Pods,
+                                                                PermissionAction::List,
+                                                                None,
+                                                                None,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }
+                                                });
+                                            });
+                                        }
                                         visible_range
                                             .filter_map(|idx| {
                                                 let item =
