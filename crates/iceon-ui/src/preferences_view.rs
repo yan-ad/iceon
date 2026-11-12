@@ -26,7 +26,8 @@ use iceon_core::preferences::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferencesSection {
-    App,
+    General,
+    Themes,
     Proxy,
     Kubernetes,
     Editor,
@@ -34,7 +35,31 @@ pub enum PreferencesSection {
 }
 
 pub(crate) fn set_theme(cx: &mut App, theme: AppTheme) {
-    mutate_preferences(cx, |preferences| preferences.app.theme = theme);
+    mutate_preferences(cx, |preferences| {
+        preferences.app.theme = theme;
+        preferences.app.zed_theme = None;
+    });
+}
+
+pub(crate) fn set_zed_theme(cx: &mut App, id: Option<String>) {
+    if id
+        .as_ref()
+        .is_some_and(|id| crate::themes_settings::find(id, cx).is_none())
+    {
+        return;
+    }
+    let dark = id
+        .as_ref()
+        .and_then(|id| crate::themes_settings::find(id, cx))
+        .map(|theme| theme.appearance == "dark");
+    mutate_preferences(cx, |preferences| {
+        preferences.app.zed_theme = id;
+        preferences.app.theme = match dark {
+            Some(true) => AppTheme::Dark,
+            Some(false) => AppTheme::Light,
+            None => AppTheme::System,
+        };
+    });
 }
 
 #[cfg(test)]
@@ -45,7 +70,14 @@ mod tests {
     fn preferences_navigation_has_only_the_requested_sections_in_order() {
         assert_eq!(
             PREFERENCE_SECTIONS,
-            ["App", "Proxy", "Kubernetes", "Editor", "Terminal"]
+            [
+                "General",
+                "Themes",
+                "Proxy",
+                "Kubernetes",
+                "Editor",
+                "Terminal"
+            ]
         );
     }
 
@@ -142,7 +174,14 @@ fn timezone_choices(current: &str) -> Vec<TimezoneChoice> {
 
 type TimezoneSelectState = SelectState<SearchableVec<TimezoneChoice>>;
 
-const PREFERENCE_SECTIONS: [&str; 5] = ["App", "Proxy", "Kubernetes", "Editor", "Terminal"];
+const PREFERENCE_SECTIONS: [&str; 6] = [
+    "General",
+    "Themes",
+    "Proxy",
+    "Kubernetes",
+    "Editor",
+    "Terminal",
+];
 
 pub(crate) struct GlobalPreferencesState {
     pub engine: Arc<PreferencesEngine>,
@@ -212,7 +251,10 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
 
     let (maybe_theme_change, main_app, snapshot_result) = cx
         .update_global::<GlobalPreferencesState, _>(|state, _cx| {
-            let prev_theme = state.preferences.app.theme;
+            let prev_theme = (
+                state.preferences.app.theme,
+                state.preferences.app.zed_theme.clone(),
+            );
             let mut next = state.preferences.clone();
             mutate(&mut next);
             if next.app.timezone.trim().is_empty() {
@@ -238,7 +280,9 @@ fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
             }
 
             let new_theme = state.preferences.app.theme;
-            let theme_changed = (prev_theme != new_theme).then_some(new_theme);
+            let theme_changed = (prev_theme
+                != (new_theme, state.preferences.app.zed_theme.clone()))
+                .then_some(new_theme);
             (theme_changed, state.main_app.clone(), res.ok())
         });
 
@@ -276,6 +320,7 @@ pub struct PreferencesWindow {
     timezone_select: Entity<TimezoneSelectState>,
     terminal_font_select: Entity<SelectState<SearchableVec<String>>>,
     section: usize,
+    themes_settings: Entity<crate::themes_settings::ThemesSettings>,
     kubernetes_preferences: Entity<kubernetes_preferences::KubernetesPreferencesView>,
 }
 
@@ -333,6 +378,7 @@ impl PreferencesWindow {
             timezone_select,
             terminal_font_select,
             section: 0,
+            themes_settings: cx.new(|cx| crate::themes_settings::ThemesSettings::new(window, cx)),
             kubernetes_preferences,
         }
     }
@@ -342,15 +388,13 @@ impl PreferencesWindow {
         let timezone_select = self.timezone_select.clone();
         let terminal_font_select = self.terminal_font_select.clone();
 
-        let app_page = SettingPage::new("App")
+        let app_page = SettingPage::new("General")
             .icon(IconName::Settings2)
-            .description("Appearance, timezone, and startup navigation preferences.")
+            .description("Timezone, startup, and navigation preferences.")
             .default_open(true)
             .groups([
                 SettingGroup::new()
                     .items([
-                        SettingItem::render(|_, _, cx| crate::theme_picker::appearance(cx))
-                            .keywords(["Theme", "Appearance", "Palette"]),
                         SettingItem::new(
                             "Timezone",
                             SettingField::render(move |options, _, _| {
@@ -391,13 +435,6 @@ impl PreferencesWindow {
                             ).default_value(false),
                         ).disabled(!cfg!(target_os = "macos"))
                             .description("Start Iceon when you sign in to macOS. Changes update Iceon's login registration."),
-                        SettingItem::new(
-                            "Auto-hide Hotbar",
-                            SettingField::switch(
-                                |cx: &App| current_prefs(cx).app.auto_hide_hotbar,
-                                |enabled, cx| mutate_preferences(cx, |prefs| prefs.app.auto_hide_hotbar = enabled),
-                            ).default_value(false),
-                        ).description("Hide the cluster icon rail until you hover over the left edge."),
                         SettingItem::new(
                             "Show Tray Icon",
                             SettingField::switch(
@@ -755,6 +792,7 @@ impl PreferencesWindow {
 
         vec![
             app_page,
+            SettingPage::new("Themes"),
             proxy_page,
             kubernetes_page,
             editor_page,
@@ -848,9 +886,10 @@ impl Render for PreferencesWindow {
                                                 .items_center()
                                                 .child(gpui_kit::component::Icon::new(match ix {
                                                     0 => IconName::Settings2,
-                                                    1 => IconName::Network,
-                                                    2 => IconName::LayoutDashboard,
-                                                    3 => IconName::FileText,
+                                                    1 => IconName::Palette,
+                                                    2 => IconName::Network,
+                                                    3 => IconName::LayoutDashboard,
+                                                    4 => IconName::FileText,
                                                     _ => IconName::SquareTerminal,
                                                 }))
                                                 .child(
@@ -876,21 +915,28 @@ impl Render for PreferencesWindow {
                             )),
                     )
                     .child(
-                        div().flex_1().min_w_0().h_full().child(
-                            Settings::new(("iceon-settings-page", self.section))
-                                .small()
-                                .sidebar_width(px(0.0))
-                                .sidebar_size_range(px(0.0)..px(0.0))
-                                .sidebar_style(
-                                    &StyleRefinement::default()
-                                        .w(px(0.0))
-                                        .min_w(px(0.0))
-                                        .max_w(px(0.0))
-                                        .overflow_hidden(),
-                                )
-                                .with_group_variant(GroupBoxVariant::Normal)
-                                .page(self.build_pages(cx).remove(self.section)),
-                        ),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(if self.section == 1 {
+                                self.themes_settings.clone().into_any_element()
+                            } else {
+                                Settings::new(("iceon-settings-page", self.section))
+                                    .small()
+                                    .sidebar_width(px(0.0))
+                                    .sidebar_size_range(px(0.0)..px(0.0))
+                                    .sidebar_style(
+                                        &StyleRefinement::default()
+                                            .w(px(0.0))
+                                            .min_w(px(0.0))
+                                            .max_w(px(0.0))
+                                            .overflow_hidden(),
+                                    )
+                                    .with_group_variant(GroupBoxVariant::Normal)
+                                    .page(self.build_pages(cx).remove(self.section))
+                                    .into_any_element()
+                            }),
                     ),
             )
     }

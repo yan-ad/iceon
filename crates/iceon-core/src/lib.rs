@@ -9,3 +9,4 @@ pub mod route_history;
 pub mod runtime;
 pub mod secrets;
 pub mod tls;
+pub mod zed_themes;

@@ -157,6 +157,15 @@ fn breadcrumb_choices(section: &str, group_level: bool) -> Vec<(String, String)>
 
 /// GKE's generated context is `gke_<project>_<location>_<cluster>`.
 /// Only shorten the display label; routing and dropdown identity stay unchanged.
+fn header_controls_width(sidebar: f32, open: bool, macos: bool) -> f32 {
+    let inset = if macos { 80.0 } else { 12.0 };
+    if open {
+        (sidebar - inset).max(96.0)
+    } else {
+        96.0
+    }
+}
+
 fn compact_cluster_name(name: &str) -> &str {
     name.strip_prefix("gke_")
         .and_then(|context| {
@@ -269,7 +278,7 @@ impl IceonApp {
                 .iter()
                 .find(|item| &item.id == cluster_id)
                 .map(|item| item.id.clone()),
-            Route::Catalog | Route::Secrets => None,
+            Route::Setup | Route::Secrets => None,
         };
         let selected_cluster = items
             .iter()
@@ -325,7 +334,10 @@ impl IceonApp {
                             .flex_1()
                             .min_w_0()
                             .items_center()
-                            .gap_1p5()
+                            .gap_0()
+                            .child(h_flex().items_center().gap_1p5().h_full().flex_shrink_0()
+                                .w(px(header_controls_width(self.navigation_widths.sidebar_width(), matches!(self.history.current(), Route::Cluster { .. }) && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed, cfg!(target_os = "macos"))))
+                                .border_r_1().border_color(cx.theme().sidebar_border)
                             .when(matches!(self.history.current(), Route::Cluster { .. }), |navigation| navigation.child(
                                 Button::new("nav-toggle-sidebar")
                                     .text_color(cx.theme().sidebar_foreground)
@@ -339,13 +351,6 @@ impl IceonApp {
                                         cx.notify();
                                     })),
                             ))
-                            .child(
-                                Button::new("nav-catalog-btn").ghost().xsmall()
-                                    .icon(gpui_kit_assets::IconName::House)
-                                    .text_color(cx.theme().sidebar_foreground)
-                                    .tooltip("Home · Clusters").accessibility_label("Home · Clusters")
-                                    .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Catalog, true, window, cx))),
-                            )
                             .child(
                                 Button::new("nav-back-btn")
                                     .text_color(cx.theme().sidebar_foreground)
@@ -382,11 +387,12 @@ impl IceonApp {
                                         }
                                     })),
                             )
-                            .when(!matches!(self.history.current(), Route::Catalog), |navigation| navigation.child(
+                            )
+                            .when(!matches!(self.history.current(), Route::Setup), |navigation| navigation.child(
                                 h_flex()
                                     .id("titlebar-cluster-switcher")
                                     .min_w_0()
-                                    .ml_3()
+                                    .pl_3()
                                     .items_center()
                                     .gap_2()
                                     .when_some(selected_cluster, |bar, cluster| {
@@ -497,7 +503,7 @@ impl IceonApp {
                                     })
                                     .when(selected_id.is_none(), |bar| {
                                         let section_name = match self.history.current() {
-                                            Route::Catalog => "Clusters",
+                                            Route::Setup => "Cluster setup",
                                             _ => "Select a cluster",
                                         };
                                         bar.child(
@@ -579,6 +585,14 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     use super::cluster_choices;
+    #[test]
+    fn header_split_tracks_sidebar_width_and_native_inset() {
+        assert_eq!(super::header_controls_width(252., true, true) + 80., 252.);
+        assert_eq!(super::header_controls_width(420., true, true) + 80., 420.);
+        assert_eq!(super::header_controls_width(252., true, false) + 12., 252.);
+        assert_eq!(super::header_controls_width(252., false, true), 96.);
+    }
+
     #[test]
     fn expanded_sidebar_and_breadcrumbs_share_overview_first_and_group_labels() {
         let groups = crate::navigation::CLUSTER_SECTIONS;

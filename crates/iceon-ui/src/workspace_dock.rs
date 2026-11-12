@@ -283,8 +283,7 @@ impl Render for WorkspacePanel {
             .owner
             .update(cx, |app, cx| match kind {
                 PanelKind::Cluster => match app.history.current() {
-                    Route::Catalog if !app.home_catalog_visible => app.render_welcome_view(cx),
-                    Route::Catalog => app.render_catalog_view(window, cx).into_any_element(),
+                    Route::Setup => app.render_cluster_setup(cx).into_any_element(),
                     Route::Secrets => app.render_secrets_view(window, cx).into_any_element(),
                     Route::Cluster { .. } => app.render_cluster_main(window, cx),
                 },

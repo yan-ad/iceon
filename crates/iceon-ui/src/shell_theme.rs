@@ -297,7 +297,152 @@ fn custom_colors(colors: &mut ThemeColor, theme: AppTheme) {
     colors.chart_grid = border;
 }
 
-/// Shared semantic tag roles, deliberately applied after every custom palette.
+/// Parse Zed's CSS hex notation without involving UI state or filesystem access.
+/// The RGB word is kept separate from alpha for contrast/derived button colors.
+fn parse_zed_color(value: &str) -> Option<(u32, f32)> {
+    let hex = value.strip_prefix('#')?;
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let word = u32::from_str_radix(hex, 16).ok()?;
+    Some(match hex.len() {
+        3 | 4 => {
+            let rgb = if hex.len() == 4 { word >> 4 } else { word };
+            let rgb = ((rgb & 0xf00) << 12)
+                | ((rgb & 0xf00) << 8)
+                | ((rgb & 0xf0) << 8)
+                | ((rgb & 0xf0) << 4)
+                | ((rgb & 0xf) << 4)
+                | (rgb & 0xf);
+            (
+                rgb,
+                if hex.len() == 4 {
+                    (word & 15) as f32 / 15.0
+                } else {
+                    1.0
+                },
+            )
+        }
+        6 => (word, 1.0),
+        8 => (word >> 8, (word & 255) as f32 / 255.0),
+        _ => return None,
+    })
+}
+
+fn zed_color(theme: &iceon_core::zed_themes::ZedTheme, key: &str) -> Option<Hsla> {
+    let (rgb, alpha) = parse_zed_color(theme.style.get(key)?.as_str()?)?;
+    Some(neutral(rgb, alpha))
+}
+
+fn zed_mode(theme: &iceon_core::zed_themes::ZedTheme) -> ThemeMode {
+    if theme.appearance == "light" {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    }
+}
+
+/// Project only supplied, valid tokens; absent/invalid roles retain the fresh
+/// base palette. This is deliberately the LAST layer, including status colors.
+fn apply_zed_theme(colors: &mut ThemeColor, theme: &iceon_core::zed_themes::ZedTheme) {
+    macro_rules! roles {
+        ($key:literal => $($field:ident),+ $(,)?) => {
+            if let Some(color) = zed_color(theme, $key) {
+                $(colors.$field = color;)+
+            }
+        };
+    }
+    roles!("background" => background, list, table);
+    roles!("surface.background" => muted, secondary, button, button_secondary,
+        accordion, group_box, description_list_label, list_even, list_head,
+        table_even, table_head, table_foot, tab, tab_bar, sidebar, title_bar, status_bar);
+    roles!("elevated_surface.background" => popover, accent, skeleton, tab_bar_segmented);
+    roles!("text" => foreground, caret, popover_foreground, accent_foreground,
+        secondary_foreground, button_foreground, button_secondary_foreground,
+        group_box_foreground, table_head_foreground, tab_active_foreground, sidebar_foreground);
+    roles!("text.muted" => muted_foreground, description_list_label_foreground,
+        table_foot_foreground, tab_foreground);
+    roles!("border" => border, window_border, input, sidebar_border,
+        title_bar_border, status_bar_border, table_row_border, scrollbar_thumb,
+        switch, chart_grid);
+    roles!("element.background" => button, button_secondary, secondary);
+    roles!("element.hover" => button_hover, button_secondary_hover, secondary_hover,
+        list_hover, table_hover);
+    roles!("element.active" => button_active, button_secondary_active, secondary_active);
+    roles!("element.selected" => accent, sidebar_accent, list_active, table_active);
+    roles!("panel.background" => sidebar);
+    roles!("title_bar.background" => title_bar);
+    roles!("status_bar.background" => status_bar);
+    roles!("tab_bar.background" => tab_bar);
+    roles!("tab.inactive_background" => tab);
+    roles!("tab.active_background" => tab_active);
+    // Iceon's code inputs consume HighlightTheme editor roles separately below.
+    roles!("text.accent" => link, link_hover, link_active, sidebar_accent_foreground,
+        list_active_border, table_active_border, drag_border);
+    if let Some((rgb, alpha)) = theme
+        .style
+        .get("icon.accent")
+        .or_else(|| theme.style.get("text.accent"))
+        .and_then(|value| value.as_str())
+        .and_then(parse_zed_color)
+    {
+        colors.primary = neutral(rgb, alpha);
+        colors.primary_hover = neutral(shade(rgb, 0.94), alpha);
+        colors.primary_active = neutral(shade(rgb, 0.88), alpha);
+        colors.primary_foreground = neutral(primary_ink(rgb), 1.0);
+        colors.button_primary = colors.primary;
+        colors.button_primary_hover = colors.primary_hover;
+        colors.button_primary_active = colors.primary_active;
+        colors.button_primary_foreground = colors.primary_foreground;
+        colors.sidebar_primary = colors.primary;
+        colors.sidebar_primary_foreground = colors.primary_foreground;
+        colors.progress_bar = colors.primary;
+        colors.slider_bar = colors.primary;
+        colors.ring = colors.primary;
+    }
+    roles!("border.focused" => ring);
+    roles!("border.selected" => list_active_border, table_active_border);
+    roles!("error" => danger, danger_hover, danger_active, button_danger,
+        button_danger_hover, button_danger_active);
+    roles!("success" => success, success_hover, success_active, button_success,
+        button_success_hover, button_success_active);
+    roles!("warning" => warning, warning_hover, warning_active, button_warning,
+        button_warning_hover, button_warning_active);
+    roles!("info" => info, info_hover, info_active, button_info, button_info_hover, button_info_active);
+    if let Some(selection) = theme
+        .style
+        .get("players")
+        .and_then(|value| value.as_array())
+        .and_then(|players| players.first())
+        .and_then(|player| player.get("selection"))
+        .and_then(|value| value.as_str())
+        .and_then(parse_zed_color)
+    {
+        colors.selection = neutral(selection.0, selection.1);
+    }
+}
+
+/// Only editor chrome is translated here. Zed syntax scopes/font styles are
+/// not imported: the kit's built-in syntax palette remains the mode default.
+fn apply_zed_editor(theme: &mut Theme, zed: &iceon_core::zed_themes::ZedTheme) {
+    let style = &mut std::sync::Arc::make_mut(&mut theme.highlight_theme).style;
+    macro_rules! editor {
+        ($key:literal, $field:ident) => {
+            if let Some(color) = zed_color(zed, $key) {
+                style.$field = Some(color);
+            }
+        };
+    }
+    editor!("editor.background", editor_background);
+    editor!("editor.foreground", editor_foreground);
+    editor!("editor.active_line.background", editor_active_line);
+    editor!("editor.line_number", editor_line_number);
+    editor!("editor.active_line_number", editor_active_line_number);
+    editor!("editor.gutter.background", editor_gutter_background);
+    editor!("editor.invisible", editor_invisible);
+}
+
+/// Default semantic tag roles, applied after legacy palettes but before Zed tokens.
 fn semantic_tag_colors(colors: &mut ThemeColor, mode: ThemeMode) {
     let [danger, success, warning, info] = if mode.is_dark() {
         iceon_core::preferences::DARK_TAG_COLORS
@@ -321,7 +466,7 @@ fn semantic_tag_colors(colors: &mut ThemeColor, mode: ThemeMode) {
 /// Passing no window is useful before opening one: set WindowOptions'
 /// `window_background: background_appearance()` as well. Defaults/native font
 /// resolution remain under gpui-kit ownership; this never installs a web font.
-pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
+pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) -> ThemeMode {
     // The settings window's legacy caller maps System to Dark. Resolve from
     // persisted policy here so every write path follows the native appearance.
     let mode = cx
@@ -344,6 +489,11 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
         } else {
             AppTheme::Light
         });
+    let zed = cx
+        .try_global::<crate::preferences_view::GlobalPreferencesState>()
+        .and_then(|state| state.preferences.app.zed_theme.as_deref())
+        .and_then(|id| crate::themes_settings::find(id, cx));
+    let mode = zed.as_ref().map_or(mode, zed_mode);
     // Reload even when the mode is unchanged: custom -> custom and custom ->
     // default must not inherit any of the previous palette's component roles.
     Theme::change(mode, None, cx);
@@ -351,21 +501,22 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
         brand_colors(&mut theme.colors, mode);
         custom_colors(&mut theme.colors, selected);
         semantic_tag_colors(&mut theme.colors, mode);
+        // Configurations without a highlight section do not reset this in
+        // Theme::change. Never retain editor overrides from the previous import.
+        theme.highlight_theme = if mode.is_dark() {
+            gpui_kit::component::highlighter::HighlightTheme::default_dark()
+        } else {
+            gpui_kit::component::highlighter::HighlightTheme::default_light()
+        };
+        if let Some(zed) = &zed {
+            apply_zed_theme(&mut theme.colors, zed);
+            apply_zed_editor(theme, zed);
+        }
     });
     if let Some(window) = window {
         window.set_background_appearance(background_appearance());
     }
-}
-
-/// Preview roles use the same palette source as the live theme.
-pub(crate) fn preview_colors(theme: AppTheme) -> [u32; 4] {
-    let [background, surface, elevated, _, _, _, _, primary] =
-        theme.palette_colors().unwrap_or_else(|| {
-            let mut colors = AppTheme::Light.palette_colors().expect("Light palette");
-            colors[1] = AppTheme::Dark.palette_colors().expect("Dark palette")[1];
-            colors
-        });
-    [background, surface, elevated, primary]
+    mode
 }
 
 #[cfg(test)]
@@ -374,6 +525,150 @@ mod tests {
         CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
     };
     use gpui_kit::component::theme::{ThemeColor, ThemeMode};
+
+    fn zed_fixture(appearance: &str, entries: &[(&str, &str)]) -> iceon_core::zed_themes::ZedTheme {
+        iceon_core::zed_themes::ZedTheme {
+            id: "fixture/Test".into(),
+            extension: "fixture".into(),
+            name: "Test".into(),
+            appearance: appearance.into(),
+            style: entries
+                .iter()
+                .map(|(key, value)| ((*key).into(), (*value).into()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn zed_hex_forms_preserve_alpha_and_reject_invalid_input() {
+        for (input, rgb, alpha) in [
+            ("#abc", 0xaabbcc, 1.0),
+            ("#abcd", 0xaabbcc, 13.0 / 15.0),
+            ("#ABCDEF", 0xabcdef, 1.0),
+            ("#12345678", 0x123456, 120.0 / 255.0),
+            ("#0000", 0, 0.0),
+            ("#fffF", 0xffffff, 1.0),
+        ] {
+            assert_eq!(super::parse_zed_color(input), Some((rgb, alpha)));
+            let zed = zed_fixture("light", &[("background", input)]);
+            assert_eq!(
+                super::zed_color(&zed, "background"),
+                Some(neutral(rgb, alpha))
+            );
+        }
+        for input in [
+            "",
+            "123456",
+            "#12",
+            "#12345",
+            "#1234567",
+            "#123456789",
+            "#xyz",
+            "#１２３",
+            " #fff",
+        ] {
+            assert_eq!(super::parse_zed_color(input), None, "{input}");
+        }
+    }
+
+    #[test]
+    fn zed_tokens_are_the_last_layer_including_semantics_and_editor() {
+        let zed = zed_fixture(
+            "light",
+            &[
+                ("background", "#1234"),
+                ("surface.background", "#223344"),
+                ("elevated_surface.background", "#334455"),
+                ("text", "#445566"),
+                ("text.muted", "#556677"),
+                ("border", "#667788"),
+                ("element.background", "#778899"),
+                ("element.hover", "#8899aa"),
+                ("element.active", "#99aabb"),
+                ("element.selected", "#aabbcc"),
+                ("panel.background", "#10203080"),
+                ("title_bar.background", "#203040"),
+                ("status_bar.background", "#304050"),
+                ("tab_bar.background", "#405060"),
+                ("tab.active_background", "#506070"),
+                ("text.accent", "#607080"),
+                ("icon.accent", "#708090"),
+                ("border.focused", "#8090a0"),
+                ("error", "#900000"),
+                ("success", "#009000"),
+                ("warning", "#909000"),
+                ("info", "#000090"),
+                ("editor.background", "#0a0b0c80"),
+                ("editor.foreground", "#abcdef"),
+            ],
+        );
+        assert_eq!(super::zed_mode(&zed), ThemeMode::Light);
+        let mut theme = gpui_kit::component::theme::Theme::default();
+        brand_colors(&mut theme.colors, ThemeMode::Light);
+        super::semantic_tag_colors(&mut theme.colors, ThemeMode::Light);
+        super::apply_zed_theme(&mut theme.colors, &zed);
+        super::apply_zed_editor(&mut theme, &zed);
+        let colors = theme.colors;
+        assert_eq!(colors.background, neutral(0x112233, 4.0 / 15.0));
+        assert_eq!(colors.table, colors.background);
+        assert_eq!(colors.popover, neutral(0x334455, 1.0));
+        assert_eq!(colors.sidebar, neutral(0x102030, 128.0 / 255.0));
+        assert_eq!(colors.title_bar, neutral(0x203040, 1.0));
+        assert_eq!(colors.status_bar, neutral(0x304050, 1.0));
+        assert_eq!(colors.tab_bar, neutral(0x405060, 1.0));
+        assert_eq!(colors.tab_active, neutral(0x506070, 1.0));
+        assert_eq!(colors.link, neutral(0x607080, 1.0));
+        assert_eq!(colors.primary, neutral(0x708090, 1.0));
+        assert_eq!(colors.ring, neutral(0x8090a0, 1.0));
+        assert_eq!(colors.button_hover, neutral(0x8899aa, 1.0));
+        assert_eq!(colors.button_active, neutral(0x99aabb, 1.0));
+        assert_eq!(colors.list_active, neutral(0xaabbcc, 1.0));
+        assert_eq!(colors.danger, neutral(0x900000, 1.0));
+        assert_eq!(colors.success, neutral(0x009000, 1.0));
+        assert_eq!(colors.warning, neutral(0x909000, 1.0));
+        assert_eq!(colors.info, neutral(0x000090, 1.0));
+        assert_eq!(
+            theme.highlight_theme.style.editor_background,
+            Some(neutral(0x0a0b0c, 128.0 / 255.0))
+        );
+        assert_eq!(
+            theme.highlight_theme.style.editor_foreground,
+            Some(neutral(0xabcdef, 1.0))
+        );
+    }
+
+    #[test]
+    fn switching_zed_themes_resets_unspecified_roles_and_invalid_tokens_are_ignored() {
+        // Same-mode imports must start from a fresh base, not the previous import.
+        let first = zed_fixture(
+            "dark",
+            &[
+                ("background", "#123"),
+                ("success", "#456"),
+                ("border.focused", "#789"),
+            ],
+        );
+        let second = zed_fixture("dark", &[("background", "invalid"), ("text", "#abc")]);
+        let compose = |zed: Option<&iceon_core::zed_themes::ZedTheme>| {
+            let mut colors = ThemeColor::default();
+            brand_colors(&mut colors, ThemeMode::Dark);
+            super::semantic_tag_colors(&mut colors, ThemeMode::Dark);
+            if let Some(zed) = zed {
+                super::apply_zed_theme(&mut colors, zed);
+            }
+            colors
+        };
+        let imported = compose(Some(&first));
+        let switched = compose(Some(&second));
+        let default = compose(None);
+        assert_eq!(super::zed_mode(&first), ThemeMode::Dark);
+        assert_ne!(imported.background, switched.background);
+        assert_eq!(switched.background, default.background);
+        assert_eq!(switched.success, default.success);
+        assert_eq!(switched.ring, default.ring);
+        assert_eq!(switched.foreground, neutral(0xaabbcc, 1.0));
+        assert_eq!(compose(None), default);
+    }
 
     #[test]
     fn semantic_tags_match_requested_colors_for_every_palette() {

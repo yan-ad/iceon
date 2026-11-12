@@ -16,14 +16,7 @@ fn destinations(
     clusters: &[iceon_core::catalog::ClusterSummary],
     current: &Route,
 ) -> Vec<(String, Vec<String>, Route)> {
-    let mut entries = vec![
-        (
-            "Home · Clusters".into(),
-            vec!["catalog".into()],
-            Route::Catalog,
-        ),
-        ("Secrets".into(), vec!["vault".into()], Route::Secrets),
-    ];
+    let mut entries = vec![("Secrets".into(), vec!["vault".into()], Route::Secrets)];
     entries.extend(clusters.iter().map(|cluster| {
         (
             format!("Cluster · {}", cluster.name),
@@ -117,10 +110,9 @@ mod tests {
     use super::{Route, destinations};
     #[test]
     fn no_cluster_has_only_global_routes() {
-        let entries = destinations(&[], &Route::Catalog);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].2, Route::Catalog);
-        assert_eq!(entries[1].2, Route::Secrets);
+        let entries = destinations(&[], &Route::Setup);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].2, Route::Secrets);
     }
     #[test]
     fn sections_target_the_current_cluster_and_are_not_truncated() {
@@ -131,8 +123,8 @@ mod tests {
                 section: "pods".into(),
             },
         );
-        assert_eq!(entries.len(), 2 + iceon_core::catalog::SECTIONS.len());
-        for (_, _, route) in entries.iter().skip(2) {
+        assert_eq!(entries.len(), 1 + iceon_core::catalog::SECTIONS.len());
+        for (_, _, route) in entries.iter().skip(1) {
             assert!(matches!(route, Route::Cluster { cluster_id, .. } if cluster_id == "active"));
         }
     }

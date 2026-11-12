@@ -9,15 +9,33 @@ use iceon_core::secrets;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
-    Catalog,
+    Setup,
     Secrets,
     Cluster { cluster_id: String, section: String },
+}
+
+pub(crate) fn resolve_workspace_route(route: Route, clusters: &[ClusterSummary]) -> Route {
+    match route {
+        Route::Secrets => Route::Secrets,
+        Route::Cluster { ref cluster_id, .. }
+            if clusters.iter().any(|cluster| cluster.id == *cluster_id) =>
+        {
+            route
+        }
+        _ => clusters
+            .first()
+            .map(|cluster| Route::Cluster {
+                cluster_id: cluster.id.clone(),
+                section: "overview".into(),
+            })
+            .unwrap_or(Route::Setup),
+    }
 }
 
 impl Route {
     pub fn to_saved_route(&self) -> SavedRoute {
         match self {
-            Self::Catalog => SavedRoute {
+            Self::Setup => SavedRoute {
                 path: "/catalog".into(),
                 section: None,
                 definition: None,
@@ -49,7 +67,7 @@ impl Route {
 
     pub fn from_saved_route(saved: SavedRoute) -> Self {
         if iceon_core::route_history::validate(&saved).is_err() {
-            return Self::Catalog;
+            return Self::Setup;
         }
         if saved.path == "/secrets" {
             Self::Secrets
@@ -63,7 +81,7 @@ impl Route {
                 section,
             }
         } else {
-            Self::Catalog
+            Self::Setup
         }
     }
 }
@@ -71,6 +89,46 @@ impl Route {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+    #[test]
+    fn startup_opens_first_cluster_preserves_valid_routes_and_handles_empty_config() {
+        let clusters = vec![ClusterSummary {
+            id: "first".into(),
+            name: "First".into(),
+            context_name: "first-context".into(),
+            source: "kubeconfig".into(),
+            status: "disconnected",
+            pinned: false,
+            pinned_sections: vec![],
+            labels: vec![],
+            color: "#123456".into(),
+        }];
+        let overview = Route::Cluster {
+            cluster_id: "first".into(),
+            section: "overview".into(),
+        };
+        assert_eq!(resolve_workspace_route(Route::Setup, &clusters), overview);
+        assert_eq!(
+            resolve_workspace_route(
+                Route::Cluster {
+                    cluster_id: "missing".into(),
+                    section: "pods".into()
+                },
+                &clusters
+            ),
+            overview
+        );
+        let pods = Route::Cluster {
+            cluster_id: "first".into(),
+            section: "pods".into(),
+        };
+        assert_eq!(resolve_workspace_route(pods.clone(), &clusters), pods);
+        assert_eq!(resolve_workspace_route(Route::Setup, &[]), Route::Setup);
+        assert_eq!(
+            resolve_workspace_route(Route::Secrets, &clusters),
+            Route::Secrets
+        );
+    }
+
     use std::collections::HashSet;
 
     #[test]
@@ -236,7 +294,7 @@ mod route_tests {
     #[test]
     fn routes_round_trip_through_validated_core_history() {
         for route in [
-            Route::Catalog,
+            Route::Setup,
             Route::Secrets,
             Route::Cluster {
                 cluster_id: "local-id".into(),
@@ -262,7 +320,7 @@ mod route_tests {
                     section: None,
                     definition: None,
                 }),
-                Route::Catalog,
+                Route::Setup,
             );
         }
         assert_eq!(
@@ -297,7 +355,7 @@ mod route_tests {
                 definition: None,
             },
         ] {
-            assert_eq!(Route::from_saved_route(saved), Route::Catalog);
+            assert_eq!(Route::from_saved_route(saved), Route::Setup);
         }
     }
 }
@@ -311,7 +369,7 @@ pub struct NavigationHistory {
 impl Default for NavigationHistory {
     fn default() -> Self {
         Self {
-            entries: vec![Route::Catalog],
+            entries: vec![Route::Setup],
             index: 0,
         }
     }

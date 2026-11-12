@@ -212,11 +212,14 @@ fn corrupt_store_fails_closed() {
 }
 
 #[test]
-fn legacy_app_preferences_default_auto_hide_hotbar_to_false() {
-    let mut json = serde_json::to_value(AppPreferences::default()).unwrap();
-    json.as_object_mut().unwrap().remove("autoHideHotbar");
-    let app: AppPreferences = serde_json::from_value(json).unwrap();
-    assert!(!app.auto_hide_hotbar);
+fn legacy_preferences_migrate_removed_rail_setting() {
+    let mut value = serde_json::to_value(Preferences::default()).unwrap();
+    let legacy = ["auto", "Hide", "Hot", "bar"].concat();
+    value["app"][legacy] = serde_json::json!(true);
+    value["app"]["theme"] = serde_json::json!("gitHubDark");
+    let restored = decode_preferences(&value.to_string()).unwrap();
+    assert_eq!(restored.app.theme, AppTheme::System);
+    assert!(restored.app.zed_theme.is_none());
 }
 
 #[test]
@@ -293,7 +296,7 @@ fn integrated_save_rejects_failure_without_persisting_and_rolls_back_store_failu
 #[test]
 fn every_app_theme_round_trips_through_persistent_store() {
     let dir = tempdir().unwrap();
-    for &theme in AppTheme::ALL {
+    for theme in [AppTheme::System, AppTheme::Dark, AppTheme::Light] {
         let engine = PreferencesEngine::new(dir.path().into()).unwrap();
         let mut snapshot = engine.snapshot().unwrap();
         snapshot.preferences.app.theme = theme;

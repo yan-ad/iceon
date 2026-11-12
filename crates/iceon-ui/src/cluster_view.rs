@@ -48,6 +48,9 @@ fn bounded_panel_width(value: f32, minimum: f32, maximum: f32, fallback: f32) ->
 }
 
 impl NavigationWidths {
+    pub(crate) fn sidebar_width(&self) -> f32 {
+        self.sidebar
+    }
     fn path() -> std::path::PathBuf {
         iceon_core::runtime::app_data_dir().join("navigation-widths")
     }
@@ -2121,7 +2124,7 @@ impl IceonApp {
                     .h_full()
                     .child(div().flex_1().min_h_0().min_w_0().children(area))
                     .when(
-                        !console_open && !matches!(self.history.current(), Route::Catalog),
+                        !console_open && !matches!(self.history.current(), Route::Setup),
                         |column| column.child(self.render_console_tabs(window, cx)),
                     ),
             )

@@ -14,6 +14,7 @@ mod custom_resource_navigation;
 mod empty_state;
 mod selectable_text;
 mod theme_picker;
+mod themes_settings;
 #[cfg(debug_assertions)]
 pub use console_probe::run as run_console_probe;
 pub mod inspector_view;
@@ -53,7 +54,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use cluster_view::OverviewSnapshot;
-use iceon_core::catalog::{CatalogEngine, CatalogSnapshot, ClusterSummary};
+use iceon_core::catalog::{CatalogEngine, CatalogSnapshot};
 use iceon_core::connection::{
     ConnectionEngine, ConnectionSnapshot, ResourcePage,
     custom_resources::CustomResourcePage,
@@ -88,8 +89,6 @@ pub struct IceonApp {
     pub(crate) catalog_error: Option<String>,
     pub(crate) catalog_refresh_pending: bool,
     pub(crate) cluster_health: Vec<iceon_core::connection::health::ClusterHealthSnapshot>,
-    pub(crate) home_catalog_visible: bool,
-    pub(crate) pending_remove_cluster: Option<ClusterSummary>,
 
     pub(crate) history: NavigationHistory,
     pub(crate) cluster_order: Vec<String>,
@@ -158,7 +157,6 @@ pub struct IceonApp {
 
     // GPUI input & editor entities
     pub(crate) command_state: Entity<gpui_kit::component::command::CommandState>,
-    pub(crate) catalog_search_input: Entity<InputState>,
     pub(crate) resource_filter_input: Entity<InputState>,
     pub(crate) namespace_select: Entity<cluster_view::NamespaceSelectState>,
     pub(crate) namespace_select_items: Vec<cluster_view::NamespaceChoice>,
@@ -237,10 +235,12 @@ impl IceonApp {
                 .ok()
                 .flatten()
                 .map(Route::from_saved_route)
-                .unwrap_or(Route::Catalog)
+                .unwrap_or(Route::Setup)
         } else {
-            Route::Catalog
+            Route::Setup
         };
+        let initial_route =
+            navigation::resolve_workspace_route(initial_route, &catalog_snapshot.clusters);
         let (cluster_select, cluster_select_items) =
             shell_header::create_cluster_select(&catalog_snapshot, &initial_route, window, cx);
         let expanded_cluster_groups = match &initial_route {
@@ -250,8 +250,6 @@ impl IceonApp {
 
         let command_state =
             cx.new(|cx| gpui_kit::component::command::CommandState::new(window, cx));
-        let catalog_search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter clusters..."));
         let resource_filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search all resources by name…"));
         cx.observe_in(&resource_filter_input, window, |this, _, window, cx| {
@@ -346,8 +344,6 @@ impl IceonApp {
             catalog_error: None,
             catalog_refresh_pending: false,
             cluster_health: Vec::new(),
-            home_catalog_visible: false,
-            pending_remove_cluster: None,
             history: NavigationHistory::new(initial_route.clone()),
             cluster_order,
             cluster_select,
@@ -406,7 +402,6 @@ impl IceonApp {
             port_forwards: vec![],
             secrets_state: SecretsWorkspaceState::default(),
             command_state,
-            catalog_search_input,
             resource_filter_input,
             namespace_select,
             namespace_select_items,
@@ -439,6 +434,7 @@ impl IceonApp {
             error: None,
             main_app: cx.entity().downgrade(),
         });
+        crate::themes_settings::init(cx);
         let initial_mode = preference_runtime::theme_mode(
             &app.preferences_draft,
             matches!(
@@ -548,6 +544,15 @@ impl IceonApp {
         self.operation_counter
     }
 
+    pub(crate) fn ensure_cluster_route(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.history.current().clone();
+        let resolved =
+            navigation::resolve_workspace_route(current.clone(), &self.catalog_snapshot.clusters);
+        if resolved != current {
+            self.navigate(resolved, true, window, cx);
+        }
+    }
+
     pub(crate) fn navigate(
         &mut self,
         route: Route,
@@ -555,6 +560,7 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let route = navigation::resolve_workspace_route(route, &self.catalog_snapshot.clusters);
         self.cancel_resource_pagination();
         self.stop_active_pod_sync();
         if push_history {
@@ -566,11 +572,10 @@ impl IceonApp {
                 .route_history_save(route.to_saved_route());
         }
         match route {
-            Route::Catalog => {
+            Route::Setup => {
                 // Home has no console chrome until explicitly opened. Keep
                 // sessions alive so returning to their tabs preserves buffers.
                 self.pod_dock_open = false;
-                self.home_catalog_visible = false;
                 self.refresh_catalog(cx);
             }
             Route::Secrets => {
@@ -593,6 +598,7 @@ impl IceonApp {
 
 impl Render for IceonApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_cluster_route(window, cx);
         self.sync_runtime_preferences(window, cx);
         self.sync_menus(window, cx);
         self.menu_action_surface(cx)
@@ -601,10 +607,7 @@ impl Render for IceonApp {
             .flex_col()
             .size_full()
             .text_color(cx.theme().foreground)
-            .when(
-                !matches!(self.history.current(), Route::Catalog) || self.home_catalog_visible,
-                |shell| shell.child(self.render_title_bar(window, cx)),
-            )
+            .child(self.render_title_bar(window, cx))
             .child(
                 h_flex()
                     .flex_1()

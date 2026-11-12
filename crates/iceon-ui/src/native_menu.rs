@@ -9,7 +9,7 @@ use gpui_kit::{
     OwnedMenuItem, Window, div,
 };
 
-use crate::{IceonApp, navigation::Route};
+use crate::IceonApp;
 use iceon_core::project::REPOSITORY_URL;
 
 #[path = "native_app.rs"]
@@ -28,7 +28,6 @@ gpui_kit::actions!(
         ShowMainWindow,
         AddCluster,
         CloseWindow,
-        Catalog,
         ToggleSidebar,
         CommandPalette,
         Back,
@@ -42,7 +41,6 @@ gpui_kit::actions!(
         ZoomIn,
         ZoomOut,
         FullScreen,
-        Welcome,
         Documentation,
         Licenses,
         Support,
@@ -85,7 +83,6 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) fn quick_access_menu() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Show Iceon", ShowMainWindow),
-        MenuItem::action("Catalog", Catalog),
         MenuItem::separator(),
         MenuItem::action("Preferences…", Preferences),
         MenuItem::separator(),
@@ -190,17 +187,9 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     });
     register!(CloseWindow, |_, _: &CloseWindow, window, _| window
         .remove_window());
-    register!(Catalog, |this, _: &Catalog, window, cx| {
-        cx.activate(true);
-        window.activate_window();
-        this.navigate(Route::Catalog, true, window, cx);
-    });
     register!(ToggleSidebar, |this, _: &ToggleSidebar, _, cx| {
         this.sidebar_collapsed = !this.sidebar_collapsed;
         cx.notify();
-    });
-    register!(Welcome, |this, _: &Welcome, window, cx| {
-        this.navigate(Route::Catalog, true, window, cx);
     });
     register!(CommandPalette, |this, _: &CommandPalette, window, cx| {
         this.toggle_command_palette(window, cx);
@@ -366,15 +355,9 @@ impl IceonApp {
                 this.prompt_import_kubeconfig(window, cx);
             }))
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
-            .on_action(cx.listener(|this, _: &Catalog, window, cx| {
-                this.navigate(Route::Catalog, true, window, cx);
-            }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
                 cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &Welcome, window, cx| {
-                this.navigate(Route::Catalog, true, window, cx);
             }))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
@@ -592,7 +575,6 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
                 .disabled(edit_disabled(6)),
         ]),
         Menu::new("View").items([
-            MenuItem::action("Catalog", Catalog),
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Command Palette…", CommandPalette),
             MenuItem::separator(),
@@ -617,7 +599,6 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
             MenuItem::action("Toggle Full Screen", FullScreen),
         ]),
         Menu::new("Help").items([
-            MenuItem::action("Welcome", Welcome),
             MenuItem::action("Documentation", Documentation),
             MenuItem::action("Licenses", Licenses),
             MenuItem::separator(),
@@ -637,7 +618,7 @@ mod tests {
     #[test]
     fn quick_access_menu_is_small_and_safe() {
         let items = quick_access_menu();
-        assert!(matches!(&items[2], MenuItem::Separator));
+        assert!(matches!(&items[1], MenuItem::Separator));
         assert!(items.iter().any(|item| matches!(item,
             MenuItem::Action { name, action, .. }
             if name.as_ref() == "Show Iceon" && action.name() == ShowMainWindow.name())));

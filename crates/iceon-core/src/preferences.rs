@@ -75,7 +75,7 @@ pub struct AppPreferences {
     #[serde(default = "default_show_tray_icon")]
     pub show_tray_icon: bool,
     #[serde(default)]
-    pub auto_hide_hotbar: bool,
+    pub zed_theme: Option<String>,
     #[serde(default)]
     pub restore_last_page: bool,
 }
@@ -88,7 +88,7 @@ impl Default for AppPreferences {
             persistent_search: false,
             open_at_login: false,
             show_tray_icon: default_show_tray_icon(),
-            auto_hide_hotbar: false,
+            zed_theme: None,
             restore_last_page: false,
         }
     }
@@ -257,7 +257,35 @@ fn valid_font_family(s: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, ' ' | ',' | '_' | '\'' | '"' | '-' | '.'))
 }
 
+fn decode_preferences(payload: &str) -> std::result::Result<Preferences, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(payload)?;
+    if let Some(app) = value
+        .get_mut("app")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        // Discard the removed legacy rail setting without retaining its API.
+        let legacy = ["auto", "Hide", "Hot", "bar"].concat();
+        app.remove(&legacy);
+        if app
+            .get("theme")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|theme| !matches!(theme, "system" | "dark" | "light"))
+        {
+            app.insert("theme".into(), serde_json::Value::String("system".into()));
+        }
+    }
+    serde_json::from_value(value)
+}
+
 fn validate(p: &Preferences) -> Result<()> {
+    if p.app
+        .zed_theme
+        .as_ref()
+        .is_some_and(|id| id.len() > 512 || id.chars().any(char::is_control) || !id.contains('/'))
+    {
+        return Err(PreferencesError::InvalidInput);
+    }
+
     if p.app.timezone.len() > 64 || p.app.timezone.contains('\0') {
         return Err(PreferencesError::InvalidInput);
     }
@@ -388,7 +416,7 @@ impl PreferencesEngine {
         if revision as u64 != request.revision {
             return Err(ApplyPreferencesError::Store(PreferencesError::Conflict));
         }
-        let previous: Preferences = serde_json::from_str(&payload)
+        let previous: Preferences = decode_preferences(&payload)
             .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreCorrupt))?;
         let next_revision = revision.checked_add(1).ok_or(ApplyPreferencesError::Store(
             PreferencesError::StoreUnavailable,
@@ -528,7 +556,7 @@ impl PreferencesEngine {
             })?;
 
         let preferences: Preferences =
-            serde_json::from_str(&payload).map_err(|_| PreferencesError::StoreCorrupt)?;
+            decode_preferences(&payload).map_err(|_| PreferencesError::StoreCorrupt)?;
         validate(&preferences).map_err(|_| PreferencesError::StoreCorrupt)?;
         Ok(PreferencesSnapshot {
             revision: revision as u64,

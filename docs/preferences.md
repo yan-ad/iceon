@@ -1,10 +1,10 @@
 # Preferences behavior
 
-Preferences has five flat sections: **App, Proxy, Kubernetes, Editor, Terminal**.
+Preferences has six flat sections: **General, Themes, Proxy, Kubernetes, Editor, Terminal**.
 Changes are persisted through the revision-checked preferences store. Validation or
 OS-integration failures keep the previous saved setting and show an error.
 
-## App
+## General
 
 - Theme follows the native window appearance in System mode, including subsequent
   OS appearance changes. Explicit Light/Dark overrides it.
@@ -16,7 +16,6 @@ OS-integration failures keep the previous saved setting and show an error.
 - Restore Last Page uses validated persisted route history at startup.
 - Open at Login writes/removes an Iceon-owned macOS LaunchAgent. It does not launch
   another instance immediately. Unsupported platforms disable the control.
-- Auto-hide Hotbar collapses the cluster icon rail to an 8px hover target.
 - Show Tray Icon creates/removes a real macOS status item. Clicking it activates
   the existing main window. Unsupported platforms disable the control.
 - Reset Sidebar Order restores the current cluster rail to catalog order.
@@ -84,3 +83,19 @@ helpers, editor modes/minimap mapping, terminal parsing, tray lifecycle, and exa
 navigation section order. Native tray clicks, login-at-next-session, and visual
 layout still require an interactive macOS smoke test; automated unit/build checks
 do not establish those OS interactions.
+
+## Themes
+
+System, Dark, and Light are available by default. System tracks macOS appearance.
+Install Catppuccin or GitHub Theme explicitly from this page, or browse the
+[Zed theme marketplace](https://zed.dev/extensions?filter=themes) and paste an
+extension ID or its `https://zed.dev/extensions/{id}` URL. Installation is manual;
+there are no automatic downloads or background updates. Select an installed variant
+to apply it immediately; Remove resets an active extension theme to System.
+
+Iceon imports Zed theme JSON/JSONC and license data only. It never runs extension
+plugins, WASM, language servers, or scripts. UI surfaces, accents, semantic colors,
+and editor surfaces are mapped into GPUI tokens; unsupported syntax scopes and
+Zed-only features retain native defaults. Metrics/status meaning is unchanged.
+Missing installed themes safely use the saved Dark/Light fallback. Existing
+embedded non-default palette preferences migrate to System.
