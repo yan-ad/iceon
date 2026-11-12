@@ -41,15 +41,10 @@ fn builtin_refresh_restart_errors_and_removal() {
     let connection = storage::open(&engine.directory).unwrap();
     assert!(!storage::load(&connection).unwrap().auto_discover);
     drop(connection);
-    let pinned = engine
-        .set_pin(PinRequest {
-            id: first.clusters[0].id.clone(),
-            pinned: true,
-        })
-        .unwrap();
-    assert_eq!(engine.list().unwrap(), pinned);
+    let saved = engine.list().unwrap();
+    assert_eq!(engine.list().unwrap(), saved);
     let restarted = CatalogEngine::new_with_home(directory.path().join("data"), Some(home.clone()));
-    assert_eq!(restarted.list().unwrap(), pinned);
+    assert_eq!(restarted.list().unwrap(), saved);
     let removed = restarted
         .remove(RemoveRequest {
             id: first.clusters[0].id.clone(),
@@ -96,18 +91,6 @@ fn mutations_do_not_rescan_default() {
     let added = add(&engine, "additional").unwrap();
     assert!(added.clusters.contains(&first.clusters[0]));
     assert!(!added.clusters.iter().any(|c| c.name == "production"));
-    let pinned = engine
-        .set_pin(PinRequest {
-            id: first.clusters[0].id.clone(),
-            pinned: true,
-        })
-        .unwrap();
-    assert!(
-        pinned
-            .clusters
-            .iter()
-            .any(|c| c.name == "development" && c.pinned)
-    );
     let explicit = home.join("explicit.yaml");
     fs::write(&explicit, CONFIG.replace("development", "explicit")).unwrap();
     let imported = import(&engine, &explicit).unwrap();
@@ -146,18 +129,13 @@ fn colors_persist_and_collision_retry_is_deterministic() {
     let added = first.clusters.iter().find(|c| c.id != cluster.id).unwrap();
     assert!(valid_color(&added.color));
     assert_ne!(cluster.color, added.color);
-    let pinned = engine
-        .set_pin(PinRequest {
-            id: added.id.clone(),
-            pinned: true,
-        })
-        .unwrap();
-    assert_eq!(import(&engine, &input).unwrap(), pinned);
+    let saved = engine.list().unwrap();
+    assert_eq!(import(&engine, &input).unwrap(), saved);
     assert_eq!(
         CatalogEngine::new(directory.path().join("data"))
             .list()
             .unwrap(),
-        pinned
+        saved
     );
     let mut store = Store::empty();
     let mut cluster = super::tests::cluster_record(0);
@@ -183,7 +161,7 @@ fn colors_persist_and_collision_retry_is_deterministic() {
     );
 }
 #[test]
-fn legacy_migration_preserves_identity_pins_and_u64_revision() {
+fn legacy_migration_preserves_identity_and_u64_revision() {
     let (directory, home, engine) = home_fixture();
     config(&home, CONFIG);
     let source = fs::canonicalize(home.join(".kube/config"))
@@ -199,7 +177,7 @@ fn legacy_migration_preserves_identity_pins_and_u64_revision() {
     fs::write(engine.directory.join("catalog.json"), &bytes).unwrap();
     let migrated = engine.list().unwrap();
     assert_eq!(migrated.revision, u64::MAX);
-    assert!(migrated.clusters[0].pinned);
+    assert!(!migrated.clusters[0].pinned);
     assert_eq!(migrated.clusters[0].id, legacy["clusters"][0]["id"]);
     let connection = storage::open(&engine.directory).unwrap();
     assert!(!storage::load(&connection).unwrap().auto_discover);
@@ -304,16 +282,10 @@ fn builtin_discovery_ignores_both_legacy_settings_and_preserves_them() {
 }
 
 #[test]
-fn invalid_default_preserves_pins_colors_and_redacts_errors() {
+fn invalid_default_preserves_metadata_colors_and_redacts_errors() {
     let (_directory, home, engine) = home_fixture();
     config(&home, CONFIG);
-    let discovered = engine.list().unwrap();
-    let pinned = engine
-        .set_pin(PinRequest {
-            id: discovered.clusters[0].id.clone(),
-            pinned: true,
-        })
-        .unwrap();
+    let saved = engine.list().unwrap();
     for (contents, error) in [
         (
             "SECRET_TOKEN: [".to_owned(),
@@ -324,8 +296,8 @@ fn invalid_default_preserves_pins_colors_and_redacts_errors() {
         config(&home, &contents);
         let failed = engine.list().unwrap();
         assert_eq!(failed.discovery_error, Some(error));
-        assert_eq!(failed.clusters, pinned.clusters);
-        assert_eq!(failed.revision, pinned.revision);
+        assert_eq!(failed.clusters, saved.clusters);
+        assert_eq!(failed.revision, saved.revision);
         assert!(
             !serde_json::to_string(&failed)
                 .unwrap()
@@ -333,7 +305,7 @@ fn invalid_default_preserves_pins_colors_and_redacts_errors() {
         );
     }
     config(&home, CONFIG);
-    assert_eq!(engine.list().unwrap(), pinned);
+    assert_eq!(engine.list().unwrap(), saved);
 }
 
 #[cfg(unix)]

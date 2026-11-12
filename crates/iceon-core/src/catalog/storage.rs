@@ -13,6 +13,7 @@ use std::{
 
 const DATABASE: &str = "catalog.sqlite3";
 const MAX_DATABASE: u64 = 16 * 1024 * 1024;
+// Pin columns/table remain solely to round-trip legacy metadata without a destructive migration.
 const SCHEMA: &str = "
 CREATE TABLE metadata (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), schema_version INTEGER NOT NULL CHECK(schema_version = 5), revision TEXT NOT NULL, auto_discover INTEGER NOT NULL CHECK(auto_discover IN (0,1))) STRICT;
 CREATE TABLE clusters (id TEXT PRIMARY KEY NOT NULL, context_name TEXT NOT NULL, source_path TEXT NOT NULL, source_alias TEXT NOT NULL, pinned INTEGER NOT NULL CHECK(pinned IN (0,1)), color TEXT NOT NULL, pinned_sections TEXT NOT NULL, UNIQUE(source_path, context_name)) STRICT;
@@ -127,7 +128,7 @@ fn connect_with_access(path: &Path, read_only: bool) -> Result<Connection> {
         .map_err(sql_error)?;
     Ok(connection)
 }
-// Saved connection and pin lookups never initialize, migrate, discover, or rewrite storage.
+// Saved connection lookups never initialize, migrate, discover, or rewrite storage.
 pub(super) fn read_existing(directory: &Path) -> Result<Store> {
     let path = directory.join(DATABASE);
     for (candidate, is_directory) in [(directory.to_path_buf(), true), (path.clone(), false)] {
@@ -381,21 +382,6 @@ fn load_version(connection: &Connection, expected_version: u32) -> Result<Store>
     }
     store.validate()?;
     validate_size(&store).map_err(|_| CatalogError::StoreCorrupt)?;
-    // Older section pins treated overview as a second route to the same cluster.
-    for cluster in &mut store.clusters {
-        if cluster
-            .pinned_sections
-            .iter()
-            .any(|section| section == "overview")
-        {
-            cluster.pinned = true;
-            cluster
-                .pinned_sections
-                .retain(|section| section != "overview");
-        }
-    }
-    store.reconcile_pins();
-    validate_size(&store).map_err(|_| CatalogError::StoreCorrupt)?;
     Ok(store)
 }
 pub(super) fn validate_size(store: &Store) -> Result<()> {
@@ -483,7 +469,6 @@ fn migrate(bytes: &[u8]) -> Result<Store> {
             color,
         });
     }
-    store.reconcile_pins();
     store.validate()?;
     validate_size(&store).map_err(|_| CatalogError::StoreCorrupt)?;
     Ok(store)

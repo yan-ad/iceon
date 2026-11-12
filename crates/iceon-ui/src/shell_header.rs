@@ -124,8 +124,8 @@ fn connection_indicator(status: &str, cx: &App) -> Icon {
 
 fn breadcrumb_choices(section: &str, group_level: bool) -> Vec<(String, String)> {
     if group_level {
-        return crate::navigation::CLUSTER_SECTIONS
-            .iter()
+        return crate::navigation::ordered_cluster_sections()
+            .into_iter()
             .map(|group| (group.label.into(), group.default_child.into()))
             .collect();
     }
@@ -597,10 +597,7 @@ mod tests {
         );
         assert_eq!(super::opened_path("config-maps")[0].0, "Config Maps");
         assert_eq!(super::opened_path("services")[0].0, "Services");
-        assert_eq!(
-            super::breadcrumb_choices("pods", false)[0].1,
-            "workloads-overview"
-        );
+        assert_eq!(super::breadcrumb_choices("pods", false)[0].1, "pods");
     }
 
     #[test]

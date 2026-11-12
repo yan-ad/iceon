@@ -86,7 +86,7 @@ maps the current native surfaces.
 ### Interaction and feedback
 
 Catalog activation opens a workspace and the deliberate connection lifecycle;
-pinning and row actions must not accidentally activate a row. Resource navigation
+Selection controls and row actions must not accidentally activate a row. Resource navigation
 preserves cluster identity and uses explicit namespace scope. Back/forward and
 breadcrumbs are validated routes, not arbitrary executable strings.
 

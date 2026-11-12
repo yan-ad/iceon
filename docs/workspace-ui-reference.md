@@ -25,7 +25,7 @@ to `crates/iceon-ui/src/`; core services are in `crates/iceon-core/src/`.
 - Keep cluster and namespace context visible while exploring resources.
 - Separate loading, empty, partial, denied, stale and failed reads; never fabricate rows.
 - Scope late replies to the active request/session. Refresh must not open duplicate streams.
-- Keep row activation separate from selection, pinning and action controls.
+- Keep row activation separate from selection and action controls.
 - Use engine authorization/preconditions for mutations; a disabled button is not a security boundary.
 - Retain local editor/terminal state independently from table refreshes.
 - Do not invalidate the entire workspace for an idle terminal poll or each output chunk.

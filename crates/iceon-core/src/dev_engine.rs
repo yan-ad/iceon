@@ -570,45 +570,6 @@ async fn dispatch(state: Arc<Engine>, client: &str, invocation: Invocation) -> R
             })
             .await
         }
-        "catalog_set_pin" => {
-            let request = request!();
-            let catalog = state.catalog.clone();
-            let connections = state.connections.clone();
-            blocking(move || {
-                let mut snapshot = catalog.set_pin(request)?;
-                connections
-                    .project_catalog_statuses(&mut snapshot)
-                    .map_err(|_| crate::catalog::CatalogError::StoreUnavailable)?;
-                Ok::<_, crate::catalog::CatalogError>(snapshot)
-            })
-            .await
-        }
-        "catalog_set_section_pin" => {
-            let request = request!();
-            let catalog = state.catalog.clone();
-            let connections = state.connections.clone();
-            blocking(move || {
-                let mut snapshot = catalog.set_section_pin(request)?;
-                connections
-                    .project_catalog_statuses(&mut snapshot)
-                    .map_err(|_| crate::catalog::CatalogError::StoreUnavailable)?;
-                Ok::<_, crate::catalog::CatalogError>(snapshot)
-            })
-            .await
-        }
-        "catalog_reorder_pins" => {
-            let request = request!();
-            let catalog = state.catalog.clone();
-            let connections = state.connections.clone();
-            blocking(move || {
-                let mut snapshot = catalog.reorder_pins(request)?;
-                connections
-                    .project_catalog_statuses(&mut snapshot)
-                    .map_err(|_| crate::catalog::CatalogError::StoreUnavailable)?;
-                Ok::<_, crate::catalog::CatalogError>(snapshot)
-            })
-            .await
-        }
         "catalog_remove" => {
             let request = request!();
             let catalog = state.catalog.clone();
@@ -1097,7 +1058,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn catalog_cluster_pins_persist_and_retired_commands_are_unavailable() {
+    async fn catalog_metadata_persists_and_retired_commands_are_unavailable() {
         let (root, state) = fixture();
         let config = root.path().join("fixture.yaml");
         std::fs::write(&config, "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\ncontexts:\n- name: fixture\n  context:\n    cluster: fixture\n").unwrap();
@@ -1111,16 +1072,22 @@ mod tests {
         assert_eq!(created["ok"], true);
         let id = created["value"]["clusters"][0]["id"].clone();
         assert!(created["value"].get("webLinks").is_none());
-        assert_eq!(
-            call(
-                state.clone(),
-                CLIENT,
-                "catalog_set_pin",
-                json!({"request":{"id":id,"pinned":true}})
-            )
-            .await["ok"],
-            true
-        );
+        for command in [
+            "catalog_set_pin",
+            "catalog_set_section_pin",
+            "catalog_reorder_pins",
+        ] {
+            assert_eq!(
+                call(
+                    state.clone(),
+                    CLIENT,
+                    command,
+                    json!({"request":{"id":id,"pinned":true}})
+                )
+                .await["error"],
+                "unknownCommand"
+            );
+        }
         assert_eq!(
             call(
                 state.clone(),
@@ -1143,11 +1110,11 @@ mod tests {
         );
         let reopened = Arc::new(CatalogEngine::new_with_home(root.path().into(), None));
         let snapshot = reopened.list().unwrap();
-        assert!(snapshot.clusters[0].pinned);
-        assert_eq!(snapshot.pinned_items[0].id, id.as_str().unwrap());
+        assert!(!snapshot.clusters[0].pinned);
+        assert!(snapshot.pinned_items.is_empty());
         assert_eq!(
             call(state.clone(), CLIENT, "catalog_list", json!({})).await["value"]["clusters"][0]["pinned"],
-            true
+            false
         );
         assert_eq!(
             call(
@@ -1356,9 +1323,6 @@ mod tests {
         for name in [
             "catalog_list",
             "catalog_import_kubeconfig",
-            "catalog_set_pin",
-            "catalog_set_section_pin",
-            "catalog_reorder_pins",
             "catalog_remove",
             "preferences_get",
             "preferences_save",

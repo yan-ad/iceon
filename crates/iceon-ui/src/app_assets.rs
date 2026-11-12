@@ -40,8 +40,6 @@ gpui_kit_assets::icon_assets!(
         Package,
         PackageCheck,
         Pencil,
-        Pin,
-        PinOff,
         Plug,
         Puzzle,
         Route,
@@ -101,14 +99,8 @@ mod tests {
     use gpui_kit_assets::IconName;
 
     #[test]
-    fn pin_unpin_and_default_component_icons_are_embedded() {
-        for icon in [
-            IconName::Pin,
-            IconName::PinOff,
-            IconName::Pencil,
-            IconName::Trash,
-            IconName::Check,
-        ] {
+    fn extra_and_default_component_icons_are_embedded() {
+        for icon in [IconName::Pencil, IconName::Trash, IconName::Check] {
             let path = icon.path();
             let bytes = AppAssets.load(&path).unwrap().expect("embedded SVG");
             assert!(std::str::from_utf8(&bytes).unwrap().contains("<svg"));

@@ -1,7 +1,7 @@
 //! Pure-Rust navigation model, cluster destination hierarchy, resource column definitions,
 //! YAML creation scaffolds, age formatters, and sanitized error messages.
 
-use iceon_core::catalog::{CatalogError, ClusterSummary, PinTarget};
+use iceon_core::catalog::{CatalogError, ClusterSummary};
 use iceon_core::connection::{ConnectionError, ResourceItem, ResourceKind};
 use iceon_core::preferences::PreferencesError;
 use iceon_core::route_history::SavedRoute;
@@ -89,6 +89,41 @@ impl Route {
 #[cfg(test)]
 mod route_tests {
     use super::*;
+    #[test]
+    fn standalone_pages_precede_groups_with_only_one_overview() {
+        let ordered = ordered_cluster_sections();
+        assert_eq!(ordered[0].id, "overview");
+        let first_group = ordered
+            .iter()
+            .position(|group| !group.children.is_empty())
+            .unwrap();
+        assert!(
+            ordered[..first_group]
+                .iter()
+                .any(|group| group.id == "namespaces")
+        );
+        assert!(
+            ordered[first_group..]
+                .iter()
+                .all(|group| !group.children.is_empty())
+        );
+        assert_eq!(
+            ordered
+                .iter()
+                .filter(|group| group.label == "Overview")
+                .count(),
+            1
+        );
+        assert!(
+            !ordered
+                .iter()
+                .flat_map(|group| group.children)
+                .any(|child| child.label == "Overview")
+        );
+        assert_eq!(normalize_destination("workloads-overview"), "overview");
+        assert_eq!(normalize_destination("workloads"), "pods");
+    }
+
     #[test]
     fn startup_opens_first_cluster_preserves_valid_routes_and_handles_empty_config() {
         let clusters = vec![ClusterSummary {
@@ -263,10 +298,7 @@ mod route_tests {
             );
         }
         assert_eq!(destination_label("overview"), "Overview");
-        assert_eq!(
-            destination_label("workloads-overview"),
-            "Workloads · Overview"
-        );
+        assert_eq!(destination_label("workloads-overview"), "Overview");
         assert_eq!(
             destination_label("custom-resource-definitions"),
             "Custom Resources · Definitions"
@@ -474,12 +506,8 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
     NavSection {
         id: "workloads",
         label: "Workloads",
-        default_child: "workloads-overview",
+        default_child: "pods",
         children: &[
-            NavChild {
-                id: "workloads-overview",
-                label: "Overview",
-            },
             NavChild {
                 id: "pods",
                 label: "Pods",
@@ -704,7 +732,23 @@ pub const CLUSTER_SECTIONS: &[NavSection] = &[
     },
 ];
 
+/// Standalone pages precede labelled resource groups; source order stays stable.
+pub(crate) fn ordered_cluster_sections() -> Vec<&'static NavSection> {
+    CLUSTER_SECTIONS
+        .iter()
+        .filter(|group| group.children.is_empty())
+        .chain(
+            CLUSTER_SECTIONS
+                .iter()
+                .filter(|group| !group.children.is_empty()),
+        )
+        .collect()
+}
+
 pub fn normalize_destination(section: &str) -> String {
+    if matches!(section, "workloads-overview" | "workloads/overview") {
+        return "overview".into();
+    }
     if let Some(rest) = section.strip_prefix("crd:")
         && !rest.is_empty()
     {
@@ -724,6 +768,9 @@ pub fn normalize_destination(section: &str) -> String {
 }
 
 pub fn destination_label(section: &str) -> String {
+    if matches!(section, "workloads-overview" | "workloads/overview") {
+        return "Overview".into();
+    }
     if let Some(rest) = section.strip_prefix("crd:") {
         return format!("CRD · {rest}");
     }
@@ -2655,20 +2702,5 @@ pub fn preferences_error_message(error: PreferencesError) -> &'static str {
         PreferencesError::Conflict => "Preferences were updated elsewhere; reload and retry.",
         PreferencesError::StoreUnavailable => "Preferences SQLite database is unavailable.",
         PreferencesError::StoreCorrupt => "Preferences database failed validation.",
-    }
-}
-
-pub fn pin_label(target: &PinTarget, clusters: &[ClusterSummary]) -> (String, String) {
-    let cluster_name = clusters
-        .iter()
-        .find(|c| c.id == target.id)
-        .map(|c| c.name.clone())
-        .unwrap_or_else(|| target.id.clone());
-    match &target.section {
-        Some(section) => (
-            format!("{cluster_name} · {}", destination_label(section)),
-            section.clone(),
-        ),
-        None => (cluster_name, "overview".into()),
     }
 }

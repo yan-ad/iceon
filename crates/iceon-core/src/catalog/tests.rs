@@ -49,16 +49,11 @@ fn persistence_redaction_dedup_and_stale_reimport() {
     assert_eq!(first.clusters[0].status, "disconnected");
     assert_eq!(import(&engine, &input).unwrap(), first);
     let id = first.clusters[0].id.clone();
-    let pinned = engine
-        .set_pin(PinRequest {
-            id: id.clone(),
-            pinned: true,
-        })
-        .unwrap();
-    assert_eq!(import(&engine, &input).unwrap(), pinned);
+    let saved = first.clone();
+    assert_eq!(import(&engine, &input).unwrap(), saved);
     let restarted = CatalogEngine::new(dir.path().join("data"));
-    assert_eq!(restarted.list().unwrap(), pinned);
-    let snapshot = serde_json::to_string(&pinned).unwrap();
+    assert_eq!(restarted.list().unwrap(), saved);
+    let snapshot = serde_json::to_string(&saved).unwrap();
     let stored =
         String::from_utf8_lossy(&fs::read(dir.path().join("data/catalog.sqlite3")).unwrap())
             .into_owned();
@@ -82,7 +77,7 @@ fn persistence_redaction_dedup_and_stale_reimport() {
     assert!(!changed.clusters[0].pinned);
     assert_ne!(changed.clusters[0].id, id);
     assert_eq!(
-        engine.set_pin(PinRequest { id, pinned: true }),
+        engine.remove(RemoveRequest { id }),
         Err(CatalogError::NotFound)
     );
     fs::write(
@@ -135,35 +130,10 @@ fn malformed_imports_are_sanitized_and_transactional() {
 }
 
 #[test]
-fn cluster_entry_pins_and_removal() {
+fn cluster_entry_removal() {
     let (_dir, engine, _) = fixture();
     let first = add(&engine, "production").unwrap();
     let id = first.clusters[0].id.clone();
-    let pinned = engine
-        .set_pin(PinRequest {
-            id: id.clone(),
-            pinned: true,
-        })
-        .unwrap();
-    assert!(pinned.clusters[0].pinned);
-    assert_eq!(
-        engine
-            .set_pin(PinRequest {
-                id: id.clone(),
-                pinned: true
-            })
-            .unwrap(),
-        pinned
-    );
-    for id in ["clusters", "web-links", "catalog"] {
-        assert_eq!(
-            engine.set_pin(PinRequest {
-                id: id.into(),
-                pinned: true
-            }),
-            Err(CatalogError::NotFound)
-        );
-    }
     let removed = engine.remove(RemoveRequest { id: id.clone() }).unwrap();
     assert!(removed.clusters.is_empty());
     assert_eq!(

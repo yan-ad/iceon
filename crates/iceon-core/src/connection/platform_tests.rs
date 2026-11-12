@@ -1,7 +1,5 @@
 use super::{ConnectionError, config};
-use crate::catalog::{
-    CatalogEngine, CatalogSnapshot, ImportRequest, PinRequest, SectionPinRequest,
-};
+use crate::catalog::{CatalogEngine, CatalogSnapshot, ImportRequest};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
@@ -293,30 +291,16 @@ fn platform_tests_identical_names_remain_source_scoped_and_reimport_keeps_pins_c
             engine.connection_target(&copies[1].id).unwrap().source_path
         );
     }
-    let id = first.clusters[0].id.clone();
-    engine
-        .set_pin(PinRequest {
-            id: id.clone(),
-            pinned: true,
-        })
-        .unwrap();
-    let pinned = engine
-        .set_section_pin(SectionPinRequest {
-            cluster_id: id,
-            section: "nodes".into(),
-            pinned: true,
-        })
-        .unwrap();
     let mut rotated = input.clone();
     rotated["users"][0]["user"]["token"] = json!("SYNTHETIC_ROTATED_SECRET");
     write(&first_path, &rotated);
-    assert_eq!(import(&engine, &first_path), pinned);
-    assert_eq!(import(&engine, &second_path), pinned);
+    assert_eq!(import(&engine, &first_path), combined);
+    assert_eq!(import(&engine, &second_path), combined);
     assert_eq!(
         CatalogEngine::new(directory.clone()).list().unwrap(),
-        pinned
+        combined
     );
-    assert_metadata_only(&pinned, &directory, &rotated);
+    assert_metadata_only(&combined, &directory, &rotated);
 }
 
 #[test]

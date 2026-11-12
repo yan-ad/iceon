@@ -215,14 +215,6 @@ impl IceonApp {
             });
 
         let mut cluster_order = Vec::new();
-        for pin in &catalog_snapshot.pinned_items {
-            if pin.section.is_none()
-                && !cluster_order.contains(&pin.id)
-                && catalog_snapshot.clusters.iter().any(|c| c.id == pin.id)
-            {
-                cluster_order.push(pin.id.clone());
-            }
-        }
         for cluster in &catalog_snapshot.clusters {
             if !cluster_order.contains(&cluster.id) {
                 cluster_order.push(cluster.id.clone());

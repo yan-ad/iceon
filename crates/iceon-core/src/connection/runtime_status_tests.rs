@@ -1,5 +1,5 @@
 use super::{tests::*, *};
-use crate::catalog::{PinRequest, RemoveRequest};
+use crate::catalog::RemoveRequest;
 
 fn projected(
     engine: &ConnectionEngine,
@@ -130,12 +130,7 @@ async fn connecting_is_observed_and_late_completion_cannot_replace_a_new_lease()
 async fn projection_is_ephemeral_preserves_metadata_and_does_not_invent_removed_rows() {
     let (_root, catalog, engine, id, _) = fixture();
     connected(&engine, id.clone(), fake(normal)).await;
-    let mut saved = catalog
-        .set_pin(PinRequest {
-            id: id.clone(),
-            pinned: true,
-        })
-        .unwrap();
+    let mut saved = catalog.list().unwrap();
     let baseline = saved.clone();
     engine.project_catalog_statuses(&mut saved).unwrap();
     assert_eq!(saved.clusters[0].status, "connected");

@@ -7,12 +7,6 @@ fn relative_chained_directory_aliases_dedup_and_retarget() {
     use std::os::unix::fs::symlink;
     let (dir, engine, input) = fixture();
     let direct = import(&engine, &input).unwrap().clusters.remove(0);
-    engine
-        .set_pin(PinRequest {
-            id: direct.id.clone(),
-            pinned: true,
-        })
-        .unwrap();
     let relative = dir.path().join("relative");
     symlink("fixture.yaml", &relative).unwrap();
     let chain = dir.path().join("chain");
@@ -25,7 +19,7 @@ fn relative_chained_directory_aliases_dedup_and_retarget() {
         let cluster = &result.clusters[0];
         assert_eq!(cluster.id, direct.id);
         assert_eq!(cluster.color, direct.color);
-        assert!(cluster.pinned);
+        assert!(!cluster.pinned);
         assert_eq!(cluster.labels, [format!("file={}", alias.display())]);
         assert_eq!(
             CatalogEngine::new(engine.directory.clone()).list().unwrap(),
@@ -169,7 +163,7 @@ fn schema_one_upgrade_preserves_records_revision_settings_colors() {
     assert_eq!(migrated.revision, u64::MAX - 1);
     assert!(migrated.discovery_error.is_none());
     assert_eq!(migrated.clusters[0].color, "#123456");
-    assert!(migrated.clusters[0].pinned);
+    assert!(!migrated.clusters[0].pinned);
     assert_eq!(
         migrated.clusters[0].labels,
         [format!("file={}", source.display())]
@@ -184,13 +178,12 @@ fn schema_one_upgrade_preserves_records_revision_settings_colors() {
     assert!(stored.auto_discover);
     drop(connection);
     let updated = engine
-        .set_pin(PinRequest {
+        .remove(RemoveRequest {
             id: migrated.clusters[0].id.clone(),
-            pinned: false,
         })
         .unwrap();
     assert_eq!(updated.revision, u64::MAX);
-    assert_eq!(updated.clusters[0].color, "#123456");
+    assert!(updated.clusters.is_empty());
     assert_eq!(
         CatalogEngine::new(engine.directory.clone())
             .list()

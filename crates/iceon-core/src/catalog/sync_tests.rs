@@ -14,7 +14,7 @@ fn preferences(paths: &[&Path]) -> KubernetesPreferences {
 
 #[cfg(unix)]
 #[test]
-fn dangling_sync_directory_symlink_retains_contexts_and_pins() {
+fn dangling_sync_directory_symlink_retains_contexts() {
     use std::os::unix::fs::symlink;
 
     let (directory, engine, _) = fixture();
@@ -32,17 +32,6 @@ fn dangling_sync_directory_symlink_retains_contexts_and_pins() {
     let first = engine.list_with_preferences(&settings).unwrap();
     assert_eq!(first.clusters.len(), 2);
     assert!(first.discovery_error.is_none());
-    for cluster in &first.clusters {
-        engine
-            .set_pin(PinRequest {
-                id: cluster.id.clone(),
-                pinned: true,
-            })
-            .unwrap();
-    }
-    let pinned = engine.list_with_preferences(&settings).unwrap();
-    assert_eq!(pinned.pinned_items.len(), 2);
-
     fs::remove_dir_all(&target).unwrap();
     assert!(
         fs::symlink_metadata(&alias)
@@ -58,26 +47,20 @@ fn dangling_sync_directory_symlink_retains_contexts_and_pins() {
             unavailable.discovery_error,
             Some(CatalogError::InputUnavailable)
         );
-        assert_eq!(unavailable.clusters, pinned.clusters);
-        assert_eq!(unavailable.pinned_items, pinned.pinned_items);
-        assert_eq!(unavailable.revision, pinned.revision);
+        assert_eq!(unavailable.clusters, first.clusters);
+        assert_eq!(unavailable.pinned_items, first.pinned_items);
+        assert_eq!(unavailable.revision, first.revision);
     }
 }
 
 #[test]
-fn sync_file_updates_pins_deletion_restart_and_redaction() {
+fn sync_file_updates_deletion_restart_and_redaction() {
     let (directory, engine, input) = fixture();
     let preferences = preferences(&[&input]);
     let first = engine.list_with_preferences(&preferences).unwrap();
     assert_eq!(first.clusters.len(), 1);
     assert!(first.discovery_error.is_none());
     assert_eq!(engine.list_with_preferences(&preferences).unwrap(), first);
-    engine
-        .set_pin(PinRequest {
-            id: first.clusters[0].id.clone(),
-            pinned: true,
-        })
-        .unwrap();
     fs::write(
         &input,
         CONFIG.replace(
@@ -93,7 +76,7 @@ fn sync_file_updates_pins_deletion_restart_and_redaction() {
         .iter()
         .find(|row| row.name == "development")
         .unwrap();
-    assert!(original.pinned);
+    assert!(!original.pinned);
     assert_eq!(original.color, first.clusters[0].color);
     fs::write(&input, CONFIG.replace("development", "production")).unwrap();
     let third = engine.list_with_preferences(&preferences).unwrap();
