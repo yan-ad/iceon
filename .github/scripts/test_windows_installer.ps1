@@ -1,6 +1,9 @@
 # Run only on an owned CI runner. Never launch the app or touch cluster credentials.
 $ErrorActionPreference = 'Stop'
-$version = '0.1.3'
+$rootPath = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$version = python -c 'import pathlib,sys,tomllib; print(tomllib.loads((pathlib.Path(sys.argv[1]) / "Cargo.toml").read_text())["workspace"]["package"]["version"])' $rootPath
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) { throw 'Cannot read workspace release version' }
+$version = $version.Trim()
 $setup = (Resolve-Path "dist/Iceon_${version}_x86-setup.exe").Path
 $payload = (Resolve-Path 'target/i686-pc-windows-msvc/release/iceon.exe').Path
 $root = Join-Path $env:RUNNER_TEMP "iceon-installer-$([guid]::NewGuid())"

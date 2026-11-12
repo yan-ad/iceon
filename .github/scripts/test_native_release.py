@@ -32,6 +32,13 @@ def pe():
 
 
 class NativeReleaseTests(unittest.TestCase):
+    def test_windows_installer_uses_workspace_version(self):
+        script = (Path(__file__).parent / "test_windows_installer.ps1").read_text()
+        self.assertNotRegex(script, r"\$version\s*=\s*['\"]\d+\.\d+\.\d+")
+        self.assertIn('["workspace"]["package"]["version"]', script)
+        self.assertIn('$LASTEXITCODE -ne 0', script)
+        self.assertIn('Iceon_${version}_x86-setup.exe', script)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
