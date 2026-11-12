@@ -1013,6 +1013,7 @@ impl IceonApp {
         self.cluster_loading = true;
         self.namespaces.clear();
         self.resource_page = None;
+        self.overview_snapshot = OverviewSnapshot::default();
         self.helm_page = None;
         self.custom_discovery_generation = self.next_operation_id();
         self.custom_discovery_loading = false;

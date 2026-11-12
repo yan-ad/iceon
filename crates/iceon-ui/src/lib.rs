@@ -114,6 +114,7 @@ pub struct IceonApp {
     pub(crate) preferences_error: Option<String>,
 
     pub(crate) access: rbac_access::AccessState,
+    pub(crate) known_cluster_access: rbac_access::KnownClusterAccess,
     pub(crate) cluster_connect_generation: u64,
     pub(crate) cluster_session: Option<ConnectionSnapshot>,
     pub(crate) active_cluster_section: String,
@@ -365,6 +366,7 @@ impl IceonApp {
             preferences_draft: preferences_draft.clone(),
             preferences_error: None,
             access: rbac_access::AccessState::default(),
+            known_cluster_access: rbac_access::KnownClusterAccess::default(),
             cluster_connect_generation: 0,
             cluster_session: None,
             active_cluster_section: "overview".into(),

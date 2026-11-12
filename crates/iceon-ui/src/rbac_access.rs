@@ -38,6 +38,11 @@ pub(crate) struct AccessState {
     scheduled: HashSet<PermissionCheck>,
     lists_changed: bool,
 }
+#[derive(Default)]
+pub(crate) struct KnownClusterAccess {
+    navigation: HashMap<String, HashMap<PermissionCheck, PermissionDecision>>,
+}
+
 fn resource_route_visible(
     kind: ResourceKind,
     cluster_decision: Option<PermissionDecision>,
@@ -239,7 +244,11 @@ impl IceonApp {
         let Some(session) = self.cluster_session.as_ref() else {
             return false;
         };
-        session.status == "connected"
+        !self
+            .known_cluster_access
+            .navigation
+            .contains_key(&session.cluster_id)
+            && session.status == "connected"
             && needs_initial_access_page(
                 self.access.initial_lease.as_ref(),
                 &session.cluster_id,
@@ -328,18 +337,27 @@ impl IceonApp {
     }
     /// Navigation discovery is separate from permission to query the active scope.
     pub(crate) fn route_visible(&self, section: &str) -> bool {
+        let cluster_id = match self.history.current() {
+            crate::navigation::Route::Cluster { cluster_id, .. } => cluster_id,
+            _ => return false,
+        };
         let same_lease = self.cluster_session.as_ref().is_some_and(|session| {
             self.access.initial_lease.as_ref()
                 == Some(&(session.cluster_id.clone(), session.session_id.clone()))
         });
-        if !same_lease {
+        let cached = self.known_cluster_access.navigation.get(cluster_id);
+        if !same_lease && cached.is_none() {
             return false;
         }
         if let Some(kind) = section_to_resource_kind(section) {
+            let lists = if same_lease {
+                &self.access.published_lists
+            } else {
+                cached.unwrap()
+            };
             return resource_route_visible(
                 kind,
-                self.access
-                    .published_lists
+                lists
                     .get(&check(kind, PermissionAction::List, None, None))
                     .copied(),
             );
@@ -511,6 +529,9 @@ impl IceonApp {
                             }
                             app.access.initial_lease =
                                 Some((scope.cluster.clone(), scope.lease.clone()));
+                            app.known_cluster_access
+                                .navigation
+                                .insert(scope.cluster.clone(), app.access.published_lists.clone());
                             app.access.revision = app.access.revision.wrapping_add(1);
                             let changed = std::mem::take(&mut app.access.lists_changed);
                             if initial_phase || changed {
@@ -855,6 +876,32 @@ impl IceonApp {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn revisited_navigation_cache_does_not_restore_action_permissions() {
+        let mut known = super::KnownClusterAccess::default();
+        let list = super::check(
+            iceon_core::connection::ResourceKind::Nodes,
+            iceon_core::connection::permissions::PermissionAction::List,
+            None,
+            None,
+        );
+        known.navigation.insert(
+            "visited".into(),
+            [(
+                list.clone(),
+                iceon_core::connection::permissions::PermissionDecision::Allowed,
+            )]
+            .into(),
+        );
+        assert!(known.navigation.contains_key("visited"));
+        assert!(!known.navigation.contains_key("new-cluster"));
+        let new_session = super::AccessState::default();
+        assert_eq!(
+            new_session.decision(&list),
+            iceon_core::connection::permissions::PermissionDecision::Unknown
+        );
+        assert!(!new_session.ready);
+    }
     #[test]
     fn discoverable_namespace_menu_does_not_authorize_all_namespace_reads() {
         use super::*;
