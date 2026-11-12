@@ -169,6 +169,7 @@ impl IceonApp {
         if let Some(tab) = fallback {
             self.select_console_tab(tab, window, cx);
         } else {
+            self.pod_dock_open = false;
             self.active_yaml_tab = None;
             self.active_pod_tab = None;
             self.active_device_terminal = None;

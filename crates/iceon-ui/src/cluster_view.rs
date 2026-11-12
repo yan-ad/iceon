@@ -2220,6 +2220,9 @@ impl IceonApp {
         }
         let sidebar_open =
             cluster_route && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed;
+        if self.console_tab_order().is_empty() {
+            self.pod_dock_open = false;
+        }
         let console_open = self.pod_dock_open;
         let inspector_open =
             cluster_route && self.inspector_open && self.inspector.target.is_some();

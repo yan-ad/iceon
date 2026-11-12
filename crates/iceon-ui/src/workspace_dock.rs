@@ -123,8 +123,9 @@ pub(crate) fn create(
         }
         user_desired.set(Some(event.is_open()));
         let _ = toggle_owner.update(cx, |app, cx| {
-            if app.pod_dock_open != event.is_open() {
-                app.pod_dock_open = event.is_open();
+            let open = event.is_open() && !app.console_tab_order().is_empty();
+            if app.pod_dock_open != open {
+                app.pod_dock_open = open;
                 cx.notify();
             }
         });

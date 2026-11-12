@@ -1154,6 +1154,7 @@ impl IceonApp {
                     .items_center()
                     .child(
                         Button::new("console-collapse")
+                            .disabled(self.console_tab_order().is_empty())
                             .small()
                             .ghost()
                             .icon(if self.pod_dock_open {
@@ -1172,7 +1173,8 @@ impl IceonApp {
                                 "Expand console"
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.pod_dock_open = !this.pod_dock_open;
+                                this.pod_dock_open =
+                                    !this.pod_dock_open && !this.console_tab_order().is_empty();
                                 cx.notify();
                             })),
                     )
