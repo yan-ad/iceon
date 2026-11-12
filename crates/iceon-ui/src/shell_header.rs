@@ -5,8 +5,8 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
-    menu::DropdownMenu as _,
-    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
+    menu::{DropdownMenu as _, PopupMenuItem},
+    select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -324,14 +324,30 @@ impl IceonApp {
                                                 .items_center()
                                                 .gap_2()
                                                 .child(
-                                                    Select::new(&self.cluster_select)
-                                                        .id("titlebar-cluster-select")
-                                                        .xsmall()
-                                                        .appearance(false)
-                                                        .w(px((cluster.name.chars().count() as f32 * 7.0 + 52.0).clamp(160.0, 460.0)))
-                                                        .accessibility_label(format!("Switch cluster: {}", cluster.name))
-                                                        .search_placeholder("Search clusters…")
-                                                        .menu_width(px(360.0)),
+                                                    Button::new("titlebar-cluster-select")
+                                                        .ghost().xsmall().flex_shrink_0()
+                                                        .text_color(cx.theme().sidebar_foreground)
+                                                        .child(h_flex().items_center().gap_2()
+                                                            .child(div().size(px(10.)).rounded_full().bg(cluster_dot(&cluster.color)))
+                                                            .child(cluster.name.clone()))
+                                                        .accessibility_label("Switch cluster")
+                                                        .dropdown_menu({
+                                                            let owner = cx.entity().downgrade();
+                                                            move |mut menu, _, cx| {
+                                                                if let Some(app) = owner.upgrade() {
+                                                                    let app = app.read(cx);
+                                                                    for item in &app.catalog_snapshot.clusters {
+                                                                        let id = item.id.clone();
+                                                                        let selected = matches!(app.history.current(), Route::Cluster { cluster_id, .. } if *cluster_id == id);
+                                                                        let owner = owner.clone();
+                                                                        menu = menu.item(PopupMenuItem::new(format!("{} ({})", item.name, item.context_name)).checked(selected).on_click(move |_, window, cx| {
+                                                                            let _ = owner.update(cx, |app, cx| app.navigate(Route::Cluster { cluster_id: id.clone(), section: "overview".into() }, true, window, cx));
+                                                                        }));
+                                                                    }
+                                                                }
+                                                                menu
+                                                            }
+                                                        }),
                                                 )
                                                 .children(opened_path(&self.active_cluster_section).into_iter().enumerate().map(|(index, (label, section))| {
                                                     let cluster_id = cluster.id.clone();
@@ -350,16 +366,32 @@ impl IceonApp {
                                                 }))
                                                 .child(breadcrumb_separator(cx))
                                                  .child(
-                                                     div().w(px(190.0)).child(
-                                                         Select::new(&self.namespace_select)
-                                                             .id("titlebar-namespace-select")
-                                                             .xsmall()
-                                                             .appearance(false)
-                                                             .w_full()
-                                                             .placeholder(current_namespace.clone())
-                                                             .search_placeholder("Search namespaces…")
-                                                             .menu_width(px(240.0)),
-                                                     ),
+                                                     Button::new("titlebar-namespace-select")
+                                                         .ghost().xsmall().flex_shrink_0()
+                                                         .text_color(cx.theme().sidebar_foreground)
+                                                         .label(current_namespace.clone())
+                                                         .accessibility_label("Switch namespace")
+                                                         .dropdown_menu({
+                                                             let owner = cx.entity().downgrade();
+                                                             move |mut menu, _, cx| {
+                                                                 if let Some(app) = owner.upgrade() {
+                                                                     let app = app.read(cx);
+                                                                     for namespace in std::iter::once(None).chain(app.namespaces.iter().cloned().map(Some)) {
+                                                                         let owner = owner.clone();
+                                                                         let selected = app.selected_namespace == namespace;
+                                                                         menu = menu.item(PopupMenuItem::new(namespace.clone().unwrap_or_else(|| "All Namespaces".into())).checked(selected).on_click(move |_, window, cx| {
+                                                                             let _ = owner.update(cx, |app, cx| {
+                                                                                 app.selected_namespace = namespace.clone();
+                                                                                 app.current_continue_token = None;
+                                                                                 app.continue_token_history.clear();
+                                                                                 app.reload_active_section(window, cx);
+                                                                             });
+                                                                         }));
+                                                                     }
+                                                                 }
+                                                                 menu
+                                                             }
+                                                         }),
                                                  ),
                                         )
                                     })

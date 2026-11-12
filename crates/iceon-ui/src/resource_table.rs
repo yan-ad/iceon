@@ -28,6 +28,17 @@ use iceon_core::connection::{
 };
 use std::{cell::Cell, cmp::Ordering, collections::HashMap, rc::Rc};
 
+fn selection_state(selected: usize, total: usize) -> gpui_kit::base::CheckboxState {
+    use gpui_kit::base::CheckboxState;
+    if selected == 0 || total == 0 {
+        CheckboxState::Unchecked
+    } else if selected == total {
+        CheckboxState::Checked
+    } else {
+        CheckboxState::Indeterminate
+    }
+}
+
 fn deletion_target(kind: ResourceKind, item: &ResourceItem) -> Option<DeleteTarget> {
     if kind == ResourceKind::Nodes {
         return None;
@@ -473,6 +484,56 @@ impl ResourceTable {
         });
         cx.notify();
     }
+    fn render_selection_checkbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::base::{Checkbox as BaseCheckbox, CheckboxState};
+        let total = self.loaded_targets().len();
+        let state = selection_state(self.selected.len(), total);
+        let active = state != CheckboxState::Unchecked;
+        let owner = cx.entity().downgrade();
+        BaseCheckbox::new("select-loaded-resources")
+            .state(state)
+            .disabled(total == 0)
+            .accessibility_label(format!("Select all {total} loaded selectable resources"))
+            .cursor_pointer()
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(if active {
+                cx.theme().primary
+            } else {
+                cx.theme().input
+            })
+            .bg(if active {
+                cx.theme().primary
+            } else {
+                cx.theme().input_background()
+            })
+            .text_color(cx.theme().primary_foreground)
+            .size(px(16.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(match state {
+                CheckboxState::Indeterminate => gpui_kit::component::Icon::new(IconName::Minus)
+                    .xsmall()
+                    .into_any_element(),
+                CheckboxState::Checked => gpui_kit::component::Icon::new(IconName::Check)
+                    .xsmall()
+                    .into_any_element(),
+                CheckboxState::Unchecked => Empty.into_any_element(),
+            })
+            .on_change(move |next, _, _, cx| {
+                cx.stop_propagation();
+                let _ = owner.update(cx, |table, cx| {
+                    table.selected = if next == CheckboxState::Checked {
+                        table.loaded_targets()
+                    } else {
+                        Vec::new()
+                    };
+                    table.selection_changed(cx);
+                });
+            })
+    }
+
     fn loaded_targets(&self) -> Vec<DeleteTarget> {
         let Some(data) = &self.cache.data else {
             return Vec::new();
@@ -1291,25 +1352,7 @@ impl Render for ResourceTable {
                                             .flex_shrink_0()
                                             .flex()
                                             .justify_center()
-                                            .child(
-                                                Checkbox::new("select-loaded-resources")
-                                                    .checked(
-                                                        !self.loaded_targets().is_empty()
-                                                            && self.selected.len()
-                                                                == self.loaded_targets().len(),
-                                                    )
-                                                    .on_click(cx.listener(
-                                                        |table, checked: &bool, _, cx| {
-                                                            cx.stop_propagation();
-                                                            table.selected = if *checked {
-                                                                table.loaded_targets()
-                                                            } else {
-                                                                Vec::new()
-                                                            };
-                                                            table.selection_changed(cx);
-                                                        },
-                                                    )),
-                                            ),
+                                            .child(self.render_selection_checkbox(cx)),
                                     )
                                     .children(
                                         layout.columns.iter().filter(|c| c.key != "actions").map(
@@ -1378,6 +1421,15 @@ impl Render for ResourceTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn header_selection_is_mixed_only_for_partial_selection() {
+        use gpui_kit::base::CheckboxState::*;
+        assert_eq!(selection_state(0, 0), Unchecked);
+        assert_eq!(selection_state(0, 5), Unchecked);
+        assert_eq!(selection_state(1, 5), Indeterminate);
+        assert_eq!(selection_state(4, 5), Indeterminate);
+        assert_eq!(selection_state(5, 5), Checked);
+    }
 
     #[::core::prelude::v1::test]
     fn checklist_requires_reviewed_identity_and_never_selects_nodes() {
