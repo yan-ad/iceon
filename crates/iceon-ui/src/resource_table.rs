@@ -39,6 +39,18 @@ fn selection_state(selected: usize, total: usize) -> gpui_kit::base::CheckboxSta
     }
 }
 
+fn event_text_color(status: &str, cx: &App) -> Hsla {
+    match status.to_ascii_lowercase().as_str() {
+        "warning" => gpui_kit::component::ColorName::Orange.scale(if cx.theme().is_dark() {
+            300
+        } else {
+            600
+        }),
+        "error" | "failed" => cx.theme().danger,
+        _ => cx.theme().muted_foreground,
+    }
+}
+
 fn deletion_target(kind: ResourceKind, item: &ResourceItem) -> Option<DeleteTarget> {
     if kind == ResourceKind::Nodes {
         return None;
@@ -73,6 +85,30 @@ struct ColumnLayout {
 
 impl ColumnLayout {
     fn new(kind: ResourceKind) -> Self {
+        if kind == ResourceKind::Events {
+            return Self {
+                name_resized: false,
+                columns: [
+                    ("type", "Type", 96., 80.),
+                    ("message", "Message", 360., 240.),
+                    ("namespace", "Namespace", 144., 112.),
+                    ("involvedObject", "Involved Object", 230., 160.),
+                    ("source", "Source", 180., 120.),
+                    ("count", "Count", 80., 64.),
+                    ("age", "Age", 110., 90.),
+                    ("lastSeen", "Last Seen", 110., 90.),
+                    ("actions", "Actions", 80., 64.),
+                ]
+                .into_iter()
+                .map(|(key, label, width, min)| TableColumn {
+                    key,
+                    label,
+                    width,
+                    min,
+                })
+                .collect(),
+            };
+        }
         let mut columns = vec![TableColumn {
             key: "name",
             label: if kind == ResourceKind::CustomResourceDefinitions {
@@ -811,6 +847,10 @@ impl ResourceTable {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.cache.stats.row_renders += 1;
+        if kind == ResourceKind::Events {
+            return self.render_event_row(item, idx, cx);
+        }
+
         // The render/sync path installs this once per kind. Visible rows only borrow
         // geometry; scrolling does not allocate or rebuild column metadata.
         let target = deletion_target(kind, item).filter(|target| {
@@ -1014,6 +1054,123 @@ impl ResourceTable {
                             })),
                     ),
             )
+            .into_any_element()
+    }
+
+    fn render_event_row(
+        &self,
+        item: &ResourceItem,
+        idx: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let layout = self
+            .layouts
+            .get(&ResourceKind::Events)
+            .expect("event layout");
+        let reference = ResourceReference {
+            kind: ResourceKind::Events,
+            namespace: item.namespace.clone(),
+            name: item.name.clone(),
+            uid: item.uid.clone(),
+        };
+        let row_reference = reference.clone();
+        let timezone = cx
+            .try_global::<crate::preferences_view::GlobalPreferencesState>()
+            .map(|state| state.preferences.app.timezone.clone())
+            .unwrap_or_else(|| "local".into());
+        let severity = event_text_color(&item.status, cx);
+        h_flex()
+            .id(SharedString::from(format!("event-row-{idx}")))
+            .w_full()
+            .h(px(42.))
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .cursor_pointer()
+            .hover(|row| row.bg(cx.theme().muted))
+            .on_click(self.action(move |app, _, window, cx| {
+                app.open_resource_inspector(row_reference.clone(), window, cx)
+            }))
+            .children(layout.columns.iter().map(|column| {
+                let cell = table_cell(
+                    column.width,
+                    false,
+                    column.key != "actions",
+                    cx.theme().border,
+                )
+                .text_xs()
+                .items_center();
+                match column.key {
+                    "type" => cell
+                        .text_color(severity)
+                        .child(
+                            crate::selectable_text::selectable_text(item.status.clone())
+                                .text_color(severity),
+                        )
+                        .into_any_element(),
+                    "message" => cell
+                        .truncate()
+                        .text_color(severity)
+                        .child(
+                            crate::selectable_text::selectable_text(cell_value(item, "message"))
+                                .text_color(severity),
+                        )
+                        .into_any_element(),
+                    "namespace" => cell
+                        .when_some(item.namespace.clone(), |cell, namespace| {
+                            cell.child(self.namespace_button(
+                                namespace,
+                                idx,
+                                cx.theme().sidebar_accent_foreground,
+                            ))
+                        })
+                        .into_any_element(),
+                    "age" | "lastSeen" => cell
+                        .text_color(cx.theme().muted_foreground)
+                        .child(crate::age_label::age_label(
+                            SharedString::from(format!("event-{}-{idx}", column.key)),
+                            if column.key == "age" {
+                                item.created_at.as_deref()
+                            } else {
+                                item.columns.get("lastSeen").map(String::as_str)
+                            },
+                            &timezone,
+                        ))
+                        .into_any_element(),
+                    "actions" => cell
+                        .justify_end()
+                        .child(
+                            Button::new(SharedString::from(format!("inspect-event-{idx}")))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Eye)
+                                .tooltip("Inspect event")
+                                .accessibility_label("Inspect event")
+                                .on_click(self.action({
+                                    let reference = reference.clone();
+                                    move |app, _, window, cx| {
+                                        app.open_resource_inspector(reference.clone(), window, cx)
+                                    }
+                                })),
+                        )
+                        .into_any_element(),
+                    "involvedObject" => cell
+                        .truncate()
+                        .text_color(cx.theme().sidebar_accent_foreground)
+                        .child(
+                            crate::selectable_text::selectable_text(cell_value(item, column.key))
+                                .text_color(cx.theme().sidebar_accent_foreground),
+                        )
+                        .into_any_element(),
+                    _ => cell
+                        .truncate()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(crate::selectable_text::selectable_text(cell_value(
+                            item, column.key,
+                        )))
+                        .into_any_element(),
+                }
+            }))
             .into_any_element()
     }
 
@@ -1440,9 +1597,12 @@ impl Render for ResourceTable {
                     .scrollbar(&self.horizontal_scroll, ScrollbarAxis::Horizontal)
                     .child(
                         v_flex()
-                            .min_w(px(
-                                layout.total() + if self.selection_enabled { 36.0 } else { 0.0 }
-                            ))
+                            .min_w(px(layout.total()
+                                + if self.selection_enabled && kind != ResourceKind::Events {
+                                    36.0
+                                } else {
+                                    0.0
+                                }))
                             .w_full()
                             .flex_1()
                             .min_h_0()
@@ -1454,16 +1614,19 @@ impl Render for ResourceTable {
                                     .border_color(cx.theme().border)
                                     .items_center()
                                     .flex_shrink_0()
-                                    .when(self.selection_enabled, |header| {
-                                        header.child(
-                                            div()
-                                                .w(px(36.0))
-                                                .flex_shrink_0()
-                                                .flex()
-                                                .justify_center()
-                                                .child(self.render_selection_checkbox(cx)),
-                                        )
-                                    })
+                                    .when(
+                                        self.selection_enabled && kind != ResourceKind::Events,
+                                        |header| {
+                                            header.child(
+                                                div()
+                                                    .w(px(36.0))
+                                                    .flex_shrink_0()
+                                                    .flex()
+                                                    .justify_center()
+                                                    .child(self.render_selection_checkbox(cx)),
+                                            )
+                                        },
+                                    )
                                     .children(
                                         layout.columns.iter().filter(|c| c.key != "actions").map(
                                             |column| {
@@ -1530,6 +1693,28 @@ impl Render for ResourceTable {
 
 #[cfg(test)]
 mod tests {
+    #[::core::prelude::v1::test]
+    fn events_columns_match_reference_without_duplicate_name_or_status() {
+        let layout = super::ColumnLayout::new(iceon_core::connection::ResourceKind::Events);
+        assert_eq!(
+            layout
+                .columns
+                .iter()
+                .map(|column| column.key)
+                .collect::<Vec<_>>(),
+            [
+                "type",
+                "message",
+                "namespace",
+                "involvedObject",
+                "source",
+                "count",
+                "age",
+                "lastSeen",
+                "actions"
+            ]
+        );
+    }
     use super::*;
     #[::core::prelude::v1::test]
     fn header_selection_is_mixed_only_for_partial_selection() {

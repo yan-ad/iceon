@@ -2608,8 +2608,7 @@ impl IceonApp {
                 return v_flex().size_full().min_h_0().items_center().justify_center().gap_3().p_6()
                     .child(div().text_sm().child(if reviewing { "Checking permissions for this namespace…" } else { "Choose a namespace you can access" }))
                     .child(div().text_sm().text_color(cx.theme().muted_foreground).child(if reviewing { "The navigation stays available while access is reviewed." } else { "This resource is not accessible in the current scope. Namespace permissions can differ from All Namespaces." }))
-                    .child(Button::new("resource-choose-namespace").small().outline().label("Choose namespace…")
-                        .on_click(cx.listener(|app,_,window,cx| app.open_namespace_scope_dialog(window,cx))))
+                    .child(self.namespace_dropdown("resource-choose-namespace", "Choose namespace…".into(), cx))
                     .into_any_element();
             }
             return crate::empty_state::empty_state(

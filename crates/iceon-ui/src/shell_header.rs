@@ -3,12 +3,10 @@
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, TitleBar,
-    WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
     menu::{DropdownMenu as _, PopupMenuItem},
-    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
+    select::{SearchableVec, SelectEvent, SelectItem, SelectState},
     v_flex,
 };
 use gpui_kit::prelude::*;
@@ -17,76 +15,10 @@ use iceon_core::{catalog::CatalogSnapshot, connection::ResourceKind};
 
 use crate::{IceonApp, navigation::Route};
 
-fn valid_namespace(namespace: &str) -> bool {
-    !namespace.is_empty()
-        && namespace.len() <= 63
-        && namespace
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
-        && namespace.as_bytes()[0].is_ascii_alphanumeric()
-        && namespace.as_bytes()[namespace.len() - 1].is_ascii_alphanumeric()
-}
-
-#[cfg(test)]
-mod namespace_scope_tests {
-    use super::{namespace_choices, valid_namespace};
-
-    #[test]
-    fn namespace_requires_a_dns_label_with_at_most_63_bytes() {
-        for namespace in ["default", "team-production", "0", "a-1"] {
-            assert!(valid_namespace(namespace));
-        }
-        assert!(valid_namespace(&"a".repeat(63)));
-        assert!(!valid_namespace(&"a".repeat(64)));
-        for namespace in [
-            "",
-            "-team",
-            "team-",
-            "Team",
-            "team.name",
-            "team_name",
-            " team",
-            "team ",
-            "é",
-            "team\n",
-        ] {
-            assert!(!valid_namespace(namespace), "{namespace:?}");
-        }
-    }
-
-    #[test]
-    fn denied_discovery_still_offers_explicit_scopes_without_selecting_one() {
-        assert_eq!(
-            namespace_choices(None, &[]),
-            vec![None, Some("default".into())]
-        );
-        assert_eq!(
-            namespace_choices(Some("team"), &[]),
-            vec![None, Some("default".into()), Some("team".into())]
-        );
-    }
-
-    #[test]
-    fn known_scopes_and_current_scope_are_deduplicated() {
-        assert_eq!(
-            namespace_choices(
-                Some("team"),
-                &["default".into(), "team".into(), "other".into()]
-            ),
-            vec![
-                None,
-                Some("default".into()),
-                Some("team".into()),
-                Some("other".into())
-            ]
-        );
-    }
-}
-
-fn namespace_choices(current: Option<&str>, known: &[String]) -> Vec<Option<String>> {
-    let mut choices = vec![None, Some("default".into())];
-    for namespace in current.into_iter().chain(known.iter().map(String::as_str)) {
-        let choice = Some(namespace.to_owned());
+fn namespace_choices(known: &[String]) -> Vec<Option<String>> {
+    let mut choices = vec![None];
+    for namespace in known {
+        let choice = Some(namespace.clone());
         if !choices.contains(&choice) {
             choices.push(choice);
         }
@@ -94,46 +26,15 @@ fn namespace_choices(current: Option<&str>, known: &[String]) -> Vec<Option<Stri
     choices
 }
 
-/// Dialog-local state: entering a scope never implies that access was granted.
-struct NamespaceScopeDialog {
-    owner: WeakEntity<IceonApp>,
-    cluster_id: String,
-    input: Entity<InputState>,
-    invalid: bool,
-}
-
-impl NamespaceScopeDialog {
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let namespace = self.input.read(cx).value().to_string();
-        if !valid_namespace(&namespace) {
-            self.invalid = true;
-            cx.notify();
-            return false;
-        }
-        self.owner.update(cx, |app, cx| {
-            // A stale dialog must not apply a scope to a different cluster.
-            if matches!(app.history.current(), Route::Cluster { cluster_id, .. } if cluster_id == &self.cluster_id) {
-                app.select_header_namespace(Some(namespace), window, cx);
-            }
-        }).is_ok()
-    }
-}
-
-impl Render for NamespaceScopeDialog {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().gap_3()
-            .child(Input::new(&self.input).aria_label("Namespace"))
-            .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                .child("Select a scope, not permissions. Access is checked for the selected namespace."))
-            .when(self.invalid, |view| view.child(div().text_sm().text_color(cx.theme().danger)
-                .child("Use 1–63 lowercase letters, digits or hyphens; start and end with a letter or digit.")))
-            .child(h_flex().justify_end().gap_2()
-                .child(Button::new("cancel-namespace-scope").label("Cancel")
-                    .on_click(|_, window, cx| window.close_dialog(cx)))
-                .child(Button::new("confirm-namespace-scope").primary().label("Select namespace")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.submit(window, cx) { window.close_dialog(cx); }
-                    }))))
+#[cfg(test)]
+mod namespace_scope_tests {
+    #[test]
+    fn choices_only_include_discovered_namespaces() {
+        assert_eq!(super::namespace_choices(&[]), vec![None]);
+        assert_eq!(
+            super::namespace_choices(&["dev".into(), "dev".into(), "team".into()]),
+            vec![None, Some("dev".into()), Some("team".into())]
+        );
     }
 }
 
@@ -368,53 +269,60 @@ impl IceonApp {
         self.reload_active_section(window, cx);
     }
 
-    pub(crate) fn open_namespace_scope_dialog(
-        &mut self,
-        window: &mut Window,
+    pub(crate) fn namespace_dropdown(
+        &self,
+        id: &'static str,
+        label: String,
         cx: &mut Context<Self>,
-    ) {
-        let Route::Cluster { cluster_id, .. } = self.history.current() else {
-            return;
-        };
-        let cluster_id = cluster_id.clone();
-        self.sync_namespace_select(window, cx);
-        let select = self.namespace_select.clone();
+    ) -> impl IntoElement {
         let owner = cx.entity().downgrade();
-        let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Namespace, e.g. team-production")
-                .default_value(self.selected_namespace.clone().unwrap_or_default())
-        });
-        let state = cx.new(|_| NamespaceScopeDialog {
-            owner,
-            cluster_id,
-            input,
-            invalid: false,
-        });
-        window.open_dialog(cx, move |dialog, _, _| {
-            let confirm = state.clone();
-            dialog
-                .title("Choose namespace")
-                .child(
-                    v_flex()
-                        .gap_3()
-                        .child(
-                            Select::new(&select)
-                                .w_full()
-                                .search_placeholder("Search namespaces…")
-                                .menu_width(px(360.)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .child("Or enter a namespace if discovery is restricted:"),
-                        )
-                        .child(state.clone()),
-                )
-                .on_ok(move |_, window, cx| {
-                    confirm.update(cx, |state, cx| state.submit(window, cx))
-                })
-        });
+        Button::new(id)
+            .ghost()
+            .xsmall()
+            .flex_shrink_0()
+            .text_color(cx.theme().sidebar_foreground)
+            .label(label)
+            .accessibility_label("Choose namespace")
+            .dropdown_menu(move |mut menu, _, cx| {
+                if let Some(entity) = owner.upgrade() {
+                    let app = entity.read(cx);
+                    let cluster = app
+                        .cluster_session
+                        .as_ref()
+                        .map(|session| (session.cluster_id.clone(), session.session_id.clone()));
+                    for namespace in namespace_choices(&app.namespaces) {
+                        let selected = app.selected_namespace == namespace;
+                        let owner = owner.clone();
+                        let cluster = cluster.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(
+                                namespace.clone().unwrap_or_else(|| "All Namespaces".into()),
+                            )
+                            .checked(selected)
+                            .on_click(move |_, window, cx| {
+                                let _ = owner.update(cx, |app, cx| {
+                                    let current = app.cluster_session.as_ref().map(|session| {
+                                        (session.cluster_id.clone(), session.session_id.clone())
+                                    });
+                                    if current != cluster
+                                        || namespace
+                                            .as_ref()
+                                            .is_some_and(|name| !app.namespaces.contains(name))
+                                    {
+                                        return;
+                                    }
+                                    app.select_header_namespace(namespace.clone(), window, cx);
+                                });
+                            }),
+                        );
+                    }
+                    if app.namespaces.is_empty() {
+                        menu =
+                            menu.item(PopupMenuItem::new("No namespaces available").disabled(true));
+                    }
+                }
+                menu
+            })
     }
 
     fn header_cluster_metadata(&self, id: &str, fallback_status: &str) -> (String, String) {
@@ -654,33 +562,7 @@ impl IceonApp {
                                                 }))
                                                 .child(breadcrumb_separator(cx))
                                                  .child(
-                                                     Button::new("titlebar-namespace-select")
-                                                         .ghost().xsmall().flex_shrink_0()
-                                                         .text_color(cx.theme().sidebar_foreground)
-                                                          .label(current_namespace.clone())
-                                                          .accessibility_label("Switch namespace")
-                                                          .tooltip("Select a namespace scope; this does not grant permissions. Access is checked for each scope.")
-                                                         .dropdown_menu({
-                                                             let owner = cx.entity().downgrade();
-                                                             move |mut menu, _, cx| {
-                                                                 if let Some(app) = owner.upgrade() {
-                                                                     let app = app.read(cx);
-                                                                      for namespace in namespace_choices(app.selected_namespace.as_deref(), &app.namespaces) {
-                                                                         let owner = owner.clone();
-                                                                         let selected = app.selected_namespace == namespace;
-                                                                         menu = menu.item(PopupMenuItem::new(namespace.clone().unwrap_or_else(|| "All Namespaces".into())).checked(selected).on_click(move |_, window, cx| {
-                                                                             let _ = owner.update(cx, |app, cx| {
-                                                                                  app.select_header_namespace(namespace.clone(), window, cx);
-                                                                             });
-                                                                         }));
-                                                                     }
-                                                                 }
-                                                                 let owner = owner.clone();
-                                                                 menu.separator().item(PopupMenuItem::new("Enter namespace…").on_click(move |_, window, cx| {
-                                                                     let _ = owner.update(cx, |app, cx| app.open_namespace_scope_dialog(window, cx));
-                                                                 }))
-                                                             }
-                                                         }),
+                                                     self.namespace_dropdown("titlebar-namespace-select", current_namespace.clone(), cx),
                                                  ),
                                         )
                                     })
