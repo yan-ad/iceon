@@ -1,0 +1,50 @@
+{
+  "app": {
+    "theme": "catppuccinMocha",
+    "timezone": "Asia/Jakarta",
+    "persistentSearch": true,
+    "openAtLogin": true,
+    "showTrayIcon": false,
+    "autoHideHotbar": true,
+    "restoreLastPage": true
+  },
+  "proxy": {
+    "httpsProxy": "https://proxy.example.test:8443",
+    "allowUntrustedCas": true
+  },
+  "kubernetes": {
+    "helmBinaryPath": "/opt/iceon/helm",
+    "helmServerSide": true,
+    "discoverDefaultKubeconfig": false,
+    "kubectlAutoDownload": true,
+    "kubectlDownloadMirror": "custom",
+    "kubectlMirrorUrl": "https://mirror.example.test/kubectl",
+    "binariesDirectory": "/opt/iceon/bin",
+    "kubectlBinaryPath": "/opt/iceon/kubectl",
+    "kubeconfigSyncPaths": [
+      "/opt/iceon/kubeconfig",
+      "/opt/iceon/contexts"
+    ],
+    "helmRepositories": [
+      {
+        "name": "stable",
+        "url": "https://charts.example.test/stable"
+      }
+    ]
+  },
+  "editor": {
+    "fontSize": 18,
+    "fontFamily": "JetBrains Mono, monospace",
+    "tabSize": 4,
+    "lineNumbers": "relative",
+    "minimap": false,
+    "minimapSide": "left"
+  },
+  "terminal": {
+    "fontSize": 16,
+    "fontFamily": "Fira Code, monospace",
+    "theme": "dark",
+    "copyOnSelect": true,
+    "shellPath": "/bin/zsh"
+  }
+}

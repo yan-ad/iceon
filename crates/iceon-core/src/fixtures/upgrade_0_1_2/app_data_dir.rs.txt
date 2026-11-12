@@ -1,0 +1,37 @@
+pub fn app_data_dir() -> PathBuf {
+    if let Some(override_dir) =
+        std::env::var_os("ICEON_DATA_DIR").or_else(|| std::env::var_os("ICEON_DEV_DATA_DIR"))
+    {
+        let path = PathBuf::from(override_dir);
+        if path.is_absolute() {
+            return path;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = home_dir() {
+        return home
+            .join("Library")
+            .join("Application Support")
+            .join("ad.yan.iceon");
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        let path = PathBuf::from(appdata);
+        if path.is_absolute() {
+            return path.join("ad.yan.iceon");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            let path = PathBuf::from(xdg);
+            if path.is_absolute() {
+                return path.join("ad.yan.iceon");
+            }
+        }
+        if let Some(home) = home_dir() {
+            return home.join(".local").join("share").join("ad.yan.iceon");
+        }
+    }
+    std::env::temp_dir().join("ad.yan.iceon")
+}

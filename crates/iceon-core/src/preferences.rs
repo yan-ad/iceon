@@ -257,7 +257,9 @@ fn valid_font_family(s: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, ' ' | ',' | '_' | '\'' | '"' | '-' | '.'))
 }
 
-fn decode_preferences(payload: &str) -> std::result::Result<Preferences, serde_json::Error> {
+pub(crate) fn decode_preferences(
+    payload: &str,
+) -> std::result::Result<Preferences, serde_json::Error> {
     let mut value: serde_json::Value = serde_json::from_str(payload)?;
     if let Some(app) = value
         .get_mut("app")

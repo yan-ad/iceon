@@ -1,4 +1,4 @@
-use crate::preferences::{Preferences, PreferencesError, Result};
+use crate::preferences::{PreferencesError, Result, decode_preferences};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
@@ -126,7 +126,7 @@ fn enabled(conn: &Connection) -> Result<bool> {
             |r| r.get(0),
         )
         .map_err(|_| PreferencesError::StoreUnavailable)?;
-    Ok(serde_json::from_str::<Preferences>(&json)
+    Ok(decode_preferences(&json)
         .map_err(|_| PreferencesError::StoreCorrupt)?
         .app
         .restore_last_page)
@@ -181,6 +181,7 @@ pub fn clear(connection: &Mutex<Connection>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preferences::Preferences;
     use crate::preferences::{PreferencesEngine, SavePreferencesRequest};
 
     #[test]

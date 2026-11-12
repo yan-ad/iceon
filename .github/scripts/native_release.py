@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 import time
 import tomllib
+import zipfile
 
 REPOSITORY = "yan-ad/iceon"
 VERSION = "0.1.3"
@@ -24,9 +25,10 @@ PACKAGES = ("iceon-app", "iceon-core", "iceon-ui", "iceon-xtask")
 MAC = f"Iceon_{VERSION}_aarch64.app.tar.gz"
 DMG = f"Iceon_{VERSION}_aarch64.dmg"
 WIN = f"Iceon_{VERSION}_x86-setup.exe"
+PORTABLE = f"Iceon_{VERSION}_i686.zip"
 FEED = "latest.json"
 SUMS = "SHASUMS256.txt"
-NAMES = {MAC, DMG, WIN, MAC + ".sig", WIN + ".sig", FEED, SUMS}
+NAMES = {MAC, DMG, WIN, PORTABLE, MAC + ".sig", WIN + ".sig", FEED, SUMS}
 PLATFORMS = {"darwin-aarch64": MAC, "darwin-aarch64-app": MAC,
              "windows-i686": WIN, "windows-i686-nsis": WIN}
 
@@ -156,6 +158,9 @@ def package(root, out, platform):
             prefix + "DICON_FILE=" + str(root / "assets/icons/icon.ico"),
             str(root / ".github/installer/iceon.nsi"))
         verify_installer(out / WIN)
+        with zipfile.ZipFile(out / PORTABLE, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(exe, "Iceon/iceon.exe")
+        verify_portable(out / PORTABLE)
         return
     require(run("uname", "-m") == "arm64", "Native ARM64 macOS runner required")
     with tempfile.TemporaryDirectory() as temporary:
@@ -248,7 +253,7 @@ def updater_manifest(directory, create=False):
 
 
 def sign_updates(directory):
-    require({p.name for p in directory.iterdir()} == {MAC, DMG, WIN}, "Expected only final unsigned update payloads")
+    require({p.name for p in directory.iterdir()} == {MAC, DMG, WIN, PORTABLE}, "Expected only final unsigned update payloads")
     for name in (MAC, WIN):
         run("cargo", "xtask", "sign-update", str(directory / name), VERSION)
     updater_manifest(directory, create=True)
@@ -269,6 +274,16 @@ def verify_tar(path):
         binary(archive.extractfile(member).read(), "mac")
 
 
+def verify_portable(path):
+    with zipfile.ZipFile(path) as archive:
+        require(archive.namelist() == ["Iceon/iceon.exe"], "Unexpected portable ZIP entries")
+        info = archive.infolist()[0]
+        require(0 < info.file_size <= 1024 ** 3, "Invalid portable ZIP member size")
+        require(not stat.S_ISLNK(info.external_attr >> 16) and not info.flag_bits & 1, "Linked/encrypted portable ZIP member")
+        require(not archive.testzip(), "Portable ZIP integrity failed")
+        binary(archive.read(info), "windows")
+
+
 def checksums(directory, create=False):
     expected_names = NAMES - {SUMS} if create else NAMES
     require({p.name for p in directory.iterdir()} == expected_names, "Unexpected/missing release assets")
@@ -280,6 +295,7 @@ def checksums(directory, create=False):
         require((directory / SUMS).read_text(encoding="ascii") == text, "Checksum mismatch")
     verify_tar(directory / MAC)
     verify_installer(directory / WIN)
+    verify_portable(directory / PORTABLE)
     updater_manifest(directory)
     require((directory / DMG).stat().st_size >= 512, "DMG too small")
     with (directory / DMG).open("rb") as source:

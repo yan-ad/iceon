@@ -12,3 +12,6 @@ pub mod tls;
 pub mod zed_themes;
 
 pub mod updates;
+
+#[cfg(test)]
+mod upgrade_tests;

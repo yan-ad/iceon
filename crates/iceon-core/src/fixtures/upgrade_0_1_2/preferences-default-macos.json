@@ -1,0 +1,42 @@
+{
+  "app": {
+    "theme": "system",
+    "timezone": "system",
+    "persistentSearch": false,
+    "openAtLogin": false,
+    "showTrayIcon": true,
+    "autoHideHotbar": false,
+    "restoreLastPage": false
+  },
+  "proxy": {
+    "httpsProxy": "",
+    "allowUntrustedCas": false
+  },
+  "kubernetes": {
+    "helmBinaryPath": "",
+    "helmServerSide": false,
+    "discoverDefaultKubeconfig": true,
+    "kubectlAutoDownload": false,
+    "kubectlDownloadMirror": "default",
+    "kubectlMirrorUrl": "",
+    "binariesDirectory": "",
+    "kubectlBinaryPath": "",
+    "kubeconfigSyncPaths": [],
+    "helmRepositories": []
+  },
+  "editor": {
+    "fontSize": 12,
+    "fontFamily": "RobotoMono, monospace",
+    "tabSize": 2,
+    "lineNumbers": "on",
+    "minimap": true,
+    "minimapSide": "right"
+  },
+  "terminal": {
+    "fontSize": 12,
+    "fontFamily": "RobotoMono, monospace",
+    "theme": "match",
+    "copyOnSelect": false,
+    "shellPath": ""
+  }
+}

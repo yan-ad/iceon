@@ -14,6 +14,7 @@ Iceon_0.1.3_aarch64.app.tar.gz.sig
 Iceon_0.1.3_aarch64.dmg
 Iceon_0.1.3_x86-setup.exe
 Iceon_0.1.3_x86-setup.exe.sig
+Iceon_0.1.3_i686.zip
 latest.json
 SHASUMS256.txt
 ```
@@ -51,6 +52,31 @@ The uninstaller removes owned files/registration, not app data or unknown files.
 The Windows runner gates artifact upload on a synthetic old-install upgrade,
 reinstall and uninstall test with installed-payload hash/registry checks. This is
 not a full installed legacy-client update test or a graphical launch test.
+
+## Upgrading from native 0.1.2
+
+0.1.2 has **no in-app updater**. Its users must manually install this release;
+the signed migration feed is for older updater-enabled clients, not native 0.1.2.
+
+- **macOS Apple Silicon:** quit Iceon, open the new DMG, and replace
+  `/Applications/Iceon.app` (or the same location used previously). Bundle identity
+  stays `ad.yan.iceon`; do not delete the application-data directory.
+- **Windows portable:** quit Iceon and extract `Iceon_0.1.3_i686.zip`, replacing
+  the previous `Iceon/iceon.exe`. The archive retains 0.1.2's exact portable layout.
+  Alternatively run Setup; this creates a registered per-user installation.
+  Setup does not automatically locate arbitrary unregistered portable folders;
+  update existing shortcuts or remove the old executable manually if switching.
+- Both use the same data location as 0.1.2: macOS
+  `~/Library/Application Support/ad.yan.iceon`, Windows `%APPDATA%/ad.yan.iceon`.
+  Preserve any explicit `ICEON_DATA_DIR` override as well. Installation directories
+  and application-data directories are separate.
+
+Historical 0.1.2 SQLite fixtures test preferences, catalog metadata and route
+history before the first new-version save. Retired settings are discarded,
+legacy optional embedded themes migrate to System, and old pins become inactive.
+No downgrade compatibility is promised. Back up application data before upgrading.
+These automated checks are not a real signed-package replacement/launch test on
+both operating systems; native smoke verification remains a release prerequisite.
 
 ## Trust and older-client updates
 
@@ -106,7 +132,7 @@ It never creates/moves tags or resumes existing releases.
 Final payloads are transferred from macOS/Windows build jobs. The macOS publication
 job tests the Rust signer, signs and independently verifies both payloads, generates
 and verifies the feed, then computes checksums. It creates a fresh draft, uploads
-exactly seven assets without clobbering, checks metadata/digests, downloads and
+exactly eight assets without clobbering, checks metadata/digests, downloads and
 compares every byte, rechecks signatures/feed/checksums/tag identity, then publishes
 stable/latest. Any mismatch fails closed; a failed draft requires manual inspection.
 Only publication has `contents: write`.

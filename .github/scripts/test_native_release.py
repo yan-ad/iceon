@@ -11,6 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 import native_release as n
@@ -65,6 +66,8 @@ class NativeReleaseTests(unittest.TestCase):
                 member.mode = 0o755
                 archive.addfile(member, io.BytesIO(data))
         (self.out / n.WIN).write_bytes(pe())
+        with zipfile.ZipFile(self.out / n.PORTABLE, "w") as archive:
+            archive.writestr("Iceon/iceon.exe", pe())
         for name in (n.MAC, n.WIN):
             document = "untrusted comment: fixture\npacket\ntrusted comment: timestamp:1\tfile:" + name + "\tversion:" + n.VERSION + "\nglobal\n"
             (self.out / (name + ".sig")).write_text(base64.b64encode(document.encode()).decode())
@@ -75,6 +78,15 @@ class NativeReleaseTests(unittest.TestCase):
         if "ls-remote" in args:
             return f"{self.tag}\trefs/tags/0.1.3\n{self.sha}\trefs/tags/0.1.3^{{}}"
         return self.sha
+
+    def test_portable_upgrade_keeps_012_archive_layout(self):
+        self.assets()
+        n.verify_portable(self.out / n.PORTABLE)
+        for name, data in [("../iceon.exe", pe()), ("Iceon/iceon.exe", mach())]:
+            with zipfile.ZipFile(self.out / n.PORTABLE, "w") as archive:
+                archive.writestr(name, data)
+            with self.assertRaises(ValueError):
+                n.verify_portable(self.out / n.PORTABLE)
 
     def test_versions_valid_inherited_and_explicit(self):
         n.versions(self.root)
