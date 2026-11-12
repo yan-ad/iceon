@@ -7,6 +7,7 @@ use gpui_kit::component::{
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
+    v_flex,
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -120,6 +121,40 @@ fn breadcrumb_separator(cx: &App) -> impl IntoElement {
         .text_color(cx.theme().muted_foreground)
 }
 
+fn connection_indicator(status: &str, cx: &App) -> Icon {
+    let (icon, color) = match status {
+        "connected" => (IconName::Check, cx.theme().success),
+        "connecting" => (IconName::Loader, cx.theme().warning),
+        "error" => (IconName::TriangleAlert, cx.theme().danger),
+        _ => (IconName::Close, cx.theme().muted_foreground),
+    };
+    Icon::new(icon).xsmall().text_color(color)
+}
+
+fn breadcrumb_choices(section: &str, group_level: bool) -> Vec<(String, String)> {
+    if group_level {
+        return crate::navigation::CLUSTER_SECTIONS
+            .iter()
+            .map(|group| (group.label.into(), group.default_child.into()))
+            .collect();
+    }
+    crate::navigation::CLUSTER_SECTIONS
+        .iter()
+        .find(|group| {
+            group.id == section
+                || group.default_child == section
+                || group.children.iter().any(|child| child.id == section)
+        })
+        .map(|group| {
+            group
+                .children
+                .iter()
+                .map(|child| (child.label.into(), child.id.into()))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![("Definitions".into(), "custom-resource-definitions".into())])
+}
+
 fn cluster_dot(color: &str) -> Hsla {
     let rgb = color
         .strip_prefix('#')
@@ -184,6 +219,30 @@ pub(super) fn create_cluster_select(
 }
 
 impl IceonApp {
+    fn header_cluster_metadata(&self, id: &str, fallback_status: &str) -> (String, String) {
+        let health = self
+            .cluster_health
+            .iter()
+            .find(|health| health.cluster_id == id);
+        let session = self
+            .cluster_session
+            .as_ref()
+            .filter(|session| session.cluster_id == id);
+        let status = session
+            .filter(|session| matches!(session.status, "connecting" | "error"))
+            .map(|session| session.status)
+            .or_else(|| health.map(|health| health.status))
+            .unwrap_or(fallback_status)
+            .to_owned();
+        let version = health
+            .and_then(|health| health.api_version.as_deref())
+            .or_else(|| session.and_then(|session| session.api_version.as_deref()))
+            .filter(|version| !version.trim().is_empty())
+            .unwrap_or("—")
+            .to_owned();
+        (status, version)
+    }
+
     pub(crate) fn render_title_bar(
         &mut self,
         window: &mut Window,
@@ -312,24 +371,31 @@ impl IceonApp {
                             .when(!matches!(self.history.current(), Route::Catalog), |navigation| navigation.child(
                                 h_flex()
                                     .id("titlebar-cluster-switcher")
+                                    .min_w_0()
                                     .ml_3()
                                     .items_center()
                                     .gap_2()
                                     .when_some(selected_cluster, |bar, cluster| {
+                                        let fallback = self.catalog_snapshot.clusters.iter().find(|item| item.id == cluster.id).map(|item| item.status).unwrap_or("disconnected");
+                                        let (status, version) = self.header_cluster_metadata(&cluster.id, fallback);
                                         bar.child(
                                             h_flex()
                                                 .id("workspace-breadcrumb")
                                                 .role(gpui_kit::accesskit::Role::Navigation)
                                                 .aria_label("Workspace breadcrumb")
+                                                .min_w_0()
                                                 .items_center()
                                                 .gap_2()
                                                 .child(
                                                     Button::new("titlebar-cluster-select")
-                                                        .ghost().xsmall().flex_shrink_0()
+                                                        .ghost().xsmall().min_w_0().max_w(px(520.0))
                                                         .text_color(cx.theme().sidebar_foreground)
-                                                        .child(h_flex().items_center().gap_2()
-                                                            .child(div().size(px(10.)).rounded_full().bg(cluster_dot(&cluster.color)))
-                                                            .child(cluster.name.clone()))
+                                                        .child(h_flex().items_center().gap_2().min_w_0()
+                                                            .child(div().min_w_0().truncate().child(cluster.name.clone()))
+                                                            .child(h_flex().flex_shrink_0().items_center().gap_1()
+                                                                .child(connection_indicator(&status, cx))
+                                                                .child(div().text_xs().max_w(px(140.0)).truncate().text_color(cx.theme().muted_foreground).child(version.clone()))))
+                                                        .tooltip(format!("{} · {} · {}", cluster.name, status, version))
                                                         .accessibility_label("Switch cluster")
                                                         .dropdown_menu({
                                                             let owner = cx.entity().downgrade();
@@ -340,7 +406,15 @@ impl IceonApp {
                                                                         let id = item.id.clone();
                                                                         let selected = matches!(app.history.current(), Route::Cluster { cluster_id, .. } if *cluster_id == id);
                                                                         let owner = owner.clone();
-                                                                        menu = menu.item(PopupMenuItem::new(format!("{} ({})", item.name, item.context_name)).checked(selected).on_click(move |_, window, cx| {
+                                                                        let name = item.name.clone();
+                                                                        let (status, version) = app.header_cluster_metadata(&item.id, item.status);
+                                                                        menu = menu.item(PopupMenuItem::element(move |_, cx| {
+                                                                            v_flex().w(px(360.0)).min_w_0().max_w(px(392.0)).gap_1()
+                                                                                .child(div().w_full().truncate().child(name.clone()))
+                                                                                .child(h_flex().items_center().gap_2().text_xs().text_color(cx.theme().muted_foreground)
+                                                                                    .child(connection_indicator(&status, cx))
+                                                                                    .child(div().truncate().child(format!("Version {version}"))))
+                                                                        }).checked(selected).on_click(move |_, window, cx| {
                                                                             let _ = owner.update(cx, |app, cx| app.navigate(Route::Cluster { cluster_id: id.clone(), section: "overview".into() }, true, window, cx));
                                                                         }));
                                                                     }
@@ -360,9 +434,21 @@ impl IceonApp {
                                                             .xsmall()
                                                             .label(label)
                                                             .text_color(cx.theme().sidebar_foreground)
-                                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                                this.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: section.clone() }, true, window, cx);
-                                                            })))
+                                                            .dropdown_menu({
+                                                                let owner = cx.entity().downgrade();
+                                                                let choices = breadcrumb_choices(&self.active_cluster_section, index == 0 && opened_path(&self.active_cluster_section).len() > 1);
+                                                                move |mut menu, _, _| {
+                                                                    for (label, destination) in &choices {
+                                                                        let owner = owner.clone();
+                                                                        let cluster_id = cluster_id.clone();
+                                                                        let destination = destination.clone();
+                                                                        menu = menu.item(PopupMenuItem::new(label.clone()).checked(destination == section).on_click(move |_, window, cx| {
+                                                                            let _ = owner.update(cx, |app, cx| app.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: destination.clone() }, true, window, cx));
+                                                                        }));
+                                                                    }
+                                                                    menu
+                                                                }
+                                                            }))
                                                 }))
                                                 .child(breadcrumb_separator(cx))
                                                  .child(
@@ -479,6 +565,16 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     use super::cluster_choices;
+    #[test]
+    fn breadcrumb_menus_match_sidebar_groups_and_workload_pages() {
+        let groups = super::breadcrumb_choices("pods", true);
+        assert!(groups.iter().any(|(label, _)| label == "Workloads"));
+        let pages = super::breadcrumb_choices("pods", false);
+        assert!(pages.iter().any(|(_, section)| section == "pods"));
+        assert!(pages.iter().any(|(_, section)| section == "deployments"));
+        assert!(!pages.iter().any(|(_, section)| section == "nodes"));
+    }
+
     use gpui_kit::component::select::SelectItem as _;
     use iceon_core::catalog::{CatalogSnapshot, ClusterSummary};
 
