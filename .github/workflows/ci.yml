@@ -30,6 +30,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # keyring's Linux Secret Service backend links libdbus even for core tests.
+      # This reusable job also runs as the release workflow's CI gate.
+      - name: Install Linux keyring build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+          pkg-config --modversion dbus-1
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
