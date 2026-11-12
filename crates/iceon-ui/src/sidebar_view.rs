@@ -175,7 +175,7 @@ impl IceonApp {
             let group_id = group.id;
             let leaf = group.children.is_empty();
             if leaf {
-                if !self.access_ready() || !self.route_allowed(group.default_child) {
+                if !self.route_visible(group.default_child) {
                     continue;
                 }
                 let cid = cluster_id.to_owned();
@@ -202,7 +202,7 @@ impl IceonApp {
                     group
                         .children
                         .iter()
-                        .filter(|child| self.access_ready() && self.route_allowed(child.id))
+                        .filter(|child| self.route_visible(child.id))
                         .map(|child| {
                             let cid = cluster_id.to_owned();
                             let destination = child.id;

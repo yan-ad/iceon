@@ -73,7 +73,7 @@ impl IceonApp {
         let destinations = destinations(
             &self.catalog_snapshot.clusters,
             self.history.current(),
-            |section| self.access_ready() && self.route_allowed(section),
+            |section| self.route_visible(section),
         );
         let items = destinations
             .iter()
@@ -96,7 +96,7 @@ impl IceonApp {
                     let _ = owner.update(cx, |app, cx| {
                         if label.starts_with("Section · ")
                             && let Route::Cluster { section, .. } = route
-                            && (!app.access_ready() || !app.route_allowed(section))
+                            && (!app.route_visible(section))
                         {
                             return;
                         }

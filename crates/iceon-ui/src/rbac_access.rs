@@ -39,6 +39,12 @@ pub(crate) struct AccessState {
     scheduled: HashSet<PermissionCheck>,
     lists_changed: bool,
 }
+fn resource_route_visible(
+    kind: ResourceKind,
+    cluster_decision: Option<PermissionDecision>,
+) -> bool {
+    namespaced_kind(kind) || cluster_decision == Some(PermissionDecision::Allowed)
+}
 fn needs_initial_access_page(
     completed: Option<&(String, String)>,
     cluster: &str,
@@ -321,6 +327,30 @@ impl IceonApp {
             }
         }
     }
+    /// Navigation discovery is separate from permission to query the active scope.
+    pub(crate) fn route_visible(&self, section: &str) -> bool {
+        let same_lease = self.cluster_session.as_ref().is_some_and(|session| {
+            self.access.initial_lease.as_ref()
+                == Some(&(session.cluster_id.clone(), session.session_id.clone()))
+        });
+        if !same_lease {
+            return false;
+        }
+        if let Some(kind) = section_to_resource_kind(section) {
+            return resource_route_visible(
+                kind,
+                self.access
+                    .published_lists
+                    .get(&check(kind, PermissionAction::List, None, None))
+                    .copied(),
+            );
+        }
+        match section {
+            "overview" | "port-forwarding" | "helm/charts" | "helm-charts" | "helm/releases"
+            | "helm-releases" => true,
+            _ => self.route_allowed(section),
+        }
+    }
     pub fn route_allowed(&self, section: &str) -> bool {
         if !self.access_ready() {
             return false;
@@ -397,7 +427,24 @@ impl IceonApp {
         let scope = self.access_scope();
         let revision = self.access.revision.wrapping_add(1);
         let initial_lease = self.access.initial_lease.clone();
+        let cluster_lists = if self
+            .access
+            .scope
+            .as_ref()
+            .zip(scope.as_ref())
+            .is_some_and(|(old, new)| old.cluster == new.cluster && old.lease == new.lease)
+        {
+            self.access
+                .published_lists
+                .iter()
+                .filter(|(key, _)| !namespaced_kind(key.kind))
+                .map(|(key, value)| (key.clone(), *value))
+                .collect()
+        } else {
+            HashMap::new()
+        };
         self.access = AccessState {
+            published_lists: cluster_lists,
             initial_lease,
             scope: scope.clone(),
             generation,
@@ -786,6 +833,47 @@ impl IceonApp {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn discoverable_namespace_menu_does_not_authorize_all_namespace_reads() {
+        use super::*;
+        assert!(resource_route_visible(
+            ResourceKind::Pods,
+            Some(PermissionDecision::Denied)
+        ));
+        assert!(resource_route_visible(ResourceKind::Pods, None));
+        assert!(!resource_route_visible(
+            ResourceKind::Nodes,
+            Some(PermissionDecision::Denied)
+        ));
+        let mut state = AccessState::default();
+        state.entries.insert(
+            check(
+                ResourceKind::Pods,
+                PermissionAction::List,
+                Some("dev"),
+                None,
+            ),
+            (PermissionDecision::Allowed, now() + 10000),
+        );
+        assert_eq!(
+            state.decision(&check(
+                ResourceKind::Pods,
+                PermissionAction::List,
+                None,
+                None
+            )),
+            PermissionDecision::Unknown
+        );
+        assert_eq!(
+            state.decision(&check(
+                ResourceKind::Pods,
+                PermissionAction::List,
+                Some("dev"),
+                None
+            )),
+            PermissionDecision::Allowed
+        );
+    }
     #[test]
     fn full_page_loading_is_only_for_initial_session_review() {
         let completed = ("cluster".into(), "lease".into());

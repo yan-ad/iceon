@@ -368,7 +368,11 @@ impl IceonApp {
         self.reload_active_section(window, cx);
     }
 
-    fn open_namespace_scope_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_namespace_scope_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Route::Cluster { cluster_id, .. } = self.history.current() else {
             return;
         };
@@ -617,14 +621,14 @@ impl IceonApp {
                                                             .text_color(cx.theme().sidebar_foreground)
                                                             .dropdown_menu({
                                                                 let owner = cx.entity().downgrade();
-                                                                let choices: Vec<_> = breadcrumb_choices(&self.active_cluster_section, index == 0 && opened_path(&self.active_cluster_section).len() > 1).into_iter().filter(|(_, destination)| self.access_ready() && self.route_allowed(destination)).collect();
+                                                                let choices: Vec<_> = breadcrumb_choices(&self.active_cluster_section, index == 0 && opened_path(&self.active_cluster_section).len() > 1).into_iter().filter(|(_, destination)| self.route_visible(destination)).collect();
                                                                 move |mut menu, _, _| {
                                                                     for (label, destination) in &choices {
                                                                         let owner = owner.clone();
                                                                         let cluster_id = cluster_id.clone();
                                                                         let destination = destination.clone();
                                                                         menu = menu.item(PopupMenuItem::new(label.clone()).checked(destination == section).on_click(move |_, window, cx| {
-                                                                            let _ = owner.update(cx, |app, cx| { if app.access_ready() && app.route_allowed(&destination) { app.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: destination.clone() }, true, window, cx); } });
+                                                                            let _ = owner.update(cx, |app, cx| { if app.route_visible(&destination) { app.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: destination.clone() }, true, window, cx); } });
                                                                         }));
                                                                     }
                                                                      menu
