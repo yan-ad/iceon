@@ -22,7 +22,6 @@ use iceon_core::connection::{
     ResourceItem, ResourceKind, ResourcePage, details::ResourceReference,
     permissions::PermissionAction,
 };
-use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Health {
@@ -502,11 +501,15 @@ impl IceonApp {
             let table = self
                 .overview_events_table
                 .get_or_insert_with(|| {
-                    cx.new(|cx| ResourceTable::new(owner, cx).without_selection())
+                    cx.new(|cx| {
+                        ResourceTable::new(owner, cx)
+                            .without_selection()
+                            .without_pagination()
+                    })
                 })
                 .clone();
             let data = TableData {
-                page: Some(Rc::new(page.clone())),
+                page: Some(page.clone()),
                 scope: ResourceScrollScope {
                     cluster_id: page.cluster_id.clone(),
                     kind: ResourceKind::Events,
@@ -553,7 +556,7 @@ impl IceonApp {
             stats.push(stat(
                 "Nodes ready",
                 ready
-                    .map(|n| format!("{n} / {}", count(snap.nodes.as_ref())))
+                    .map(|n| format!("{n} / {}", count(snap.nodes.as_deref())))
                     .unwrap_or_else(|| "—".into()),
                 "Loaded nodes",
                 self.cluster_loading,
@@ -564,7 +567,7 @@ impl IceonApp {
             stats.push(stat(
                 "Pods running",
                 running
-                    .map(|n| format!("{n} / {}", count(snap.pods.as_ref())))
+                    .map(|n| format!("{n} / {}", count(snap.pods.as_deref())))
                     .unwrap_or_else(|| "—".into()),
                 "Selected namespace scope",
                 self.cluster_loading,
@@ -623,7 +626,13 @@ impl IceonApp {
             } else {
                 1
             };
-            columns[column].push(self.overview_workload_card(label, section, kind, page, cx));
+            columns[column].push(self.overview_workload_card(
+                label,
+                section,
+                kind,
+                page.map(|page| page.as_ref()),
+                cx,
+            ));
         }
         if workloads.is_empty()
             && !self.can_list(ResourceKind::Nodes)

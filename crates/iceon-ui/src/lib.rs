@@ -23,6 +23,7 @@ mod kubectl_tools;
 mod local_console;
 mod native_menu;
 pub mod navigation;
+mod overview_cache;
 mod overview_view;
 mod pod_columns;
 pub mod pod_dock_view;
@@ -127,6 +128,8 @@ pub struct IceonApp {
 
     pub(crate) overview_snapshot: OverviewSnapshot,
     pub(crate) overview_generation: u64,
+    pub(crate) overview_cache: overview_cache::OverviewCache,
+    pub(crate) overview_pending: usize,
     pub(crate) overview_events_table: Option<Entity<resource_table::ResourceTable>>,
     pub(crate) resource_page: Option<std::rc::Rc<ResourcePage>>,
     pub(crate) resource_table: Option<Entity<resource_table::ResourceTable>>,
@@ -377,6 +380,8 @@ impl IceonApp {
             cluster_error: None,
             operation_counter: 1,
             overview_snapshot: OverviewSnapshot::default(),
+            overview_cache: overview_cache::OverviewCache::default(),
+            overview_pending: 0,
             overview_generation: 0,
             overview_events_table: None,
             resource_page: None,

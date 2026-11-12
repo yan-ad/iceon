@@ -234,16 +234,16 @@ use crate::{
 
 #[derive(Clone, Debug, Default)]
 pub struct OverviewSnapshot {
-    pub nodes: Option<ResourcePage>,
-    pub namespaces: Option<ResourcePage>,
-    pub pods: Option<ResourcePage>,
-    pub deployments: Option<ResourcePage>,
-    pub daemonsets: Option<ResourcePage>,
-    pub statefulsets: Option<ResourcePage>,
-    pub replicasets: Option<ResourcePage>,
-    pub jobs: Option<ResourcePage>,
-    pub cronjobs: Option<ResourcePage>,
-    pub events: Option<ResourcePage>,
+    pub nodes: Option<Rc<ResourcePage>>,
+    pub namespaces: Option<Rc<ResourcePage>>,
+    pub pods: Option<Rc<ResourcePage>>,
+    pub deployments: Option<Rc<ResourcePage>>,
+    pub daemonsets: Option<Rc<ResourcePage>>,
+    pub statefulsets: Option<Rc<ResourcePage>>,
+    pub replicasets: Option<Rc<ResourcePage>>,
+    pub jobs: Option<Rc<ResourcePage>>,
+    pub cronjobs: Option<Rc<ResourcePage>>,
+    pub events: Option<Rc<ResourcePage>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1178,6 +1178,7 @@ impl IceonApp {
         self.overview_snapshot = OverviewSnapshot::default();
         self.cluster_error = None;
         self.cluster_loading = false;
+        self.overview_pending = 0;
         cx.notify();
 
         let Some(session) = self
@@ -1205,6 +1206,30 @@ impl IceonApp {
         .into_iter()
         .filter(|kind| self.can_list(*kind))
         .collect::<Vec<_>>();
+        let key = crate::overview_cache::OverviewCacheKey {
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
+            namespace: namespace.clone(),
+        };
+        let cached = self.overview_cache.get(&key);
+        let has_cached = cached.is_some();
+        if let Some(mut snapshot) = cached {
+            crate::overview_cache::retain_allowed(&mut snapshot, &kinds);
+            self.overview_snapshot = snapshot;
+        }
+        let events_allowed = kinds.contains(&ResourceKind::Events);
+        let workload_kinds = kinds
+            .into_iter()
+            .filter(|kind| *kind != ResourceKind::Events)
+            .collect::<Vec<_>>();
+        let mut batches = Vec::new();
+        if !workload_kinds.is_empty() {
+            batches.push((workload_kinds, false));
+        }
+        if events_allowed {
+            batches.push((vec![ResourceKind::Events], true));
+        }
+        self.overview_pending = batches.len();
         let request_session = session.clone();
         let request_namespace = namespace.clone();
         let is_current = move |app: &Self| {
@@ -1224,129 +1249,147 @@ impl IceonApp {
         };
         let session = request_session;
         let namespace = request_namespace;
-        self.cluster_loading = true;
+        self.cluster_loading = !has_cached && self.overview_pending > 0;
         cx.notify();
 
-        cx.spawn_in(window, async move |this, cx| {
-            let mut snap = OverviewSnapshot::default();
-            let mut errors = Vec::new();
-            for kind in kinds {
-                let mut combined: Option<ResourcePage> = None;
-                let mut token = None;
-                let mut seen_tokens = std::collections::HashSet::new();
-                let mut incomplete = false;
-                for page_index in 0..100 {
-                    // Allocate an operation only while this exact overview and lease are active.
-                    let Ok(Some(req)) = this.update_in(cx, |app, _, _| {
-                        is_current(app).then(|| ResourceRequest {
-                            cluster_id: session.cluster_id.clone(),
-                            session_id: session.session_id.clone(),
-                            kind,
-                            read_id: app.next_operation_id(),
-                            namespace: if namespaced_kind(kind) {
-                                namespace.clone()
-                            } else {
-                                None
-                            },
-                            continue_token: token.clone(),
-                            query: None,
-                            status: None,
-                            group: None,
-                        })
-                    }) else {
-                        return;
-                    };
-                    let result = connection.resources(req.clone()).await;
-                    if !this
-                        .update_in(cx, |app, _, _| is_current(app))
-                        .unwrap_or(false)
-                    {
-                        return;
-                    }
-                    let mut page = match result {
-                        Ok(page)
-                            if page.cluster_id == req.cluster_id
-                                && page.session_id == req.session_id
-                                && page.kind == req.kind
-                                && page.read_id == req.read_id
-                                && page.namespace == req.namespace =>
+        // Events run as an independent future, never behind the workload pagination loop.
+        for (kinds, events_preview) in batches {
+            let connection = connection.clone();
+            let session = session.clone();
+            let namespace = namespace.clone();
+            let key = key.clone();
+            let is_current = is_current.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                let mut errors = Vec::new();
+                for kind in kinds {
+                    let mut combined: Option<ResourcePage> = None;
+                    let mut token = None;
+                    let mut seen_tokens = std::collections::HashSet::new();
+                    let mut incomplete = false;
+                    let mut failed = false;
+                    for page_index in 0..100 {
+                        // Allocate an operation only while this exact overview and lease are active.
+                        let Ok(Some(req)) = this.update_in(cx, |app, _, _| {
+                            is_current(app).then(|| ResourceRequest {
+                                cluster_id: session.cluster_id.clone(),
+                                session_id: session.session_id.clone(),
+                                kind,
+                                read_id: app.next_operation_id(),
+                                namespace: if namespaced_kind(kind) {
+                                    namespace.clone()
+                                } else {
+                                    None
+                                },
+                                continue_token: token.clone(),
+                                query: None,
+                                status: None,
+                                group: None,
+                            })
+                        }) else {
+                            return;
+                        };
+                        let result = connection.resources(req.clone()).await;
+                        if !this
+                            .update_in(cx, |app, _, _| is_current(app))
+                            .unwrap_or(false)
                         {
-                            page
+                            return;
                         }
-                        result => {
+                        let mut page = match result {
+                            Ok(page)
+                                if page.cluster_id == req.cluster_id
+                                    && page.session_id == req.session_id
+                                    && page.kind == req.kind
+                                    && page.read_id == req.read_id
+                                    && page.namespace == req.namespace =>
+                            {
+                                page
+                            }
+                            result => {
+                                if let Some(page) = combined.as_mut() {
+                                    page.truncated = true;
+                                }
+                                let reason = match result {
+                                    Err(error) => format!("{error:?}"),
+                                    Ok(_) => "response identity mismatch".to_string(),
+                                };
+                                failed = true;
+                                errors.push(format!("{kind:?}: overview page failed: {reason}"));
+                                break;
+                            }
+                        };
+                        if events_preview {
+                            // One API page only. Retain continuation, and explicitly mark
+                            // any locally omitted rows (which cannot be resumed) incomplete.
+                            page.truncated |=
+                                page.continue_token.is_some() || page.items.len() > 100;
+                            page.items.truncate(100);
+                            combined = Some(page);
+                            break;
+                        }
+                        token = page.continue_token.clone();
+                        // A continuation alone is not permanent truncation once all pages arrive.
+                        incomplete |= page.truncated && token.is_none();
+                        let remaining = 10_000 - combined.as_ref().map_or(0, |p| p.items.len());
+                        incomplete |= page.items.len() > remaining;
+                        page.items.truncate(remaining);
+                        if let Some(accumulated) = combined.as_mut() {
+                            accumulated.items.append(&mut page.items);
+                            accumulated.read_id = page.read_id;
+                            accumulated.fetched_at = page.fetched_at;
+                            accumulated.continue_token = token.clone();
+                            accumulated.truncated = incomplete || token.is_some();
+                        } else {
+                            page.truncated = incomplete || token.is_some();
+                            combined = Some(page);
+                        }
+                        let Some(next_token) = token.as_ref() else {
+                            break;
+                        };
+                        if page_index == 99
+                            || combined.as_ref().is_some_and(|p| p.items.len() >= 10_000)
+                            || !seen_tokens.insert(next_token.clone())
+                        {
+                            // Retain the observed prefix, never a fabricated empty page.
                             if let Some(page) = combined.as_mut() {
                                 page.truncated = true;
                             }
-                            let reason = match result {
-                                Err(error) => format!("{error:?}"),
-                                Ok(_) => "response identity mismatch".to_string(),
-                            };
-                            errors.push(format!("{kind:?}: overview page failed: {reason}"));
                             break;
                         }
-                    };
-                    token = page.continue_token.clone();
-                    // A continuation alone is not permanent truncation once all pages arrive.
-                    incomplete |= page.truncated && token.is_none();
-                    let remaining = 10_000 - combined.as_ref().map_or(0, |p| p.items.len());
-                    incomplete |= page.items.len() > remaining;
-                    page.items.truncate(remaining);
-                    if let Some(accumulated) = combined.as_mut() {
-                        accumulated.items.append(&mut page.items);
-                        accumulated.read_id = page.read_id;
-                        accumulated.fetched_at = page.fetched_at;
-                        accumulated.continue_token = token.clone();
-                        accumulated.truncated = incomplete || token.is_some();
-                    } else {
-                        page.truncated = incomplete || token.is_some();
-                        combined = Some(page);
                     }
-                    let Some(next_token) = token.as_ref() else {
-                        break;
-                    };
-                    if page_index == 99
-                        || combined.as_ref().is_some_and(|p| p.items.len() >= 10_000)
-                        || !seen_tokens.insert(next_token.clone())
-                    {
-                        // Retain the observed prefix, never a fabricated empty page.
-                        if let Some(page) = combined.as_mut() {
-                            page.truncated = true;
-                        }
-                        break;
+                    // Merge only this successful kind into the currently published
+                    // snapshot; never overwrite an independent events publication.
+                    if !failed && let Some(page) = combined {
+                        let _ = this.update_in(cx, |app, _, cx| {
+                            if is_current(app) && app.can_list(kind) {
+                                crate::overview_cache::apply_page(&mut app.overview_snapshot, page);
+                                app.overview_cache
+                                    .insert(key.clone(), app.overview_snapshot.clone());
+                                cx.notify();
+                            }
+                        });
                     }
                 }
-                match kind {
-                    ResourceKind::Nodes => snap.nodes = combined,
-                    ResourceKind::Namespaces => snap.namespaces = combined,
-                    ResourceKind::Pods => snap.pods = combined,
-                    ResourceKind::Deployments => snap.deployments = combined,
-                    ResourceKind::DaemonSets => snap.daemonsets = combined,
-                    ResourceKind::StatefulSets => snap.statefulsets = combined,
-                    ResourceKind::ReplicaSets => snap.replicasets = combined,
-                    ResourceKind::Jobs => snap.jobs = combined,
-                    ResourceKind::CronJobs => snap.cronjobs = combined,
-                    ResourceKind::Events => snap.events = combined,
-                    _ => {}
-                }
-                let snapshot = snap.clone();
                 let _ = this.update_in(cx, |app, _, cx| {
-                    if is_current(app) {
-                        app.overview_snapshot = snapshot;
-                        cx.notify();
+                    if !is_current(app) {
+                        return;
                     }
+                    app.overview_pending = app.overview_pending.saturating_sub(1);
+                    app.cluster_loading = !has_cached && app.overview_pending > 0;
+                    if !errors.is_empty() {
+                        let message = errors.join("; ");
+                        if let Some(prior) = app.cluster_error.as_mut() {
+                            prior.push_str("; ");
+                            prior.push_str(&message);
+                        } else {
+                            app.cluster_error = Some(message);
+                        }
+                    }
+                    cx.notify();
                 });
-            }
-            let _ = this.update_in(cx, |app, _, cx| {
-                if !is_current(app) {
-                    return;
-                }
-                app.cluster_loading = false;
-                app.overview_snapshot = snap;
-                app.cluster_error = (!errors.is_empty()).then(|| errors.join("; "));
-                cx.notify();
-            });
-        })
-        .detach();
+            })
+            .detach();
+        }
     }
 
     pub(crate) fn cancel_resource_pagination(&mut self) {

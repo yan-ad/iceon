@@ -454,6 +454,7 @@ impl TableCache {
 pub(crate) struct ResourceTable {
     owner: WeakEntity<IceonApp>,
     selection_enabled: bool,
+    pagination_enabled: bool,
     selected: Vec<DeleteTarget>,
     selection_lease: String,
     cache: TableCache,
@@ -474,6 +475,7 @@ impl ResourceTable {
         Self {
             owner,
             selection_enabled: true,
+            pagination_enabled: true,
             selected: Vec::new(),
             selection_lease: String::new(),
             cache: TableCache::default(),
@@ -487,6 +489,10 @@ impl ResourceTable {
 
     pub(crate) fn without_selection(mut self) -> Self {
         self.selection_enabled = false;
+        self
+    }
+    pub(crate) fn without_pagination(mut self) -> Self {
+        self.pagination_enabled = false;
         self
     }
 
@@ -1653,7 +1659,10 @@ impl Render for ResourceTable {
                                     SharedString::from(format!("virtual-resource-table-{kind:?}")),
                                     item_sizes,
                                     move |this, visible_range, window, cx| {
-                                        if page.as_ref().is_some_and(|p| p.continue_token.is_some())
+                                        if this.pagination_enabled
+                                            && page
+                                                .as_ref()
+                                                .is_some_and(|p| p.continue_token.is_some())
                                             && visible_range.end.saturating_add(12) >= indices.len()
                                         {
                                             let owner = this.owner.clone();
