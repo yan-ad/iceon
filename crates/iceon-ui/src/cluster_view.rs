@@ -2501,11 +2501,12 @@ impl IceonApp {
                 el.child(
                     div().w(px(240.0)).h_full().child(
                         Input::new(&self.resource_filter_input)
+                            .xsmall()
                             .h_full()
                             .appearance(false)
                             .bordered(false)
                             .focus_bordered(false)
-                            .prefix(gpui_kit::component::Icon::new(IconName::Search).small())
+                            .prefix(gpui_kit::component::Icon::new(IconName::Search).xsmall())
                             .cleanable(true),
                     ),
                 )
