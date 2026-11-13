@@ -5,8 +5,34 @@
 //! `theme.background`; otherwise an opaque root hides the native material.
 
 use gpui_kit::component::theme::{Theme, ThemeColor, ThemeMode};
-use gpui_kit::{App, Hsla, Window, WindowBackgroundAppearance, rgb};
+use gpui_kit::{
+    AnyWindowHandle, App, Entity, Hsla, Render, StyleRefinement, Styled as _, Window,
+    WindowBackgroundAppearance, WindowOptions, rgb,
+};
 use iceon_core::preferences::AppTheme;
+
+/// Keep the kit's root/overlay host, but override its default full-window fill.
+/// A translucent sidebar/title bar cannot expose the native material while the
+/// component root paints `theme.background` behind it. Content views own their
+/// opaque backgrounds; the root must stay clear across every theme change.
+pub(crate) fn open_window<V: Render>(
+    options: WindowOptions,
+    cx: &mut App,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
+) -> gpui_kit::Result<(AnyWindowHandle, Entity<V>)> {
+    let (handle, view) = gpui_kit::open_window(options, cx, build)?;
+    handle.update(cx, |_, window, cx| {
+        gpui_kit::component::Root::update(window, cx, |root, _, cx| {
+            gpui_kit::Refineable::refine(root.style(), &root_style());
+            cx.notify();
+        });
+    })?;
+    Ok((handle, view))
+}
+
+fn root_style() -> StyleRefinement {
+    StyleRefinement::default().bg(gpui_kit::transparent_black())
+}
 
 const CHROME_ALPHA_LIGHT: f32 = 0.48;
 const CHROME_ALPHA_DARK: f32 = 0.38;
@@ -696,6 +722,92 @@ mod tests {
         CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
     };
     use gpui_kit::component::theme::{ThemeColor, ThemeMode};
+
+    #[test]
+    fn shell_root_overrides_the_component_fill_without_changing_content_colors() {
+        use gpui_kit::{Refineable as _, StyleRefinement, Styled as _};
+
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let mut colors = if mode.is_dark() {
+                *ThemeColor::dark()
+            } else {
+                *ThemeColor::light()
+            };
+            super::brand_colors(&mut colors, mode);
+            let content = colors.background;
+            // The component WindowState plugin paints this fill before Root
+            // refines its instance style. Without the override, all chrome is
+            // composited over an opaque background instead of native material.
+            let mut surface = StyleRefinement::default()
+                .bg(content)
+                .text_color(colors.foreground);
+            assert!(
+                !surface
+                    .background
+                    .as_ref()
+                    .unwrap()
+                    .color()
+                    .unwrap()
+                    .is_transparent()
+            );
+            surface.refine(&super::root_style());
+            assert!(
+                surface
+                    .background
+                    .as_ref()
+                    .unwrap()
+                    .color()
+                    .unwrap()
+                    .is_transparent()
+            );
+            assert_eq!(surface.text_style().color, Some(colors.foreground));
+            assert_eq!(colors.background, content);
+            assert_eq!(colors.background.a, 1.0);
+            assert!(colors.sidebar.a < 1.0);
+            assert!(colors.title_bar.a < 1.0);
+        }
+    }
+
+    #[test]
+    fn imported_chrome_exposes_material_without_making_content_translucent() {
+        use gpui_kit::{Refineable as _, StyleRefinement, Styled as _};
+
+        for mode in ["dark", "light"] {
+            for appearance in ["blurred", "transparent", "opaque"] {
+                let zed = zed_fixture(
+                    mode,
+                    &[
+                        ("background.appearance", appearance),
+                        ("background", "#102030"),
+                        ("panel.background", "#203040"),
+                        ("title_bar.background", "#304050"),
+                    ],
+                );
+                let mut colors = *ThemeColor::dark();
+                super::apply_zed_theme(&mut colors, &zed);
+                super::apply_zed_chrome(&mut colors, &zed);
+                let mut surface = StyleRefinement::default().bg(colors.background);
+                surface.refine(&super::root_style());
+                assert!(
+                    surface
+                        .background
+                        .as_ref()
+                        .unwrap()
+                        .color()
+                        .unwrap()
+                        .is_transparent()
+                );
+                assert_eq!(colors.background, neutral(0x102030, 1.0));
+                if appearance == "opaque" {
+                    assert_eq!(colors.sidebar.a, 1.0);
+                    assert_eq!(colors.title_bar.a, 1.0);
+                } else {
+                    assert!(colors.sidebar.a < 1.0);
+                    assert!(colors.title_bar.a < 1.0);
+                }
+            }
+        }
+    }
 
     fn zed_fixture(appearance: &str, entries: &[(&str, &str)]) -> iceon_core::zed_themes::ZedTheme {
         iceon_core::zed_themes::ZedTheme {

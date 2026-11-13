@@ -881,7 +881,7 @@ impl Render for PreferencesWindow {
             .size_full()
             .text_color(cx.theme().foreground)
             .child(
-                TitleBar::new().child(
+                TitleBar::new().bg(cx.theme().tokens.title_bar).child(
                     h_flex()
                         .w_full()
                         .items_center()
@@ -1059,9 +1059,11 @@ impl IceonApp {
             ..TitleBar::window_options()
         };
 
-        if let Ok((handle, _preferences)) = gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| PreferencesWindow::new(window, cx))
-        }) {
+        if let Ok((handle, _preferences)) =
+            crate::shell_theme::open_window(options, cx, |window, cx| {
+                cx.new(|cx| PreferencesWindow::new(window, cx))
+            })
+        {
             self.preferences_window = Some(handle);
         }
         cx.notify();

@@ -746,23 +746,24 @@ pub fn run() {
                 window_background: shell_theme::background_appearance(cx),
                 ..TitleBar::window_options()
             };
-            let (main_window, main_app) = gpui_kit::open_window(options, cx, move |window, cx| {
-                let app = cx.new(|cx| {
-                    IceonApp::new(
-                        catalog,
-                        connection,
-                        preferences_engine,
-                        secrets_engine,
-                        window,
-                        cx,
-                    )
-                });
-                native_menu::register_window(&app, window, cx);
-                let dock = workspace_dock::create(app.downgrade(), window, cx);
-                app.update(cx, |app, _| app.workspace_dock = Some(dock));
-                app
-            })
-            .expect("failed to open Iceon GPUI window");
+            let (main_window, main_app) =
+                shell_theme::open_window(options, cx, move |window, cx| {
+                    let app = cx.new(|cx| {
+                        IceonApp::new(
+                            catalog,
+                            connection,
+                            preferences_engine,
+                            secrets_engine,
+                            window,
+                            cx,
+                        )
+                    });
+                    native_menu::register_window(&app, window, cx);
+                    let dock = workspace_dock::create(app.downgrade(), window, cx);
+                    app.update(cx, |app, _| app.workspace_dock = Some(dock));
+                    app
+                })
+                .expect("failed to open Iceon GPUI window");
             let tray_result = tray::register_main_window(main_window, cx).and_then(|()| {
                 tray::set_visible(main_app.read(cx).preferences_draft.app.show_tray_icon)
             });
