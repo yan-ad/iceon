@@ -700,6 +700,7 @@ impl ResourceTable {
         if namespace.is_empty() {
             return;
         }
+        app.selected_namespaces = vec![namespace.to_owned()];
         app.selected_namespace = Some(namespace.to_owned());
         app.current_continue_token = None;
         app.continue_token_history.clear();

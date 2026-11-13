@@ -125,6 +125,8 @@ pub struct IceonApp {
     pub(crate) cluster_session: Option<ConnectionSnapshot>,
     pub(crate) active_cluster_section: String,
     pub(crate) namespaces: Vec<String>,
+    /// Empty means all namespaces; multiple entries are a client-side list scope.
+    pub(crate) selected_namespaces: Vec<String>,
     pub(crate) selected_namespace: Option<String>,
     pub(crate) selected_status_filter: Option<String>,
     pub(crate) cluster_loading: bool,
@@ -380,6 +382,7 @@ impl IceonApp {
             cluster_session: None,
             active_cluster_section: "overview".into(),
             namespaces: vec![],
+            selected_namespaces: vec![],
             selected_namespace: None,
             selected_status_filter: None,
             cluster_loading: false,

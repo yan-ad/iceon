@@ -26,6 +26,27 @@ fn namespace_choices(known: &[String]) -> Vec<Option<String>> {
     choices
 }
 
+fn toggle_namespace(selection: &mut Vec<String>, namespace: Option<&str>) {
+    let Some(namespace) = namespace else {
+        selection.clear();
+        return;
+    };
+    if let Some(index) = selection.iter().position(|selected| selected == namespace) {
+        selection.remove(index);
+    } else {
+        selection.push(namespace.to_owned());
+    }
+    selection.sort();
+}
+
+fn namespace_label(selection: &[String]) -> String {
+    match selection {
+        [] => "All Namespaces".into(),
+        [namespace] => namespace.clone(),
+        selection => format!("{} Namespaces", selection.len()),
+    }
+}
+
 #[cfg(test)]
 mod namespace_scope_tests {
     #[test]
@@ -34,6 +55,28 @@ mod namespace_scope_tests {
         assert_eq!(
             super::namespace_choices(&["dev".into(), "dev".into(), "team".into()]),
             vec![None, Some("dev".into()), Some("team".into())]
+        );
+    }
+
+    #[test]
+    fn namespace_selection_toggles_and_empty_means_all() {
+        let mut selection = Vec::new();
+        super::toggle_namespace(&mut selection, Some("team"));
+        super::toggle_namespace(&mut selection, Some("dev"));
+        assert_eq!(selection, vec!["dev", "team"]);
+        super::toggle_namespace(&mut selection, Some("team"));
+        assert_eq!(selection, vec!["dev"]);
+        super::toggle_namespace(&mut selection, None);
+        assert!(selection.is_empty());
+    }
+
+    #[test]
+    fn namespace_label_describes_multi_selection() {
+        assert_eq!(super::namespace_label(&[]), "All Namespaces");
+        assert_eq!(super::namespace_label(&["dev".into()]), "dev");
+        assert_eq!(
+            super::namespace_label(&["dev".into(), "team".into()]),
+            "2 Namespaces"
         );
     }
 }
@@ -256,13 +299,15 @@ pub(super) fn create_cluster_select(
 }
 
 impl IceonApp {
-    fn select_header_namespace(
+    fn toggle_header_namespace(
         &mut self,
         namespace: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.selected_namespace = namespace;
+        toggle_namespace(&mut self.selected_namespaces, namespace.as_deref());
+        self.selected_namespace =
+            (self.selected_namespaces.len() == 1).then(|| self.selected_namespaces[0].clone());
         self.current_continue_token = None;
         self.continue_token_history.clear();
         // reload_active_section invokes ensure_access for the new scope.
@@ -291,7 +336,13 @@ impl IceonApp {
                         .as_ref()
                         .map(|session| (session.cluster_id.clone(), session.session_id.clone()));
                     for namespace in namespace_choices(&app.namespaces) {
-                        let selected = app.selected_namespace == namespace;
+                        let selected = match namespace.as_deref() {
+                            None => app.selected_namespaces.is_empty(),
+                            Some(namespace) => app
+                                .selected_namespaces
+                                .iter()
+                                .any(|selected| selected == namespace),
+                        };
                         let owner = owner.clone();
                         let cluster = cluster.clone();
                         menu = menu.item(
@@ -311,7 +362,7 @@ impl IceonApp {
                                     {
                                         return;
                                     }
-                                    app.select_header_namespace(namespace.clone(), window, cx);
+                                    app.toggle_header_namespace(namespace.clone(), window, cx);
                                 });
                             }),
                         );
@@ -371,10 +422,7 @@ impl IceonApp {
             .iter()
             .find(|item| Some(&item.id) == selected_id.as_ref())
             .cloned();
-        let current_namespace = self
-            .selected_namespace
-            .clone()
-            .unwrap_or_else(|| "All Namespaces".into());
+        let current_namespace = namespace_label(&self.selected_namespaces);
 
         // Do not replace the delegate on ordinary renders: doing so would reset the
         // filtered view and keyboard cursor while the user types. Exact metadata

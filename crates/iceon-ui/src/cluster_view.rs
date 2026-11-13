@@ -169,7 +169,10 @@ pub(crate) fn create_namespace_select(
             let SelectEvent::Confirm(Some(namespace)) = event else {
                 return;
             };
-            this.selected_namespace = (namespace != "All Namespaces").then(|| namespace.clone());
+            this.selected_namespaces = (namespace != "All Namespaces")
+                .then(|| vec![namespace.clone()])
+                .unwrap_or_default();
+            this.selected_namespace = this.selected_namespaces.first().cloned();
             this.current_continue_token = None;
             this.continue_token_history.clear();
             this.reload_active_section(window, cx);
@@ -177,6 +180,20 @@ pub(crate) fn create_namespace_select(
     )
     .detach();
     (select, items)
+}
+
+fn selected_namespace_scope(selected: &[String]) -> Option<String> {
+    (selected.len() == 1).then(|| selected[0].clone())
+}
+
+fn retain_selected_namespaces(page: &mut ResourcePage, selected: &[String]) {
+    if selected.len() > 1 && page.items.iter().any(|item| item.namespace.is_some()) {
+        page.items.retain(|item| {
+            item.namespace
+                .as_ref()
+                .is_some_and(|namespace| selected.iter().any(|chosen| chosen == namespace))
+        });
+    }
 }
 use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::prelude::*;
@@ -978,6 +995,7 @@ impl IceonApp {
             return;
         }
 
+        self.selected_namespaces.clear();
         self.selected_namespace = None;
         self.sync_namespace_select(window, cx);
         self.stop_active_pod_sync();
@@ -1159,7 +1177,8 @@ impl IceonApp {
         else {
             return;
         };
-        let namespace = self.selected_namespace.clone();
+        let namespace = selected_namespace_scope(&self.selected_namespaces);
+        let selected_namespaces = self.selected_namespaces.clone();
         let section = self.active_cluster_section.clone();
         let connection = self.connection.clone();
         let kinds = [
@@ -1182,7 +1201,9 @@ impl IceonApp {
             session_id: session.session_id.clone(),
             namespace: namespace.clone(),
         };
-        let cached = self.overview_cache.get(&key);
+        let cached = (selected_namespaces.len() <= 1)
+            .then(|| self.overview_cache.get(&key))
+            .flatten();
         let has_cached = cached.is_some();
         if let Some(mut snapshot) = cached {
             crate::overview_cache::retain_allowed(&mut snapshot, &kinds);
@@ -1203,6 +1224,7 @@ impl IceonApp {
         self.overview_pending = batches.len();
         let request_session = session.clone();
         let request_namespace = namespace.clone();
+        let current_selected_namespaces = selected_namespaces.clone();
         let is_current = move |app: &Self| {
             app.overview_generation == generation
                 && app.active_cluster_section == section
@@ -1210,7 +1232,7 @@ impl IceonApp {
                     section.as_str(),
                     "overview" | "workloads-overview" | "workloads/overview"
                 )
-                && app.selected_namespace == namespace
+                && app.selected_namespaces == current_selected_namespaces
                 && app.cluster_session.as_ref().is_some_and(|s| {
                     s.status == "connected"
                         && s.cluster_id == session.cluster_id
@@ -1228,6 +1250,7 @@ impl IceonApp {
             let connection = connection.clone();
             let session = session.clone();
             let namespace = namespace.clone();
+            let selected_namespaces = selected_namespaces.clone();
             let key = key.clone();
             let is_current = is_current.clone();
             cx.spawn_in(window, async move |this, cx| {
@@ -1289,6 +1312,7 @@ impl IceonApp {
                                 break;
                             }
                         };
+                        retain_selected_namespaces(&mut page, &selected_namespaces);
                         if events_preview {
                             // One API page only. Retain continuation, and explicitly mark
                             // any locally omitted rows (which cannot be resumed) incomplete.
@@ -1472,11 +1496,9 @@ impl IceonApp {
                     && s.session_id == req.session_id
             })
             && section_to_resource_kind(&self.active_cluster_section) == Some(req.kind)
-            && self
-                .selected_namespace
-                .as_ref()
+            && selected_namespace_scope(&self.selected_namespaces)
                 .filter(|_| namespaced_kind(req.kind))
-                == req.namespace.as_ref()
+                == req.namespace
             && (req.kind != ResourceKind::CustomResourceDefinitions
                 || self.custom_definition_group == req.group)
             && self.selected_status_filter == req.status
@@ -1514,7 +1536,7 @@ impl IceonApp {
             kind,
             read_id: self.next_operation_id(),
             namespace: if namespaced_kind(kind) {
-                self.selected_namespace.clone()
+                selected_namespace_scope(&self.selected_namespaces)
             } else {
                 None
             },
@@ -1539,6 +1561,8 @@ impl IceonApp {
                 match result {
                     Ok(page) if this.resource_pagination.accepts(&req, &page) => {
                         this.resource_pagination.completed();
+                        let mut page = page;
+                        retain_selected_namespaces(&mut page, &this.selected_namespaces);
                         let (page, limited) = crate::resource_pagination::merge_page(
                             this.resource_page.as_deref().filter(|_| req.continue_token.is_some()), page);
                         let incomplete = page.truncated && page.continue_token.is_none();
@@ -1552,7 +1576,10 @@ impl IceonApp {
                             window.push_notification(gpui_kit::component::notification::Notification::warning(if limited {
                                 "Resource scan reached the 50,000 item limit. Narrow the namespace or search. Loaded rows are preserved."
                             } else { "Resource response was incomplete without a continuation. Loaded rows are preserved; refresh to retry." }), cx);
-                        } else if req.query.is_some() || req.status.is_some()
+                        } else if req.query.is_some()
+                            || req.status.is_some()
+                            || (this.selected_namespaces.len() > 1
+                                && this.resource_page.as_ref().is_some_and(|p| p.continue_token.is_some()))
                             || this.resource_page.as_ref().is_some_and(|p| p.items.is_empty()) {
                             this.load_more_resources(kind, window, cx);
                         } else if kind == ResourceKind::Pods && req.continue_token.is_none()
@@ -1569,6 +1596,9 @@ impl IceonApp {
     }
 
     fn start_pod_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_namespaces.len() > 1 {
+            return;
+        }
         if !self.resource_allowed(
             ResourceKind::Pods,
             iceon_core::connection::permissions::PermissionAction::Watch,
@@ -1702,13 +1732,13 @@ impl IceonApp {
         let read_id = self.next_operation_id();
         self.helm_operation = read_id;
         let section = self.active_cluster_section.clone();
-        let namespace = self.selected_namespace.clone();
+        let namespace = selected_namespace_scope(&self.selected_namespaces);
         let req = HelmRequest {
             cluster_id: session.cluster_id.clone(),
             session_id: session.session_id.clone(),
             view,
             namespace: if view == HelmView::Releases {
-                self.selected_namespace.clone()
+                namespace.clone()
             } else {
                 None
             },
@@ -1729,7 +1759,7 @@ impl IceonApp {
             let _ = this.update_in(cx, |this, _, cx| {
                 if this.helm_operation != read_id
                     || this.active_cluster_section != section
-                    || this.selected_namespace != namespace
+                    || selected_namespace_scope(&this.selected_namespaces) != namespace
                     || !this.cluster_session.as_ref().is_some_and(|current| {
                         current.cluster_id == session.cluster_id
                             && current.session_id == session.session_id
@@ -1823,7 +1853,7 @@ impl IceonApp {
         self.custom_instance_operation = operation;
         self.cluster_loading = true;
         let section = self.active_cluster_section.clone();
-        let selected_namespace = self.selected_namespace.clone();
+        let selected_namespaces = self.selected_namespaces.clone();
         let req = CustomResourceRequest {
             cluster_id: session.cluster_id.clone(),
             session_id: session.session_id.clone(),
@@ -1841,7 +1871,7 @@ impl IceonApp {
             let _ = owner.update_in(cx, |app, _, cx| {
                 if app.custom_instance_operation != operation
                     || app.active_cluster_section != section
-                    || app.selected_namespace != selected_namespace
+                    || app.selected_namespaces != selected_namespaces
                     || !app.cluster_session.as_ref().is_some_and(|s| {
                         s.cluster_id == session.cluster_id && s.session_id == session.session_id
                     })

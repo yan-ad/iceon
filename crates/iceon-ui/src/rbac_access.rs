@@ -237,7 +237,10 @@ impl IceonApp {
             .map(|s| AccessScope {
                 cluster: s.cluster_id.clone(),
                 lease: s.session_id.clone(),
-                namespace: self.selected_namespace.clone(),
+                namespace: self
+                    .selected_namespace
+                    .clone()
+                    .filter(|_| self.selected_namespaces.len() <= 1),
             })
     }
     pub(crate) fn initial_access_loading(&self) -> bool {
@@ -293,7 +296,7 @@ impl IceonApp {
             && self.access.list_decision(&check(
                 kind,
                 PermissionAction::List,
-                if namespaced_kind(kind) {
+                if namespaced_kind(kind) && self.selected_namespaces.len() <= 1 {
                     self.selected_namespace.as_deref()
                 } else {
                     None
