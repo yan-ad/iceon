@@ -1069,9 +1069,9 @@ impl IceonApp {
         let new_menu = Button::new("console-new-menu")
             .small()
             .ghost()
-            .icon(IconName::ChevronDown)
-            .tooltip("More console sessions")
-            .accessibility_label("More console sessions")
+            .icon(IconName::Plus)
+            .tooltip("New console session")
+            .accessibility_label("New console session")
             .dropdown_menu(move |mut menu, _, cx| {
                 menu = menu.menu(
                     "New Device Terminal",
@@ -1153,21 +1153,6 @@ impl IceonApp {
                     .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        Button::new("console-new-device-terminal")
-                            .small()
-                            .ghost()
-                            .icon(IconName::Plus)
-                            .accessibility_label("New Device Terminal")
-                            .tooltip_with_action(
-                                "New Device Terminal",
-                                &crate::native_menu::NewDeviceTerminal,
-                                Some("Iceon"),
-                            )
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.new_device_terminal(window, cx)
-                            })),
-                    )
                     .child(new_menu),
             )
             .child(
