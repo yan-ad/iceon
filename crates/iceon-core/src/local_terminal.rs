@@ -186,6 +186,7 @@ impl Drop for OwnedChild {
 pub struct LocalTerminal {
     inner: Arc<Inner>,
     shell_name: String,
+    process_id: Option<u32>,
 }
 
 impl LocalTerminal {
@@ -230,6 +231,7 @@ impl LocalTerminal {
             .slave
             .spawn_command(command)
             .map_err(|e| format!("Start local shell: {e}"))?;
+        let process_id = child.process_id();
         let child = OwnedChild {
             child,
             reaped: false,
@@ -244,6 +246,7 @@ impl LocalTerminal {
         let terminal = Self {
             inner: inner.clone(),
             shell_name,
+            process_id,
         };
         {
             let mut sessions = lock(&SESSIONS);
@@ -361,6 +364,12 @@ impl LocalTerminal {
 
     pub fn shell_name(&self) -> &str {
         &self.shell_name
+    }
+
+    /// The direct PTY child captured at spawn, not a foreground descendant or
+    /// the app's PID. Retained as session metadata even after the child exits.
+    pub fn process_id(&self) -> Option<u32> {
+        self.process_id
     }
 
     /// Idempotent, nonblocking shutdown request. The supervisor kills/reaps.
@@ -483,7 +492,9 @@ mod tests {
                 closed: AtomicBool::new(false),
             }),
             shell_name: "test".into(),
+            process_id: None,
         };
+        assert_eq!(terminal.process_id(), None);
         assert!(terminal.write(&vec![0; INPUT_CHUNK_LIMIT + 1]).is_err());
         for _ in 0..4 {
             terminal.write(&vec![0; INPUT_CHUNK_LIMIT]).unwrap();
@@ -507,6 +518,9 @@ mod tests {
             "printf '\\033[32mready\\033[0m\\n'; read value; printf 'received:%s\\n' \"$value\"",
         ]);
         let terminal = LocalTerminal::open_command(80, 24, command, "sh".into()).unwrap();
+        let pid = terminal.process_id().expect("native PTY child PID");
+        assert!(pid > 0);
+        assert_ne!(pid, std::process::id());
         terminal.write(b"hello\n").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut output = Vec::new();

@@ -16,6 +16,14 @@ pub(crate) struct DeviceTerminalTab {
     process: Option<Arc<LocalTerminal>>,
 }
 
+impl DeviceTerminalTab {
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        self.process
+            .as_ref()
+            .and_then(|process| process.process_id())
+    }
+}
+
 impl Drop for DeviceTerminalTab {
     fn drop(&mut self) {
         if let Some(process) = &self.process {

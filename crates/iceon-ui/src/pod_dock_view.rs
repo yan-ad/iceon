@@ -9,9 +9,7 @@ use gpui_kit::component::{
     input::Input,
     menu::{DropdownMenu as _, PopupMenuItem},
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
-    tab::{Tab, TabBar},
     tag::Tag,
-    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::*;
@@ -108,7 +106,7 @@ struct LogPresentation {
 
 /// Bound visible labels by Unicode scalar count, keeping the shell/container suffix.
 /// Full names remain available in the tab tooltip and accessibility label.
-fn console_tab_title(title: &str) -> String {
+pub(crate) fn console_tab_title(title: &str) -> String {
     const MAX_CHARS: usize = 36;
     let chars = title.chars().collect::<Vec<_>>();
     if chars.len() <= MAX_CHARS {
@@ -925,77 +923,58 @@ impl IceonApp {
     /// Rendering this strip never starts a shell or constructs pod output caches.
     pub(crate) fn render_console_tabs(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        // Stable identities are shared by selection, menus, and deferred closes.
-        let device_keys = self
-            .device_terminals
+        let order = self.console_tab_order();
+        let selected = order
             .iter()
-            .map(|tab| tab.key)
-            .collect::<Vec<_>>();
-        let pod_keys = self
-            .pod_dock_tabs
-            .iter()
-            .map(|tab| tab.key)
-            .collect::<Vec<_>>();
-        let pod_offset = device_keys.len();
-        let yaml_offset = pod_offset + pod_keys.len();
-        let yaml_keys = self
-            .yaml_dock_tabs
-            .iter()
-            .map(|t| t.key)
-            .collect::<Vec<_>>();
-        let selected_index = if let Some(key) = self.active_yaml_tab {
-            yaml_keys
-                .iter()
-                .position(|k| *k == key)
-                .map(|i| yaml_offset + i)
-                .unwrap_or(usize::MAX)
-        } else if self.local_terminal_active {
-            device_keys
-                .iter()
-                .position(|key| Some(*key) == self.active_device_terminal)
-                .unwrap_or(usize::MAX)
-        } else {
-            self.active_pod_tab
-                .filter(|index| *index < pod_keys.len())
-                .map(|index| index + pod_offset)
-                .unwrap_or(usize::MAX)
-        };
+            .position(|tab| Some(*tab) == self.active_console_tab());
+        let scroll = window
+            .use_keyed_state("console-boxed-tab-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let signature = (order, selected);
+        let selection = window.use_keyed_state("console-boxed-tab-selection", cx, |_, _| {
+            std::cell::RefCell::new(None)
+        });
+        if selection.read(cx).borrow().as_ref() != Some(&signature) {
+            if let Some(index) = selected {
+                scroll.scroll_to_item(index);
+            }
+            *selection.read(cx).borrow_mut() = Some(signature);
+        }
         let mut tabs = Vec::new();
         tabs.extend(self.device_terminals.iter().map(|tab| {
             let key = tab.key;
             let title = tab.title.clone();
-            let tooltip = format!("{} — {}", title, tab.status);
-            self.console_tab_menu(
-                Tab::new()
-                    .min_w(px(160.))
-                    .px_3()
-                    .flex_shrink_0()
-                    .label(console_tab_title(&title))
-                    .aria_label(tooltip.clone())
-                    .prefix(gpui_kit::component::Icon::new(IconName::SquareTerminal).small())
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                    .suffix(
-                        Button::new(SharedString::from(format!("close-device-console-{key}")))
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Close)
-                            .tooltip("Close device terminal")
-                            .accessibility_label("Close device terminal")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.request_close_console_tabs(
-                                    crate::console_tabs::ConsoleTab::Device(key),
-                                    crate::console_tabs::CloseTabs::One,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    ),
+            let detail = crate::console_tabs::process_detail(tab.process_id());
+            self.boxed_console_tab(
                 crate::console_tabs::ConsoleTab::Device(key),
+                title,
+                detail,
+                gpui_kit::component::Icon::new(IconName::SquareTerminal),
                 cx,
+            )
+            .child(
+                Button::new(SharedString::from(format!("close-device-console-{key}")))
+                    .opacity(0.)
+                    .group_hover("console-session-tab", |style| style.opacity(1.))
+                    .focus_visible(|style| style.opacity(1.))
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::Close)
+                    .tooltip("Close device terminal")
+                    .accessibility_label("Close device terminal")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.request_close_console_tabs(
+                            crate::console_tabs::ConsoleTab::Device(key),
+                            crate::console_tabs::CloseTabs::One,
+                            window,
+                            cx,
+                        );
+                    })),
             )
         }));
         tabs.extend(self.pod_dock_tabs.iter().map(|tab| {
@@ -1008,43 +987,38 @@ impl IceonApp {
                 tab.mode_label(),
                 tab.status
             );
-            self.console_tab_menu(
-                Tab::new()
-                    .min_w(px(160.))
-                    .px_3()
-                    .flex_shrink_0()
-                    .label(console_tab_title(&title))
-                    .aria_label(tooltip.clone())
-                    .prefix(
-                        match tab.mode {
-                            PodStreamMode::Logs => crate::action_icons::logs(),
-                            PodStreamMode::Attach => crate::action_icons::attach(),
-                            PodStreamMode::Shell => {
-                                gpui_kit::component::Icon::new(IconName::SquareTerminal)
-                            }
-                        }
-                        .small(),
-                    )
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                    .suffix(
-                        Button::new(SharedString::from(format!("close-console-{key}")))
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Close)
-                            .tooltip("Close pod console")
-                            .accessibility_label("Close pod console")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.request_close_console_tabs(
-                                    crate::console_tabs::ConsoleTab::Pod(key),
-                                    crate::console_tabs::CloseTabs::One,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    ),
+            self.boxed_console_tab(
                 crate::console_tabs::ConsoleTab::Pod(key),
+                title,
+                tooltip,
+                match tab.mode {
+                    PodStreamMode::Logs => crate::action_icons::logs(),
+                    PodStreamMode::Attach => crate::action_icons::attach(),
+                    PodStreamMode::Shell => {
+                        gpui_kit::component::Icon::new(IconName::SquareTerminal)
+                    }
+                },
                 cx,
+            )
+            .child(
+                Button::new(SharedString::from(format!("close-console-{key}")))
+                    .opacity(0.)
+                    .group_hover("console-session-tab", |style| style.opacity(1.))
+                    .focus_visible(|style| style.opacity(1.))
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::Close)
+                    .tooltip("Close pod console")
+                    .accessibility_label("Close pod console")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.request_close_console_tabs(
+                            crate::console_tabs::ConsoleTab::Pod(key),
+                            crate::console_tabs::CloseTabs::One,
+                            window,
+                            cx,
+                        );
+                    })),
             )
         }));
         tabs.extend(self.yaml_dock_tabs.iter().map(|tab| {
@@ -1061,29 +1035,27 @@ impl IceonApp {
                 tab.name(),
                 tab.message
             );
-            self.console_tab_menu(
-                Tab::new()
-                    .min_w(px(160.))
-                    .px_3()
-                    .flex_shrink_0()
-                    .label(console_tab_title(&title))
-                    .aria_label(tooltip.clone())
-                    .prefix(gpui_kit::component::Icon::new(IconName::FileText).small())
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                    .suffix(
-                        Button::new(SharedString::from(format!("close-yaml-{key}")))
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Close)
-                            .tooltip("Close YAML editor")
-                            .accessibility_label("Close YAML editor")
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                cx.stop_propagation();
-                                app.request_close_yaml_tab(key, window, cx);
-                            })),
-                    ),
+            self.boxed_console_tab(
                 crate::console_tabs::ConsoleTab::Yaml(key),
+                title,
+                tooltip,
+                gpui_kit::component::Icon::new(IconName::FileText),
                 cx,
+            )
+            .child(
+                Button::new(SharedString::from(format!("close-yaml-{key}")))
+                    .opacity(0.)
+                    .group_hover("console-session-tab", |style| style.opacity(1.))
+                    .focus_visible(|style| style.opacity(1.))
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::Close)
+                    .tooltip("Close YAML editor")
+                    .accessibility_label("Close YAML editor")
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        cx.stop_propagation();
+                        app.request_close_yaml_tab(key, window, cx);
+                    })),
             )
         }));
         let duplicate_key = (!self.local_terminal_active && self.active_yaml_tab.is_none())
@@ -1143,27 +1115,53 @@ impl IceonApp {
                 }
                 menu
             });
-        TabBar::new("pod-console-tabs")
-            .segmented()
-            .max_width(px(280.))
-            .menu(false)
-            .small()
+        h_flex()
+            .id("pod-console-tabs")
             .h(px(33.))
             .w_full()
+            .min_w_0()
             .flex_shrink_0()
-            // The footer owns its split material; don't stack a second tint.
-            // Expanded console tabs still need their own chrome background.
-            .bg(if self.pod_dock_open {
-                cx.theme().tokens.title_bar
+            .items_center()
+            .bg::<Background>(if self.pod_dock_open {
+                cx.theme().tokens.title_bar.into()
             } else {
                 gpui_kit::transparent_black().into()
             })
             .text_color(cx.theme().sidebar_foreground)
-            .selected_index(selected_index)
-            .children(tabs)
-            .last_empty_space(div().flex_shrink_0().px_1().child(new_menu))
-            .suffix(
+            .child(
+                gpui_kit::base::Tabs::new("console-boxed-tabs")
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .overflow_x_scroll()
+                    .overflow_y_hidden()
+                    .track_scroll(&scroll)
+                    .children(tabs)
+                    .child(
+                        div()
+                            .h_full()
+                            .flex_1()
+                            .min_w(px(16.))
+                            .border_b_1()
+                            .border_color(cx.theme().border),
+                    ),
+            )
+            .child(
+                div()
+                    .h_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(new_menu),
+            )
+            .child(
                 h_flex()
+                    .h_full()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .flex_shrink_0()
                     .gap_1()
                     .items_center()
@@ -1206,26 +1204,6 @@ impl IceonApp {
                             })),
                     ),
             )
-            .on_click(cx.listener(move |this, index: &usize, window, cx| {
-                let target = device_keys
-                    .get(*index)
-                    .map(|key| crate::console_tabs::ConsoleTab::Device(*key))
-                    .or_else(|| {
-                        index
-                            .checked_sub(pod_offset)
-                            .and_then(|i| pod_keys.get(i))
-                            .map(|key| crate::console_tabs::ConsoleTab::Pod(*key))
-                    })
-                    .or_else(|| {
-                        index
-                            .checked_sub(yaml_offset)
-                            .and_then(|i| yaml_keys.get(i))
-                            .map(|key| crate::console_tabs::ConsoleTab::Yaml(*key))
-                    });
-                if let Some(target) = target {
-                    this.select_console_tab(target, window, cx);
-                }
-            }))
     }
 
     pub(crate) fn render_pod_dock_panel(
