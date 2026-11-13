@@ -2175,76 +2175,6 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
-        if cluster_route
-            && !self
-                .cluster_session
-                .as_ref()
-                .is_some_and(|session| session.status == "connected")
-        {
-            return self.render_connection_guide(
-                self.connection_guide.error.is_none() && self.cluster_loading,
-                cx,
-            );
-        }
-        if cluster_route && self.initial_access_loading() {
-            let cluster_name = self
-                .cluster_session
-                .as_ref()
-                .and_then(|session| {
-                    self.catalog_snapshot
-                        .clusters
-                        .iter()
-                        .find(|cluster| cluster.id == session.cluster_id)
-                })
-                .map(|cluster| cluster.name.clone())
-                .unwrap_or_else(|| "Cluster".into());
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .min_w_0()
-                .items_center()
-                .justify_center()
-                .bg(cx.theme().tokens.sidebar)
-                .p_6()
-                .child(
-                    v_flex()
-                        .w_full()
-                        .max_w(px(640.))
-                        .items_center()
-                        .gap_4()
-                        .child(
-                            div()
-                                .w_full()
-                                .text_center()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .truncate()
-                                .child(cluster_name),
-                        )
-                        .child(
-                            gpui_kit::component::spinner::Spinner::new()
-                                .large()
-                                .color(cx.theme().primary),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .child("Checking cluster access…"),
-                        )
-                        .child(
-                            v_flex()
-                                .items_center()
-                                .gap_2()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Connection established")
-                                .child("Reviewing resource and namespace permissions")
-                                .child("Preparing available navigation and actions"),
-                        ),
-                )
-                .into_any_element();
-        }
         let sidebar_open =
             cluster_route && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed;
         if self.console_tab_order().is_empty() {
@@ -2378,6 +2308,77 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
+        if cluster_route
+            && !self
+                .cluster_session
+                .as_ref()
+                .is_some_and(|session| session.status == "connected")
+        {
+            return self.render_connection_guide(
+                self.connection_guide.error.is_none() && self.cluster_loading,
+                cx,
+            );
+        }
+        if cluster_route && self.initial_access_loading() {
+            let cluster_name = self
+                .cluster_session
+                .as_ref()
+                .and_then(|session| {
+                    self.catalog_snapshot
+                        .clusters
+                        .iter()
+                        .find(|cluster| cluster.id == session.cluster_id)
+                })
+                .map(|cluster| cluster.name.clone())
+                .unwrap_or_else(|| "Cluster".into());
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .bg(cx.theme().tokens.sidebar)
+                .p_6()
+                .child(
+                    v_flex()
+                        .w_full()
+                        .max_w(px(640.))
+                        .items_center()
+                        .gap_4()
+                        .child(
+                            div()
+                                .w_full()
+                                .text_center()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .truncate()
+                                .child(cluster_name),
+                        )
+                        .child(
+                            gpui_kit::component::spinner::Spinner::new()
+                                .large()
+                                .color(cx.theme().primary),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child("Checking cluster access…"),
+                        )
+                        .child(
+                            v_flex()
+                                .items_center()
+                                .gap_2()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Connection established")
+                                .child("Reviewing resource and namespace permissions")
+                                .child("Preparing available navigation and actions"),
+                        ),
+                )
+                .into_any_element();
+        }
         let section = self.active_cluster_section.clone();
         let selected = self
             .resource_table

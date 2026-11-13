@@ -157,6 +157,8 @@ impl Render for ProbePanel {
 }
 
 struct ConsoleProbe {
+    shortcut_hits: usize,
+    shortcut_focus: FocusHandle,
     area: Entity<DockArea>,
     _skin: Rc<DockSkin>,
     terminal: Entity<TerminalSurface>,
@@ -231,6 +233,8 @@ impl ConsoleProbe {
             area.set_dock_size(DockPlacement::Bottom, px(180.), window, cx);
         });
         Self {
+            shortcut_hits: 0,
+            shortcut_focus: cx.focus_handle(),
             area,
             _skin: skin,
             terminal,
@@ -405,7 +409,7 @@ impl ConsoleProbe {
                     "Dock transitions lost terminal cells",
                 )?;
                 require(
-                    self.inputs.borrow().len() == INPUT.len(),
+                    self.inputs.borrow().len() == if shortcut_only() { 0 } else { INPUT.len() },
                     "layout/scroll emitted unexpected terminal input",
                 )?;
                 self.idle_baseline = self.panel_renders.get();
@@ -446,6 +450,31 @@ impl ConsoleProbe {
                     "PASS console_probe: terminal Select All includes visible text without shell input"
                 );
             }
+            9 | 10 => {
+                require(
+                    self.shortcut_hits == stage - 8,
+                    &format!(
+                        "new terminal shortcut dispatched {} times, expected {}",
+                        self.shortcut_hits,
+                        stage - 8
+                    ),
+                )?;
+                require(
+                    self.inputs.borrow().len() == if shortcut_only() { 0 } else { INPUT.len() },
+                    "new terminal shortcut leaked characters into the PTY",
+                )?;
+                if stage == 9 {
+                    self.shortcut_focus.focus(window, cx);
+                }
+                println!(
+                    "PASS console_probe: new device terminal shortcut from {}",
+                    if stage == 9 {
+                        "focused terminal"
+                    } else {
+                        "workspace shell"
+                    }
+                );
+            }
             _ => unreachable!(),
         }
         Ok(())
@@ -462,7 +491,12 @@ impl Render for ConsoleProbe {
             window.on_next_frame(move |window, cx| {
                 let _ = weak.update(cx, |_, cx| {
                     cx.spawn_in(window, async move |this, cx| {
-                        for stage in 0..=8 {
+                        let stages = if shortcut_only() {
+                            vec![0, 1, 9, 10]
+                        } else {
+                            (0..=10).collect()
+                        };
+                        for stage in stages {
                             cx.background_executor()
                                 .timer(Duration::from_millis(350))
                                 .await;
@@ -473,7 +507,7 @@ impl Render for ConsoleProbe {
                                         Ok(()) => println!("console_probe: stage {stage} passed"),
                                         Err(error) => eprintln!("FAIL console_probe: {error}"),
                                     }
-                                    if result.is_err() || stage == 8 {
+                                    if result.is_err() || stage == 10 {
                                         *this.outcome.borrow_mut() = Some(result.clone());
                                         cx.quit();
                                     }
@@ -481,7 +515,8 @@ impl Render for ConsoleProbe {
                                 });
                                 // Input callbacks update the probe owner, so dispatch only
                                 // after releasing its entity-map borrow.
-                                if stage == 1 && matches!(&checked, Ok(Ok(()))) {
+                                if stage == 1 && !shortcut_only() && matches!(&checked, Ok(Ok(())))
+                                {
                                     for key in KEYS {
                                         window
                                             .dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
@@ -490,6 +525,19 @@ impl Render for ConsoleProbe {
                                 if stage == 7 && matches!(&checked, Ok(Ok(()))) {
                                     window
                                         .dispatch_keystroke(Keystroke::parse("cmd-a").unwrap(), cx);
+                                }
+                                if (stage == 9 || stage == if shortcut_only() { 1 } else { 8 })
+                                    && matches!(&checked, Ok(Ok(())))
+                                {
+                                    window.dispatch_keystroke(
+                                        Keystroke::parse(
+                                            crate::native_menu::new_device_terminal_shortcut(cfg!(
+                                                target_os = "macos"
+                                            )),
+                                        )
+                                        .unwrap(),
+                                        cx,
+                                    );
                                 }
                                 checked
                             });
@@ -503,6 +551,13 @@ impl Render for ConsoleProbe {
             });
         }
         div()
+            .key_context("Iceon")
+            .track_focus(&self.shortcut_focus)
+            .on_action(
+                cx.listener(|this, _: &crate::native_menu::NewDeviceTerminal, _, _| {
+                    this.shortcut_hits += 1;
+                }),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -515,6 +570,10 @@ impl Render for ConsoleProbe {
 
 /// Open one fixture-only native window, exercise it, print PASS and quit.
 /// The normal application's startup path is intentionally never called.
+fn shortcut_only() -> bool {
+    std::env::args().any(|argument| argument == "--shortcut")
+}
+
 pub fn run() {
     if std::env::args().any(|argument| argument == "--yaml") {
         yaml_probe::run();
@@ -526,6 +585,7 @@ pub fn run() {
         .with_assets(crate::app_assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            cx.bind_keys(crate::native_menu::bindings(cfg!(target_os = "macos")));
             crate::console_font::init(cx);
             terminal_surface::init(cx);
             // Also bound failures before the first frame (or a lost view/window

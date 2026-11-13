@@ -130,11 +130,9 @@ impl IceonApp {
                     .h_full()
                     .track_focus(&self.console_focus)
                     .key_context("IceonConsole")
-                    .when(
-                        !self.pod_dock_open
-                            && !matches!(self.history.current(), crate::navigation::Route::Setup),
-                        |area| area.child(self.render_console_tabs(window, cx)),
-                    ),
+                    .when(!self.pod_dock_open, |area| {
+                        area.child(self.render_console_tabs(window, cx))
+                    }),
             )
     }
 }

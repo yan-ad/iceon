@@ -1069,16 +1069,14 @@ impl IceonApp {
         let new_menu = Button::new("console-new-menu")
             .small()
             .ghost()
-            .icon(IconName::Plus)
-            .tooltip("New console session")
-            .accessibility_label("New console session")
+            .icon(IconName::ChevronDown)
+            .tooltip("More console sessions")
+            .accessibility_label("More console sessions")
             .dropdown_menu(move |mut menu, _, cx| {
-                let owner = menu_owner.clone();
-                menu = menu.item(PopupMenuItem::new("Device Terminal").on_click(
-                    move |_, window, cx| {
-                        let _ = owner.update(cx, |this, cx| this.new_device_terminal(window, cx));
-                    },
-                ));
+                menu = menu.menu(
+                    "New Device Terminal",
+                    Box::new(crate::native_menu::NewDeviceTerminal),
+                );
                 for (label, mode) in [
                     ("Pod Shell", PodStreamMode::Shell),
                     ("Pod Logs", PodStreamMode::Logs),
@@ -1155,6 +1153,21 @@ impl IceonApp {
                     .items_center()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .child(
+                        Button::new("console-new-device-terminal")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Plus)
+                            .accessibility_label("New Device Terminal")
+                            .tooltip_with_action(
+                                "New Device Terminal",
+                                &crate::native_menu::NewDeviceTerminal,
+                                Some("Iceon"),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.new_device_terminal(window, cx)
+                            })),
+                    )
                     .child(new_menu),
             )
             .child(

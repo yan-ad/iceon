@@ -27,6 +27,7 @@ gpui_kit::actions!(
         Quit,
         ShowMainWindow,
         AddCluster,
+        NewDeviceTerminal,
         CloseWindow,
         ToggleSidebar,
         CommandPalette,
@@ -104,7 +105,7 @@ pub(crate) fn create_menu_bar(cx: &mut App) -> Entity<AppMenuBar> {
     bar
 }
 
-fn bindings(macos: bool) -> Vec<KeyBinding> {
+pub(crate) fn bindings(macos: bool) -> Vec<KeyBinding> {
     let mut keys = vec![KeyBinding::new(
         if macos { "cmd-q" } else { "ctrl-q" },
         Quit,
@@ -125,6 +126,13 @@ fn bindings(macos: bool) -> Vec<KeyBinding> {
     }
     bind!(",", Preferences);
     bind!("o", AddCluster);
+    for context in ["Iceon", "IceonConsole", "IceonTerminal"] {
+        keys.push(KeyBinding::new(
+            new_device_terminal_shortcut(macos),
+            NewDeviceTerminal,
+            Some(context),
+        ));
+    }
     bind!("w", CloseWindow);
     keys.push(KeyBinding::new(
         if macos { "cmd-w" } else { "ctrl-w" },
@@ -150,6 +158,10 @@ fn bindings(macos: bool) -> Vec<KeyBinding> {
     }
     // Input/editor initialization supplies its own editing bindings and listeners.
     keys
+}
+
+pub(crate) fn new_device_terminal_shortcut(macos: bool) -> &'static str {
+    if macos { "cmd-shift-t" } else { "ctrl-shift-t" }
 }
 
 /// Register once for the shell entity and its exact window, after opening it.
@@ -194,6 +206,12 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     });
     register!(AddCluster, |this, _: &AddCluster, window, cx| {
         this.open_add_config(window, cx);
+    });
+    register!(NewDeviceTerminal, |this,
+                                  _: &NewDeviceTerminal,
+                                  window,
+                                  cx| {
+        this.new_device_terminal(window, cx);
     });
     register!(CloseWindow, |app, _: &CloseWindow, window, cx| {
         if !app.close_focused_console_tab(window, cx) {
@@ -378,6 +396,9 @@ impl IceonApp {
             }))
             .on_action(cx.listener(|this, _: &AddCluster, window, cx| {
                 this.open_add_config(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewDeviceTerminal, window, cx| {
+                this.new_device_terminal(window, cx);
             }))
             .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
                 if !app.close_focused_console_tab(window, cx) { window.remove_window(); }
@@ -591,6 +612,7 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
         Menu::new("Iceon").items(app),
         Menu::new("File").items([
             MenuItem::action("Add Cluster…", AddCluster),
+            MenuItem::action("New Device Terminal", NewDeviceTerminal),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
         ]),
@@ -648,6 +670,49 @@ mod tests {
         bindings, menu_model, owned_menu, quick_access_menu,
     };
     use gpui_kit::{Action, KeyBinding, MenuItem};
+
+    #[test]
+    fn new_device_terminal_is_bound_in_shell_console_and_terminal_contexts() {
+        for macos in [true, false] {
+            let keys = bindings(macos);
+            let expected = KeyBinding::new(
+                super::new_device_terminal_shortcut(macos),
+                super::NewDeviceTerminal,
+                None,
+            );
+            let terminal_keys = keys
+                .iter()
+                .filter(|binding| binding.action().name() == super::NewDeviceTerminal.name())
+                .collect::<Vec<_>>();
+            assert_eq!(terminal_keys.len(), 3);
+            assert!(
+                terminal_keys
+                    .iter()
+                    .all(|binding| binding.keystrokes() == expected.keystrokes())
+            );
+            for context in ["Iceon", "IceonConsole", "IceonTerminal"] {
+                let expected = KeyBinding::new(
+                    super::new_device_terminal_shortcut(macos),
+                    super::NewDeviceTerminal,
+                    Some(context),
+                );
+                assert!(
+                    terminal_keys
+                        .iter()
+                        .any(|binding| binding.predicate() == expected.predicate())
+                );
+            }
+            let menus = menu_model(macos, Capabilities::default());
+            let file = menus
+                .iter()
+                .find(|menu| menu.name.as_ref() == "File")
+                .unwrap();
+            assert!(file.items.iter().any(|item| matches!(item,
+                MenuItem::Action { name, action, disabled, .. }
+                if name.as_ref() == "New Device Terminal" && action.name() == super::NewDeviceTerminal.name() && !disabled
+            )));
+        }
+    }
 
     #[test]
     fn help_exposes_check_for_updates() {
