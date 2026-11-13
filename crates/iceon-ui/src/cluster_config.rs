@@ -284,6 +284,8 @@ impl Render for AddConfigDialog {
                     .disabled(self.busy).on_click(cx.listener(|this, _, window, cx| if this.yaml.is_none() && this.input.read(cx).value().trim().is_empty() { this.choose(window, cx); } else { this.submit(window, cx); }))))
             .child(div().text_xs().text_color(cx.theme().muted_foreground)
                 .child(if self.busy { "Working…" } else { "Files are imported in place. Folders stay synced. Pasted YAML is saved only with Save As (new files only)." }))
+            .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                .child("Only import configurations you trust. Import reads catalog metadata; connecting may execute the sign-in helper defined by your kubeconfig."))
             .when_some(self.error.clone(), |view, error| view.child(div().text_sm().text_color(cx.theme().danger).child(error)))
     }
 }

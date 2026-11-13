@@ -995,6 +995,7 @@ impl IceonApp {
             return;
         }
 
+        self.connection_guide = Default::default();
         self.selected_namespaces.clear();
         self.selected_namespace = None;
         self.sync_namespace_select(window, cx);
@@ -1031,12 +1032,13 @@ impl IceonApp {
             {
                 Ok(snap) => snap,
                 Err(err) => {
-                    let _ = this.update_in(cx, |this, _, cx| {
-                        if this.cluster_connect_generation != connect_generation {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        if this.cluster_connect_generation != connect_generation
+                            || !matches!(this.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id) {
                             return;
                         }
                         this.cluster_loading = false;
-                        this.cluster_error = Some(format!("Failed to open cluster: {err:?}"));
+                        this.record_connection_failure(err, window, cx);
                         cx.notify();
                     });
                     return;
@@ -1052,13 +1054,18 @@ impl IceonApp {
             // only the connect phase; opening a different cluster still replaces
             // and cancels this lease through ConnectionEngine::open.
             let mut connected = connection.connect(scope.clone()).await;
-            if connected.is_err() {
+            if connected
+                .as_ref()
+                .err()
+                .is_some_and(|error| crate::connection_guide::retryable_connection_error(*error))
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 connected = connection.connect(scope.clone()).await;
             }
 
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.cluster_connect_generation != connect_generation {
+                if this.cluster_connect_generation != connect_generation
+                    || !matches!(this.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id) {
                     return;
                 }
                 this.cluster_loading = false;
@@ -1077,11 +1084,11 @@ impl IceonApp {
                         if status == "connected" {
                             this.refresh_access(window, cx);
                         } else if let Some(e) = err {
-                            this.cluster_error = Some(format!("Connection error: {e:?}"));
+                            this.record_connection_failure(e, window, cx);
                         }
                     }
                     Err(err) => {
-                        this.cluster_error = Some(format!("Connect failed: {err:?}"));
+                        this.record_connection_failure(err, window, cx);
                     }
                 }
                 cx.notify();
@@ -1104,7 +1111,15 @@ impl IceonApp {
     }
 
     pub(crate) fn reload_active_section(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.load_active_cluster_section(window, cx);
+        if !self
+            .cluster_session
+            .as_ref()
+            .is_some_and(|session| session.status == "connected")
+        {
+            self.retry_cluster_connection(window, cx);
+        } else {
+            self.load_active_cluster_section(window, cx);
+        }
     }
 
     pub(crate) fn load_active_cluster_section(
@@ -2160,6 +2175,17 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
+        if cluster_route
+            && !self
+                .cluster_session
+                .as_ref()
+                .is_some_and(|session| session.status == "connected")
+        {
+            return self.render_connection_guide(
+                self.connection_guide.error.is_none() && self.cluster_loading,
+                cx,
+            );
+        }
         if cluster_route && self.initial_access_loading() {
             let cluster_name = self
                 .cluster_session

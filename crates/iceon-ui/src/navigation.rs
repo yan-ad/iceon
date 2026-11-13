@@ -16,6 +16,7 @@ pub enum Route {
 
 pub(crate) fn resolve_workspace_route(route: Route, clusters: &[ClusterSummary]) -> Route {
     match route {
+        Route::Setup => Route::Setup,
         Route::Secrets => Route::Secrets,
         Route::Cluster { ref cluster_id, .. }
             if clusters.iter().any(|cluster| cluster.id == *cluster_id) =>
@@ -125,7 +126,7 @@ mod route_tests {
     }
 
     #[test]
-    fn startup_opens_first_cluster_preserves_valid_routes_and_handles_empty_config() {
+    fn startup_preserves_guide_and_valid_routes_and_handles_empty_config() {
         let clusters = vec![ClusterSummary {
             id: "first".into(),
             name: "First".into(),
@@ -141,7 +142,10 @@ mod route_tests {
             cluster_id: "first".into(),
             section: "overview".into(),
         };
-        assert_eq!(resolve_workspace_route(Route::Setup, &clusters), overview);
+        assert_eq!(
+            resolve_workspace_route(Route::Setup, &clusters),
+            Route::Setup
+        );
         assert_eq!(
             resolve_workspace_route(
                 Route::Cluster {

@@ -26,6 +26,7 @@ pub mod detail_collections;
 pub mod detail_facts;
 pub mod detail_metadata;
 pub mod details;
+pub mod diagnostics;
 pub mod event_diagnostic;
 pub mod health;
 pub mod helm;

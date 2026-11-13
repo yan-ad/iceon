@@ -3,81 +3,20 @@
 #[path = "cluster_config.rs"]
 mod cluster_config;
 
-use gpui_kit::component::{
-    ActiveTheme as _, IconName,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
-};
-use gpui_kit::prelude::*;
+use crate::{IceonApp, navigation::catalog_error_message};
 use gpui_kit::*;
 
-use crate::empty_state::empty_state;
-use crate::navigation::catalog_error_message;
-use crate::{IceonApp, selectable_text::selectable_text};
-
 impl IceonApp {
-    pub(crate) fn render_cluster_setup(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .size_full()
-            .min_h_0()
-            .min_w_0()
-            .items_center()
-            .justify_center()
-            .gap_4()
-            .p_6()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .child(empty_state(
-                IconName::FolderOpen,
-                "No configured clusters",
-                "Import a kubeconfig or configure cluster discovery in Preferences.",
-            ))
-            .when_some(
-                self.catalog_snapshot
-                    .discovery_error
-                    .map(catalog_error_message),
-                |view, error| {
-                    view.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().warning)
-                            .child(selectable_text(format!("Kubeconfig discovery: {error}"))),
-                    )
-                },
-            )
-            .when_some(self.catalog_error.clone(), |view, error| {
-                view.child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(selectable_text(error)),
-                )
-            })
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        Button::new("cluster-setup-import")
-                            .primary()
-                            .label("Add Config")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_add_config(window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("cluster-setup-preferences")
-                            .label("Preferences")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_preferences(window, cx);
-                            })),
-                    ),
-            )
+    pub(crate) fn render_cluster_setup(&self, cx: &mut Context<Self>) -> AnyElement {
+        self.render_connection_guide(false, cx)
     }
 
     pub(crate) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
+        self.catalog_refresh_generation = self.catalog_refresh_generation.wrapping_add(1);
         if self.catalog_refresh_pending {
             return;
         }
+        let generation = self.catalog_refresh_generation;
         self.catalog_refresh_pending = true;
         let catalog = self.catalog.clone();
         let connection = self.connection.clone();
@@ -93,6 +32,10 @@ impl IceonApp {
             .await;
             let _ = owner.update(cx, |app, cx| {
                 app.catalog_refresh_pending = false;
+                if app.catalog_refresh_generation != generation {
+                    app.refresh_catalog(cx);
+                    return;
+                }
                 let changed = match result {
                     Ok(Ok((snapshot, health, versions))) => {
                         let changed = app.catalog_snapshot != snapshot

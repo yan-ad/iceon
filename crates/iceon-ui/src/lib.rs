@@ -8,6 +8,9 @@ mod bulk_delete;
 pub mod catalog_view;
 pub mod cluster_view;
 mod command_palette;
+mod connection_guide;
+#[cfg(debug_assertions)]
+mod connection_guide_probe;
 mod console_font;
 #[cfg(debug_assertions)]
 mod console_probe;
@@ -36,6 +39,8 @@ mod render_performance_probe;
 mod resource_pagination;
 mod resource_scroll;
 mod resource_table;
+#[cfg(debug_assertions)]
+pub use connection_guide_probe::run as run_connection_guide_probe;
 #[cfg(debug_assertions)]
 pub use render_performance_probe::run as run_render_performance_probe;
 pub mod secrets_view;
@@ -97,6 +102,7 @@ pub struct IceonApp {
     pub(crate) catalog_snapshot: CatalogSnapshot,
     pub(crate) catalog_error: Option<String>,
     pub(crate) catalog_refresh_pending: bool,
+    pub(crate) catalog_refresh_generation: u64,
     pub(crate) cluster_versions: std::collections::HashMap<String, String>,
     pub(crate) helm_operation: u64,
     pub(crate) cluster_health: Vec<iceon_core::connection::health::ClusterHealthSnapshot>,
@@ -122,6 +128,7 @@ pub struct IceonApp {
     pub(crate) access: rbac_access::AccessState,
     pub(crate) known_cluster_access: rbac_access::KnownClusterAccess,
     pub(crate) cluster_connect_generation: u64,
+    pub(crate) connection_guide: connection_guide::ConnectionGuide,
     pub(crate) cluster_session: Option<ConnectionSnapshot>,
     pub(crate) active_cluster_section: String,
     pub(crate) namespaces: Vec<String>,
@@ -356,6 +363,7 @@ impl IceonApp {
             catalog_snapshot,
             catalog_error: None,
             catalog_refresh_pending: false,
+            catalog_refresh_generation: 0,
             cluster_versions,
             helm_operation: 0,
             cluster_health: Vec::new(),
@@ -379,6 +387,7 @@ impl IceonApp {
             access: rbac_access::AccessState::default(),
             known_cluster_access: rbac_access::KnownClusterAccess::default(),
             cluster_connect_generation: 0,
+            connection_guide: Default::default(),
             cluster_session: None,
             active_cluster_section: "overview".into(),
             namespaces: vec![],
@@ -594,6 +603,10 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) {
         let route = navigation::resolve_workspace_route(route, &self.catalog_snapshot.clusters);
+        if !matches!(route, Route::Cluster { .. }) {
+            self.cluster_connect_generation = self.next_operation_id();
+            self.connection_guide = Default::default();
+        }
         self.cancel_resource_pagination();
         self.stop_active_pod_sync();
         if push_history {

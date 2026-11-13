@@ -616,8 +616,8 @@ pub(super) fn groups(view: &Entity<KubernetesPreferencesView>, _cx: &App) -> Vec
     ).description("Use server-side apply for installs and upgrades (Helm 4 required). Dry runs always use server validation."));
     let repo_view = view.clone();
     let paths_view = view.clone();
-    vec![SettingGroup::new().title("kubectl & binary management").items(binaries),
-        SettingGroup::new().title("Helm").items(helm),
+    vec![SettingGroup::new().title("Optional kubectl tools").description("Iceon connects directly to the Kubernetes API. kubectl is not required for browsing and does not replace your provider's authentication helper.").items(binaries),
+        SettingGroup::new().title("Helm").description("Required only for Helm workflows, not for connecting to or browsing a cluster.").items(helm),
         SettingGroup::new().title("Helm repositories").description("Add and remove run the real Helm CLI and affect its local repository configuration. Operations do not require a cluster connection.").items([SettingItem::render(move |_, window, cx| repo_view.update(cx, |v,cx| v.render_repositories(window,cx))).keywords(["helm repositories add remove refresh search"])]),
         SettingGroup::new().title("Kubeconfig synchronization").description("Sources are synchronized immediately; only cluster/context metadata is imported, never credentials.").items([
             SettingItem::new("Discover default kubeconfig", SettingField::switch(|cx| current_prefs(cx).kubernetes.discover_default_kubeconfig, |checked,cx| { mutate_preferences(cx, |p| p.kubernetes.discover_default_kubeconfig = checked); refresh_catalog(cx); }).default_value(true)),

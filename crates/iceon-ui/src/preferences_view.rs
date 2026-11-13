@@ -1000,6 +1000,27 @@ impl Render for PreferencesWindow {
 }
 
 impl IceonApp {
+    pub(crate) fn open_kubernetes_preferences(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_preferences(window, cx);
+        if let Some(handle) = self.preferences_window {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(root) = window.root::<gpui_kit::component::Root>().flatten() {
+                    let view = root.read(cx).view().clone();
+                    if let Ok(settings) = view.downcast::<PreferencesWindow>() {
+                        settings.update(cx, |settings, cx| {
+                            settings.section = 3;
+                            cx.notify();
+                        });
+                    }
+                }
+            });
+        }
+    }
+
     pub(crate) fn open_theme_management(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_preferences(window, cx);
         if let Some(handle) = self.preferences_window {
