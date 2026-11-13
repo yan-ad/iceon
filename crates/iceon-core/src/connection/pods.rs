@@ -9,6 +9,10 @@ use tokio_util::sync::CancellationToken;
 
 const BODY_LIMIT: usize = 1024 * 1024;
 
+#[path = "pod_inspection.rs"]
+mod inspection;
+pub use inspection::*;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PodRequest {
@@ -52,6 +56,7 @@ pub struct PodDetails {
     pub yaml: String,
     pub events: Vec<PodEvent>,
     pub events_state: PodEventsState,
+    pub inspection: PodInspection,
 }
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -474,7 +479,21 @@ fn yaml_view(pod: &Value) -> Value {
         "finalizers",
     ] {
         if let Some(value) = pod["metadata"].get(key) {
-            view["metadata"][key] = value.clone();
+            view["metadata"][key] = if key == "finalizers" {
+                Value::Array(
+                    value
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(|s| json!(s))
+                        .collect(),
+                )
+            } else if let Some(s) = value.as_str() {
+                json!(s)
+            } else {
+                continue;
+            };
         }
     }
     for key in [
@@ -486,7 +505,17 @@ fn yaml_view(pod: &Value) -> Value {
         "hostNetwork",
     ] {
         if let Some(value) = pod["spec"].get(key) {
-            view["spec"][key] = value.clone();
+            view["spec"][key] = if key == "hostNetwork" {
+                if let Some(b) = value.as_bool() {
+                    json!(b)
+                } else {
+                    continue;
+                }
+            } else if let Some(s) = value.as_str() {
+                json!(s)
+            } else {
+                continue;
+            };
         }
     }
     for key in ["containers", "initContainers", "ephemeralContainers"] {
@@ -498,7 +527,48 @@ fn yaml_view(pod: &Value) -> Value {
                         let mut safe = json!({});
                         for key in ["name", "image", "imagePullPolicy", "ports", "resources"] {
                             if let Some(value) = container.get(key) {
-                                safe[key] = value.clone();
+                                safe[key] = match key {
+                                    "ports" => Value::Array(
+                                        value
+                                            .as_array()
+                                            .into_iter()
+                                            .flatten()
+                                            .map(|p| {
+                                                let mut port = json!({});
+                                                for key in ["name", "protocol", "hostIP"] {
+                                                    if let Some(s) = p[key].as_str() {
+                                                        port[key] = json!(s);
+                                                    }
+                                                }
+                                                for key in ["containerPort", "hostPort"] {
+                                                    if let Some(n) = p[key].as_u64() {
+                                                        port[key] = json!(n);
+                                                    }
+                                                }
+                                                port
+                                            })
+                                            .collect(),
+                                    ),
+                                    "resources" => {
+                                        let mut resources = json!({});
+                                        for key in ["requests", "limits"] {
+                                            if value[key].is_object() {
+                                                resources[key] = json!({});
+                                                for q in inspection::quantities(&value[key]) {
+                                                    resources[key][&q.name] = json!(q.quantity);
+                                                }
+                                            }
+                                        }
+                                        resources
+                                    }
+                                    _ => {
+                                        if let Some(s) = value.as_str() {
+                                            json!(s)
+                                        } else {
+                                            continue;
+                                        }
+                                    }
+                                };
                             }
                         }
                         safe
@@ -575,6 +645,7 @@ fn replacement(current: &Value, request: &PodMutationRequest) -> Result<Value> {
 }
 
 fn project(pod: &Value, events: &Value, request: PodRequest) -> Result<PodDetails> {
+    let inspection = inspection::project(pod)?;
     let mut containers = Vec::new();
     for (spec_key, status_key, kind) in [
         ("containers", "containerStatuses", "container"),
@@ -703,6 +774,7 @@ fn project(pod: &Value, events: &Value, request: PodRequest) -> Result<PodDetail
         yaml,
         events,
         events_state: PodEventsState::Complete,
+        inspection,
     })
 }
 

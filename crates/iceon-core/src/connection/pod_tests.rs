@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 fn pod() -> Value {
     json!({"apiVersion":"v1","kind":"Pod","metadata":{"name":"web-0","namespace":"default","uid":"uid-1","resourceVersion":"42","annotations":{"credential":"PRIVATE_ANNOTATION"},"finalizers":["fixture/finalizer"]},
-        "spec":{"nodeName":"node-a","serviceAccountName":"default","containers":[{"name":"web","image":"web:v1","ports":[{"containerPort":8080}],"env":[{"name":"TOKEN","value":"PRIVATE_ENV"}],"command":["PRIVATE_COMMAND"]}],"initContainers":[{"name":"setup","image":"setup:v1"}],"ephemeralContainers":[{"name":"debug","image":"debug:v1"}],"volumes":[{"name":"secret","secret":{"secretName":"PRIVATE_SECRET"}}]},
+        "spec":{"nodeName":"node-a","serviceAccountName":"default","containers":[{"name":"web","image":"web:v1","ports":[{"containerPort":8080}],"env":[{"name":"TOKEN","value":"PRIVATE_ENV"}],"command":["PRIVATE_COMMAND"]}],"initContainers":[{"name":"setup","image":"setup:v1"}],"ephemeralContainers":[{"name":"debug","image":"debug:v1"}],"volumes":[{"name":"secret","secret":{"secretName":"credentials"}}]},
         "status":{"phase":"Running","podIPs":[{"ip":"10.0.0.2"}],"hostIP":"10.0.0.1","qosClass":"Burstable","containerStatuses":[{"name":"web","ready":true,"restartCount":2,"state":{"running":{"startedAt":"now"}}}],"conditions":[{"type":"Ready","status":"True","message":"PRIVATE_CONDITION"}]}})
 }
 
@@ -339,4 +339,97 @@ async fn cancellation_drops_blocked_pod_request() {
     };
     let (result, _) = tokio::join!(detail, cancel);
     assert!(matches!(result, Err(ConnectionError::StaleSession)));
+}
+
+#[test]
+fn inspection_is_typed_and_never_forwards_payloads_or_unknown_json() {
+    let mut live = pod();
+    live["spec"]["terminationGracePeriodSeconds"] = json!(30);
+    live["spec"]["nodeSelector"] = json!({"kubernetes.io/os":"linux"});
+    live["spec"]["tolerations"] = json!([{"key":"dedicated","value":"web","effect":"NoSchedule"}]);
+    let c = &mut live["spec"]["containers"][0];
+    c["args"] = json!(["SENTINEL_ARGS"]);
+    c["env"] = json!([
+        {"name":"TOKEN","value":"SENTINEL_ENV"},
+        {"name":"PASSWORD","valueFrom":{"secretKeyRef":{"name":"credentials","key":"password","optional":true}}},
+        {"name":"LABEL","valueFrom":{"fieldRef":{"fieldPath":"metadata.annotations['SENTINEL_FIELD']"}}}
+    ]);
+    c["envFrom"] = json!([{"secretRef":{"name":"credentials","unknown":"SENTINEL_ENVFROM"}}]);
+    c["resources"] = json!({"requests":{"cpu":"250m","memory":"64Mi"},"limits":{"memory":"128Mi"},"unknown":"SENTINEL_RESOURCE"});
+    c["ports"][0]["unknown"] = json!({"value":"SENTINEL_PORT"});
+    c["volumeMounts"] = json!([{"name":"credentials","mountPath":"/var/run/credentials","readOnly":true,"subPathExpr":"SENTINEL_SUBPATH"}]);
+    c["livenessProbe"] = json!({"httpGet":{"path":"/SENTINEL_PATH?token=SENTINEL_TOKEN","host":"SENTINEL_HOST","httpHeaders":[{"name":"Authorization","value":"SENTINEL_HEADER"}]},"periodSeconds":10});
+    c["readinessProbe"] = json!({"exec":{"command":["SENTINEL_EXEC"]}});
+    live["spec"]["volumes"] = json!([
+        {"name":"credentials","secret":{"secretName":"credentials","defaultMode":256,"optional":true,"unknown":"SENTINEL_SECRET"}},
+        {"name":"identity","projected":{"defaultMode":420,"sources":[{"serviceAccountToken":{"expirationSeconds":3600,"path":"token","token":"SENTINEL_PROJECTED"}},{"configMap":{"name":"settings"}}]}}
+    ]);
+    let details = project(&live, &json!({"items":[]}), request()).unwrap();
+    let serialized = serde_json::to_string(&details).unwrap();
+    assert!(!serialized.contains("SENTINEL"), "{serialized}");
+    assert!(!serialized.contains("PRIVATE"));
+    let i = details.inspection;
+    assert_eq!(i.termination_grace_period_seconds, Some(30));
+    assert_eq!(i.node_selectors[0].value, "linux");
+    assert_eq!(i.containers[0].requests[0].quantity, "250m");
+    assert!(matches!(
+        i.containers[0].environment[0].source,
+        PodEnvironmentSource::Redacted
+    ));
+    assert!(matches!(i.containers[0].probes[0].kind, PodProbeKind::Http));
+    assert_eq!(i.containers[0].probes[0].period_seconds, Some(10));
+    assert!(i.containers[0].mounts[0].read_only);
+    assert_eq!(i.volumes[1].sources[1].expiration_seconds, Some(3600));
+    assert_eq!(i.volumes[1].sources[1].path.as_deref(), Some("token"));
+}
+
+#[test]
+fn inspection_bounds_each_collection_text_and_total_budget() {
+    let mut live = pod();
+    live["spec"]["containers"][0]["env"] = json!(
+        (0..65)
+            .map(|n| json!({"name":format!("ENV_{n}")}))
+            .collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        project(&live, &json!({"items":[]}), request()),
+        Err(ConnectionError::LimitExceeded)
+    ));
+    live = pod();
+    live["spec"]["containers"][0]["volumeMounts"] =
+        json!([{"name":"safe","mountPath":format!("/{}", "x".repeat(256))}]);
+    assert!(matches!(
+        inspection::project(&live),
+        Err(ConnectionError::LimitExceeded)
+    ));
+    live = pod();
+    live["spec"]["containers"] = json!((0..9).map(|n| json!({"name":format!("c{n}"),"env":(0..64).map(|e|json!({"name":format!("E{e}")})).collect::<Vec<_>>()})).collect::<Vec<_>>());
+    assert!(matches!(
+        inspection::project(&live),
+        Err(ConnectionError::LimitExceeded)
+    ));
+    live["spec"]["containers"] = json!((0..4).map(|n| json!({"name":format!("c{n}"),"env":(0..64).map(|e|json!({"name":format!("E{e}{}", "X".repeat(200))})).collect::<Vec<_>>()})).collect::<Vec<_>>());
+    assert!(matches!(
+        inspection::project(&live),
+        Err(ConnectionError::LimitExceeded)
+    ));
+}
+
+#[test]
+fn inspection_omits_credential_shaped_paths_and_defaults_empty() {
+    let mut live = pod();
+    live["spec"]["containers"][0]["volumeMounts"] =
+        json!([{"name":"safe","mountPath":"/mount?token=SENTINEL"}]);
+    assert!(
+        inspection::project(&live).unwrap().containers[0].mounts[0]
+            .mount_path
+            .is_none()
+    );
+    assert!(
+        inspection::project(&json!({"spec":{}}))
+            .unwrap()
+            .containers
+            .is_empty()
+    );
+    assert!(serde_json::to_string(&PodInspection::default()).is_ok());
 }

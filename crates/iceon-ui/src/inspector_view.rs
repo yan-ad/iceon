@@ -39,6 +39,9 @@ use crate::{IceonApp, pod_dock_view::PodTarget, selectable_text::selectable_text
 pub(crate) mod editor_surface;
 use editor_surface::EditorSurface;
 
+#[path = "pod_inspector.rs"]
+mod pod_inspector;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteTarget {
     pub kind: ResourceKind,
@@ -91,6 +94,7 @@ pub enum InspectorTarget {
 
 #[derive(Default)]
 pub struct InspectorState {
+    pub pod_expanded: std::collections::BTreeSet<String>,
     pub target: Option<InspectorTarget>,
     pub tab: InspectorTab,
     pub loading: bool,
@@ -281,6 +285,7 @@ impl IceonApp {
         if !self.can_reference_action(&reference, PermissionAction::Get) {
             return;
         }
+        self.inspector.pod_expanded.clear();
         self.inspector.target = Some(InspectorTarget::Resource(reference.clone()));
         self.inspector_open = true;
         self.inspector.loading = true;
@@ -371,7 +376,49 @@ impl IceonApp {
                     this.inspector.pod_detail = Some(pod);
                 }
                 this.inspector.collections = collections;
-                if this.inspector.tab == InspectorTab::Yaml {
+                if is_pod {
+                    let mut references: Vec<_> = this
+                        .inspector
+                        .detail
+                        .as_ref()
+                        .map(|detail| detail.related.values().cloned().collect())
+                        .unwrap_or_default();
+                    if let Some(pod) = &this.inspector.pod_detail {
+                        references.push(ResourceReference {
+                            kind: ResourceKind::Namespaces,
+                            name: pod.namespace.clone(),
+                            namespace: None,
+                            uid: None,
+                        });
+                        if let Some(name) = &pod.node {
+                            references.push(ResourceReference {
+                                kind: ResourceKind::Nodes,
+                                name: name.clone(),
+                                namespace: None,
+                                uid: None,
+                            });
+                        }
+                        if let Some(name) = &pod.service_account {
+                            references.push(ResourceReference {
+                                kind: ResourceKind::ServiceAccounts,
+                                name: name.clone(),
+                                namespace: Some(pod.namespace.clone()),
+                                uid: None,
+                            });
+                        }
+                    }
+                    for reference in references {
+                        this.review_resource_access(
+                            reference.kind,
+                            PermissionAction::Get,
+                            reference.namespace.as_deref(),
+                            Some(&reference.name),
+                            window,
+                            cx,
+                        );
+                    }
+                }
+                if !is_pod && this.inspector.tab == InspectorTab::Yaml {
                     this.load_inspector_yaml(window, cx);
                 }
                 cx.notify();
@@ -1206,11 +1253,15 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let title = match &self.inspector.target {
+            Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Pods => {
+                format!("Pod: {}", r.name)
+            }
             Some(InspectorTarget::Resource(r)) => format!("{:?} · {}", r.kind, r.name),
             Some(InspectorTarget::Helm { name, .. }) => format!("Helm · {name}"),
             None => "Inspector".into(),
         };
         let is_resource = matches!(self.inspector.target, Some(InspectorTarget::Resource(_)));
+        let is_pod = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Pods);
         let active_tab = self.inspector.tab;
 
         let event_count = self
@@ -1261,6 +1312,7 @@ impl IceonApp {
                     .bg(cx.theme().table_head)
                     .child(
                         div()
+                            .when(is_pod, |el| el.flex_1().min_w_0())
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
@@ -1305,7 +1357,7 @@ impl IceonApp {
                             ),
                     ),
             )
-            .when(is_resource, |el| {
+            .when(is_resource && !is_pod, |el| {
                 el.child(
                     h_flex()
                         .w_full()
@@ -1391,22 +1443,26 @@ impl IceonApp {
                     } else if let Some(helm) = self.inspector.helm_detail.clone() {
                         self.render_helm_inspector(&helm, cx).into_any_element()
                     } else if let Some(detail) = self.inspector.detail.clone() {
-                        match active_tab {
-                            InspectorTab::Summary => self
-                                .render_inspector_summary(&detail, window, cx)
-                                .into_any_element(),
-                            InspectorTab::Metadata => self
-                                .render_inspector_metadata(&detail, cx)
-                                .into_any_element(),
-                            InspectorTab::Relations => self
-                                .render_inspector_relations(&detail, cx)
-                                .into_any_element(),
-                            InspectorTab::Events => {
-                                self.render_inspector_events(&detail, cx).into_any_element()
+                        if is_pod {
+                            self.render_pod_inspector(&detail, cx).into_any_element()
+                        } else {
+                            match active_tab {
+                                InspectorTab::Summary => self
+                                    .render_inspector_summary(&detail, window, cx)
+                                    .into_any_element(),
+                                InspectorTab::Metadata => self
+                                    .render_inspector_metadata(&detail, cx)
+                                    .into_any_element(),
+                                InspectorTab::Relations => self
+                                    .render_inspector_relations(&detail, cx)
+                                    .into_any_element(),
+                                InspectorTab::Events => {
+                                    self.render_inspector_events(&detail, cx).into_any_element()
+                                }
+                                InspectorTab::Yaml => self
+                                    .render_inspector_yaml(&detail, window, cx)
+                                    .into_any_element(),
                             }
-                            InspectorTab::Yaml => self
-                                .render_inspector_yaml(&detail, window, cx)
-                                .into_any_element(),
                         }
                     } else {
                         inspector_empty_state(
