@@ -2499,10 +2499,10 @@ impl IceonApp {
             .flex_shrink_0()
             .when(active_kind.is_some(), |el| {
                 el.child(
-                    div().w(px(240.0)).h_full().child(
+                    // Keep the compact input height; the header centers it vertically.
+                    div().w(px(240.0)).child(
                         Input::new(&self.resource_filter_input)
                             .xsmall()
-                            .h_full()
                             .appearance(false)
                             .bordered(false)
                             .focus_bordered(false)
