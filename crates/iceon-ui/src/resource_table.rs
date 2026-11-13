@@ -1,6 +1,7 @@
 //! Cached resource-table entity. Scrolling never borrows or renders the application shell.
 use crate::{
     IceonApp,
+    app_checkbox::Checkbox,
     cluster_view::{
         ColumnDef, RESOURCE_ACTIONS_WIDTH, RESOURCE_AGE_WIDTH, RESOURCE_NAME_WIDTH,
         RESOURCE_NAMESPACE_WIDTH, RESOURCE_STATUS_WIDTH, columns_for_kind, namespaced_kind,
@@ -13,7 +14,6 @@ use crate::{
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
-    checkbox::Checkbox,
     h_flex,
     resizable::{HandleEdge, resize_handle},
     scroll::{ScrollableElement as _, ScrollbarAxis},
@@ -543,42 +543,14 @@ impl ResourceTable {
         cx.notify();
     }
     fn render_selection_checkbox(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::base::{Checkbox as BaseCheckbox, CheckboxState};
+        use gpui_kit::base::CheckboxState;
         let total = self.selectable_targets(cx).len();
         let state = selection_state(self.selected.len(), total);
-        let active = state != CheckboxState::Unchecked;
         let owner = cx.entity().downgrade();
-        BaseCheckbox::new("select-loaded-resources")
+        Checkbox::new("select-loaded-resources")
             .state(state)
             .disabled(total == 0)
             .accessibility_label(format!("Select all {total} loaded selectable resources"))
-            .cursor_pointer()
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(if active {
-                cx.theme().primary
-            } else {
-                cx.theme().input
-            })
-            .bg(if active {
-                cx.theme().primary
-            } else {
-                cx.theme().input_background()
-            })
-            .text_color(cx.theme().primary_foreground)
-            .size(px(16.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(match state {
-                CheckboxState::Indeterminate => gpui_kit::component::Icon::new(IconName::Minus)
-                    .xsmall()
-                    .into_any_element(),
-                CheckboxState::Checked => gpui_kit::component::Icon::new(IconName::Check)
-                    .xsmall()
-                    .into_any_element(),
-                CheckboxState::Unchecked => Empty.into_any_element(),
-            })
             .on_change(move |next, _, _, cx| {
                 cx.stop_propagation();
                 let _ = owner.update(cx, |table, cx| {
@@ -905,6 +877,7 @@ impl ResourceTable {
                         .justify_center()
                         .child(
                             Checkbox::new(SharedString::from(format!("select-resource-{idx}")))
+                                .accessibility_label(format!("Select {}", item.name))
                                 .checked(selected)
                                 .disabled(target.is_none())
                                 .on_click(cx.listener(move |table, checked: &bool, _, cx| {

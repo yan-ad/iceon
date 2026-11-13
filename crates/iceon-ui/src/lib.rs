@@ -3,6 +3,7 @@
 mod action_icons;
 mod age_label;
 mod app_assets;
+mod app_checkbox;
 pub mod badge;
 mod bulk_delete;
 pub mod catalog_view;

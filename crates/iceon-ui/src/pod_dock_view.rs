@@ -1550,7 +1550,7 @@ impl IceonApp {
                             .gap_3()
                             .items_center()
                             .child(
-                                gpui_kit::component::checkbox::Checkbox::new("pod-log-timestamps")
+                                crate::app_checkbox::Checkbox::new("pod-log-timestamps")
                                     .label("Timestamps")
                                     .checked(tab.timestamps)
                                     .on_click(cx.listener(
@@ -1572,7 +1572,7 @@ impl IceonApp {
                                     )),
                             )
                             .child(
-                                gpui_kit::component::checkbox::Checkbox::new("pod-log-previous")
+                                crate::app_checkbox::Checkbox::new("pod-log-previous")
                                     .label("Previous")
                                     .checked(tab.previous)
                                     .on_click(cx.listener(
@@ -1594,7 +1594,7 @@ impl IceonApp {
                                     )),
                             )
                             .child(
-                                gpui_kit::component::checkbox::Checkbox::new("pod-log-wrap")
+                                crate::app_checkbox::Checkbox::new("pod-log-wrap")
                                     .label("Word wrap")
                                     .checked(tab.word_wrap)
                                     .on_click(cx.listener(move |this, checked: &bool, _, cx| {
