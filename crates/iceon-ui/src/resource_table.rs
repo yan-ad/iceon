@@ -15,6 +15,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IconName, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
     h_flex,
+    menu::{DropdownMenu as _, PopupMenuItem},
     resizable::{HandleEdge, resize_handle},
     scroll::{ScrollableElement as _, ScrollbarAxis},
     tag::Tag,
@@ -39,6 +40,57 @@ fn selection_state(selected: usize, total: usize) -> gpui_kit::base::CheckboxSta
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeploymentRowAction {
+    Scale,
+    Restart,
+    Edit,
+    Delete,
+}
+
+impl DeploymentRowAction {
+    const ALL: [Self; 4] = [Self::Scale, Self::Restart, Self::Edit, Self::Delete];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Scale => "Scale",
+            Self::Restart => "Restart",
+            Self::Edit => "Edit",
+            Self::Delete => "Delete",
+        }
+    }
+
+    fn enabled(self, identity: bool, get: bool, patch: bool, delete: bool) -> bool {
+        identity
+            && get
+            && match self {
+                Self::Delete => delete,
+                _ => patch,
+            }
+    }
+}
+
+fn deployment_identity(item: &ResourceItem) -> bool {
+    !item.name.trim().is_empty()
+        && item
+            .namespace
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty())
+        && item.uid.as_deref().is_some_and(|v| !v.trim().is_empty())
+        && item
+            .resource_version
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty())
+}
+
+fn deployment_condition_tag(condition: &str) -> Tag {
+    match condition {
+        "Available" => Tag::success(),
+        "Progressing" => Tag::info(),
+        "ReplicaFailure" => Tag::danger(),
+        _ => Tag::secondary(),
+    }
+}
 fn event_text_color(status: &str, cx: &App) -> Hsla {
     match status.to_ascii_lowercase().as_str() {
         "warning" => gpui_kit::component::ColorName::Orange.scale(if cx.theme().is_dark() {
@@ -149,16 +201,36 @@ impl ColumnLayout {
                 min: 164.0,
             },
             TableColumn {
-                key: "status",
-                label: "Status",
-                width: RESOURCE_STATUS_WIDTH,
+                key: if kind == ResourceKind::Deployments {
+                    "conditions"
+                } else {
+                    "status"
+                },
+                label: if kind == ResourceKind::Deployments {
+                    "Conditions"
+                } else {
+                    "Status"
+                },
+                width: if kind == ResourceKind::Deployments {
+                    260.0
+                } else {
+                    RESOURCE_STATUS_WIDTH
+                },
                 min: 110.0,
             },
             TableColumn {
                 key: "actions",
                 label: "Actions",
-                width: RESOURCE_ACTIONS_WIDTH,
-                min: 124.0,
+                width: if kind == ResourceKind::Deployments {
+                    64.0
+                } else {
+                    RESOURCE_ACTIONS_WIDTH
+                },
+                min: if kind == ResourceKind::Deployments {
+                    48.0
+                } else {
+                    124.0
+                },
             },
         ]);
         Self {
@@ -1010,11 +1082,30 @@ impl ResourceTable {
                         &timezone,
                     )),
             )
-            .child(
+            .child(if kind == ResourceKind::Deployments {
+                let conditions = cell_value(item, "conditions");
+                table_cell(layout.width("conditions"), false, true, cx.theme().border)
+                    .items_center()
+                    .gap_1()
+                    .overflow_hidden()
+                    .children(
+                        conditions
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(|condition| {
+                                deployment_condition_tag(condition)
+                                    .small()
+                                    .child(condition.to_owned())
+                            }),
+                    )
+                    .into_any_element()
+            } else {
                 table_cell(layout.width("status"), false, true, cx.theme().border)
                     .items_center()
-                    .child(row_status_tag(&item.status)),
-            )
+                    .child(row_status_tag(&item.status))
+                    .into_any_element()
+            })
             .when(layout.name_resized, |row| row.child(div().flex_1()))
             .child(
                 table_cell(layout.width("actions"), false, false, cx.theme().border)
@@ -1027,17 +1118,19 @@ impl ResourceTable {
                     .gap_1()
                     .items_center()
                     .child(row_actions)
-                    .child(
-                        Button::new(SharedString::from(format!("inspect-row-{idx}")))
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Eye)
-                            .tooltip("Inspect resource")
-                            .accessibility_label("Inspect resource")
-                            .on_click(self.action(move |this, _, window, cx| {
-                                this.open_resource_inspector(reference.clone(), window, cx);
-                            })),
-                    ),
+                    .when(kind != ResourceKind::Deployments, |cell| {
+                        cell.child(
+                            Button::new(SharedString::from(format!("inspect-row-{idx}")))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Eye)
+                                .tooltip("Inspect resource")
+                                .accessibility_label("Inspect resource")
+                                .on_click(self.action(move |this, _, window, cx| {
+                                    this.open_resource_inspector(reference.clone(), window, cx);
+                                })),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -1159,6 +1252,101 @@ impl ResourceTable {
             .into_any_element()
     }
 
+    fn render_deployment_actions(&self, item: &ResourceItem, idx: usize, _cx: &App) -> AnyElement {
+        let owner = self.owner.clone();
+        let item = item.clone();
+        let session = self
+            .cache
+            .data
+            .as_ref()
+            .and_then(|data| data.page.as_ref())
+            .map(|page| (page.cluster_id.clone(), page.session_id.clone()));
+        Button::new(SharedString::from(format!("deployment-menu-{idx}")))
+            .xsmall()
+            .ghost()
+            .icon(gpui_kit::component::Icon::new(IconName::Ellipsis).rotate(gpui_kit::radians(std::f32::consts::FRAC_PI_2)))
+            .tooltip("Deployment actions")
+            .accessibility_label(format!("Actions for deployment {}", item.name))
+            .dropdown_menu(move |mut menu, _, cx| {
+                for action in DeploymentRowAction::ALL {
+                    let enabled = owner.upgrade().is_some_and(|entity| {
+                        let app = entity.read(cx);
+                        let current = app.cluster_session.as_ref().map(|s| (&s.cluster_id, &s.session_id));
+                        let reference = ResourceReference {
+                            kind: ResourceKind::Deployments,
+                            name: item.name.clone(),
+                            namespace: item.namespace.clone(),
+                            uid: item.uid.clone(),
+                        };
+                        current == session.as_ref().map(|(c, s)| (c, s))
+                            && session.is_some()
+                            && action.enabled(
+                                deployment_identity(&item),
+                                app.can_reference_action(&reference, PermissionAction::Get),
+                                app.can_reference_action(&reference, PermissionAction::Patch),
+                                app.can_reference_action(&reference, PermissionAction::Delete),
+                            )
+                    });
+                    let owner = owner.clone();
+                    let item = item.clone();
+                    let session = session.clone();
+                    let icon = match action {
+                        DeploymentRowAction::Scale => gpui_kit::component::Icon::new(gpui_kit_assets::IconName::ArrowUpDown),
+                        DeploymentRowAction::Restart => crate::action_icons::refresh(),
+                        DeploymentRowAction::Edit => gpui_kit::component::Icon::new(gpui_kit_assets::IconName::Pencil),
+                        DeploymentRowAction::Delete => crate::action_icons::delete(),
+                    };
+                    menu = menu.item(PopupMenuItem::new(action.label()).icon(icon).disabled(!enabled).on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        let _ = owner.update(cx, |app, cx| {
+                            if !deployment_identity(&item)
+                                || session.is_none()
+                                || app.cluster_session.as_ref().map(|s| (&s.cluster_id, &s.session_id))
+                                    != session.as_ref().map(|(c, s)| (c, s))
+                            {
+                                return;
+                            }
+                            let reference = ResourceReference {
+                                kind: ResourceKind::Deployments,
+                                name: item.name.clone(),
+                                namespace: item.namespace.clone(),
+                                uid: item.uid.clone(),
+                            };
+                            if !action.enabled(
+                                true,
+                                app.can_reference_action(&reference, PermissionAction::Get),
+                                app.can_reference_action(&reference, PermissionAction::Patch),
+                                app.can_reference_action(&reference, PermissionAction::Delete),
+                            ) {
+                                return;
+                            }
+                            let version = item.resource_version.clone().expect("reviewed identity");
+                            match action {
+                                DeploymentRowAction::Scale => app.open_deployment_scale(reference, version, window, cx),
+                                DeploymentRowAction::Edit => app.open_yaml_editor(reference, window, cx),
+                                DeploymentRowAction::Restart => app.confirm_destructive_action(
+                                    "Restart workload?",
+                                    format!("Restart {}? This can interrupt running workloads.", reference.name),
+                                    "Restart", window, cx,
+                                    move |app, window, cx| app.run_workload_action_for(reference.clone(), version.clone(), WorkloadAction::Restart, None, window, cx),
+                                ),
+                                DeploymentRowAction::Delete => {
+                                    let target = deletion_target(ResourceKind::Deployments, &item).expect("reviewed identity");
+                                    app.confirm_destructive_action(
+                                        "Delete resource?", format!("Delete {}? This cannot be undone.", target.name),
+                                        "Delete", window, cx,
+                                        move |app, window, cx| app.delete_resource_by_target(target.clone(), window, cx),
+                                    );
+                                }
+                            }
+                        });
+                    }));
+                }
+                menu
+            })
+            .into_any_element()
+    }
+
     fn render_row_actions(
         &self,
         kind: ResourceKind,
@@ -1166,6 +1354,9 @@ impl ResourceTable {
         idx: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if kind == ResourceKind::Deployments {
+            return self.render_deployment_actions(item, idx, cx);
+        }
         let allowed = |action| {
             self.owner.upgrade().is_some_and(|owner| {
                 owner
@@ -1773,6 +1964,84 @@ impl Render for ResourceTable {
 
 #[cfg(test)]
 mod tests {
+    #[::core::prelude::v1::test]
+    fn deployment_layout_replaces_status_with_sortable_resizable_conditions() {
+        let mut layout =
+            super::ColumnLayout::new(iceon_core::connection::ResourceKind::Deployments);
+        assert_eq!(
+            layout.columns.iter().map(|c| c.key).collect::<Vec<_>>(),
+            [
+                "name",
+                "namespace",
+                "ready",
+                "desired",
+                "updated",
+                "available",
+                "age",
+                "conditions",
+                "actions"
+            ]
+        );
+        assert!(layout.resize("conditions", 310.5));
+        assert_eq!(layout.width("conditions"), 310.5);
+        let mut a = item("one", "default", "Running", "");
+        let mut b = item("two", "default", "Running", "");
+        a.columns
+            .insert("conditions".into(), "Available, Progressing".into());
+        b.columns
+            .insert("conditions".into(), "ReplicaFailure".into());
+        assert_eq!(
+            compare_values(
+                sort_value(&a, "conditions").as_deref(),
+                sort_value(&b, "conditions").as_deref(),
+                &TableSort {
+                    key: "conditions".into(),
+                    descending: false
+                }
+            ),
+            Ordering::Less
+        );
+        assert!(
+            ColumnLayout::new(ResourceKind::StatefulSets)
+                .columns
+                .iter()
+                .any(|c| c.key == "status")
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn deployment_menu_order_and_permissions_fail_closed() {
+        assert_eq!(
+            DeploymentRowAction::ALL.map(|a| a.label()),
+            ["Scale", "Restart", "Edit", "Delete"]
+        );
+        for action in DeploymentRowAction::ALL {
+            assert!(action.enabled(true, true, true, true));
+            assert!(!action.enabled(false, true, true, true));
+            assert!(!action.enabled(true, false, true, true));
+            assert_eq!(
+                action.enabled(true, true, false, true),
+                action == DeploymentRowAction::Delete
+            );
+            assert_eq!(
+                action.enabled(true, true, true, false),
+                action != DeploymentRowAction::Delete
+            );
+        }
+        let valid = item("deployment", "default", "Running", "");
+        assert!(deployment_identity(&valid));
+        for field in ["uid", "resourceVersion", "namespace", "name"] {
+            let mut missing = valid.clone();
+            match field {
+                "uid" => missing.uid = Some(" ".into()),
+                "resourceVersion" => missing.resource_version = None,
+                "namespace" => missing.namespace = None,
+                _ => missing.name.clear(),
+            }
+            assert!(!deployment_identity(&missing), "{field}");
+        }
+    }
+
     #[::core::prelude::v1::test]
     fn events_columns_match_reference_without_duplicate_name_or_status() {
         let layout = super::ColumnLayout::new(iceon_core::connection::ResourceKind::Events);

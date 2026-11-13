@@ -42,6 +42,9 @@ use editor_surface::EditorSurface;
 #[path = "pod_inspector.rs"]
 mod pod_inspector;
 
+#[path = "deployment_inspector.rs"]
+mod deployment_inspector;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteTarget {
     pub kind: ResourceKind,
@@ -94,6 +97,7 @@ pub enum InspectorTarget {
 
 #[derive(Default)]
 pub struct InspectorState {
+    pub read_id: u64,
     pub pod_expanded: std::collections::BTreeSet<String>,
     pub target: Option<InspectorTarget>,
     pub tab: InspectorTab,
@@ -107,6 +111,13 @@ pub struct InspectorState {
     pub helm_detail: Option<HelmDetail>,
     pub drain_review: Option<DrainReview>,
     pub drain_result: Option<DrainResult>,
+}
+
+impl InspectorState {
+    fn accepts_resource_read(&self, read_id: u64, reference: &ResourceReference) -> bool {
+        self.read_id == read_id
+            && self.target.as_ref() == Some(&InspectorTarget::Resource(reference.clone()))
+    }
 }
 
 impl IceonApp {
@@ -308,6 +319,7 @@ impl IceonApp {
         };
 
         let read_id = self.next_operation_id();
+        self.inspector.read_id = read_id;
         let connection = self.connection.clone();
         let req = DetailRequest {
             cluster_id: session.cluster_id.clone(),
@@ -363,6 +375,16 @@ impl IceonApp {
             }
 
             let _ = this.update_in(cx, |this, window, cx| {
+                if !this.inspector_open
+                    || !this.inspector.accepts_resource_read(read_id, &reference)
+                    || !this.cluster_session.as_ref().is_some_and(|current| {
+                        current.status == "connected"
+                            && current.cluster_id == session.cluster_id
+                            && current.session_id == session.session_id
+                    })
+                {
+                    return;
+                }
                 this.inspector.loading = false;
                 match detail_res {
                     Ok(detail) => {
@@ -376,6 +398,34 @@ impl IceonApp {
                     this.inspector.pod_detail = Some(pod);
                 }
                 this.inspector.collections = collections;
+                let mut collection_references = this
+                    .inspector
+                    .collections
+                    .iter()
+                    .flat_map(|collection| {
+                        collection.items.iter().map(|item| item.reference.clone())
+                    })
+                    .collect::<Vec<_>>();
+                if reference.kind == ResourceKind::Deployments {
+                    if let Some(namespace) = &reference.namespace {
+                        collection_references.push(ResourceReference {
+                            kind: ResourceKind::Namespaces,
+                            name: namespace.clone(),
+                            namespace: None,
+                            uid: None,
+                        });
+                    }
+                }
+                for reference in collection_references.into_iter().take(64) {
+                    this.review_resource_access(
+                        reference.kind,
+                        PermissionAction::Get,
+                        reference.namespace.as_deref(),
+                        Some(&reference.name),
+                        window,
+                        cx,
+                    );
+                }
                 if is_pod {
                     let mut references: Vec<_> = this
                         .inspector
@@ -777,6 +827,7 @@ impl IceonApp {
             return;
         };
         let op_id = self.next_operation_id();
+        let lease = (session.cluster_id.clone(), session.session_id.clone());
         let connection = self.connection.clone();
         let req = WorkflowRequest {
             cluster_id: session.cluster_id,
@@ -790,6 +841,12 @@ impl IceonApp {
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.resource_workload_action(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if !this.cluster_session.as_ref().is_some_and(|current| {
+                    current.status == "connected"
+                        && (&current.cluster_id, &current.session_id) == (&lease.0, &lease.1)
+                }) {
+                    return;
+                }
                 match result {
                     Ok(res) => {
                         let msg = if let Some(created) = res.created {
@@ -1256,12 +1313,16 @@ impl IceonApp {
             Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Pods => {
                 format!("Pod: {}", r.name)
             }
+            Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Deployments => {
+                format!("Deployment: {}", r.name)
+            }
             Some(InspectorTarget::Resource(r)) => format!("{:?} · {}", r.kind, r.name),
             Some(InspectorTarget::Helm { name, .. }) => format!("Helm · {name}"),
             None => "Inspector".into(),
         };
         let is_resource = matches!(self.inspector.target, Some(InspectorTarget::Resource(_)));
         let is_pod = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Pods);
+        let is_deployment = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Deployments);
         let active_tab = self.inspector.tab;
 
         let event_count = self
@@ -1310,27 +1371,44 @@ impl IceonApp {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().table_head)
+                    .when(is_deployment, |header| header.bg(cx.theme().primary))
                     .child(
                         div()
-                            .when(is_pod, |el| el.flex_1().min_w_0())
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
-                            .child(selectable_text(title)),
+                            .child(selectable_text(title).text_color(if is_deployment {
+                                cx.theme().primary_foreground
+                            } else {
+                                cx.theme().foreground
+                            })),
                     )
                     .child(
                         h_flex()
                             .gap_1()
                             .items_center()
                             .when_some(self.inspector.detail.clone(), |el, detail| {
-                                el.child(self.render_inspector_action_bar(&detail, window, cx))
+                                if is_deployment {
+                                    el.child(self.render_deployment_actions(&detail, cx))
+                                } else {
+                                    el.child(self.render_inspector_action_bar(&detail, window, cx))
+                                }
                             })
                             .when(is_resource, |el| {
                                 el.child(
                                     Button::new("inspector-refresh-btn")
                                         .xsmall()
                                         .ghost()
-                                        .icon(IconName::Undo2)
+                                        .icon(
+                                            gpui_kit::component::Icon::new(IconName::Undo2)
+                                                .text_color(if is_deployment {
+                                                    cx.theme().primary_foreground
+                                                } else {
+                                                    cx.theme().foreground
+                                                }),
+                                        )
                                         .tooltip("Refresh Inspector")
                                         .accessibility_label("Refresh inspector")
                                         .on_click(cx.listener(|this, _, window, cx| {
@@ -1346,7 +1424,15 @@ impl IceonApp {
                                 Button::new("inspector-close-btn")
                                     .xsmall()
                                     .ghost()
-                                    .icon(IconName::Close)
+                                    .icon(
+                                        gpui_kit::component::Icon::new(IconName::Close).text_color(
+                                            if is_deployment {
+                                                cx.theme().primary_foreground
+                                            } else {
+                                                cx.theme().foreground
+                                            },
+                                        ),
+                                    )
                                     .tooltip("Close inspector")
                                     .accessibility_label("Close inspector")
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1357,7 +1443,7 @@ impl IceonApp {
                             ),
                     ),
             )
-            .when(is_resource && !is_pod, |el| {
+            .when(is_resource && !is_pod && !is_deployment, |el| {
                 el.child(
                     h_flex()
                         .w_full()
@@ -1445,6 +1531,8 @@ impl IceonApp {
                     } else if let Some(detail) = self.inspector.detail.clone() {
                         if is_pod {
                             self.render_pod_inspector(&detail, cx).into_any_element()
+                        } else if is_deployment {
+                            self.render_deployment_inspector(&detail, cx)
                         } else {
                             match active_tab {
                                 InspectorTab::Summary => self
@@ -3817,6 +3905,29 @@ fn status_tag(status: &str) -> Tag {
 #[cfg(test)]
 mod destructive_confirmation_tests {
     use super::{DeleteTarget, ResourceKind, WorkloadAction, workload_requires_confirmation};
+
+    #[test]
+    fn inspector_reads_reject_replaced_target_and_newer_refresh() {
+        use super::{InspectorState, InspectorTarget, ResourceReference};
+        let reference = ResourceReference {
+            kind: ResourceKind::Deployments,
+            name: "offline".into(),
+            namespace: Some("fixture".into()),
+            uid: Some("original".into()),
+        };
+        let mut state = InspectorState {
+            read_id: 7,
+            target: Some(InspectorTarget::Resource(reference.clone())),
+            ..Default::default()
+        };
+        assert!(state.accepts_resource_read(7, &reference));
+        assert!(!state.accepts_resource_read(6, &reference));
+        let mut replaced = reference.clone();
+        replaced.uid = Some("replacement".into());
+        assert!(!state.accepts_resource_read(7, &replaced));
+        state.target = None;
+        assert!(!state.accepts_resource_read(7, &reference));
+    }
 
     #[test]
     fn disruptive_workload_actions_require_explicit_confirmation() {

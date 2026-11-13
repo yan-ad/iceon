@@ -371,7 +371,29 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
                 width: 100.0,
             },
         ],
-        Deployments | StatefulSets | ReplicaSets | ReplicationControllers => &[
+        Deployments => &[
+            ColumnDef {
+                header: "Ready",
+                key: "ready",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Desired",
+                key: "desired",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Updated",
+                key: "updated",
+                width: 80.0,
+            },
+            ColumnDef {
+                header: "Available",
+                key: "available",
+                width: 90.0,
+            },
+        ],
+        StatefulSets | ReplicaSets | ReplicationControllers => &[
             ColumnDef {
                 header: "Desired",
                 key: "desired",
@@ -3713,6 +3735,27 @@ pub(crate) fn default_yaml_template(kind: ResourceKind, namespace: &str) -> Stri
 mod tests {
     use super::{columns_for_kind, default_yaml_template};
     use iceon_core::connection::ResourceKind;
+
+    #[test]
+    fn deployment_columns_use_projected_replica_counts_in_reference_order() {
+        assert_eq!(
+            columns_for_kind(ResourceKind::Deployments)
+                .iter()
+                .map(|column| (column.header, column.key))
+                .collect::<Vec<_>>(),
+            [
+                ("Ready", "ready"),
+                ("Desired", "desired"),
+                ("Updated", "updated"),
+                ("Available", "available")
+            ]
+        );
+        assert!(
+            columns_for_kind(ResourceKind::StatefulSets)
+                .iter()
+                .any(|column| column.key == "replicas")
+        );
+    }
 
     #[test]
     fn pod_columns_show_containers_and_usage_before_restarts() {

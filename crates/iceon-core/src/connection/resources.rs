@@ -696,6 +696,35 @@ fn workload_status(kind: ResourceKind, v: &Value, c: &mut BTreeMap<String, Strin
     for (key, path) in fields {
         number(v, c, key, path);
     }
+    if kind == ResourceKind::Deployments
+        && let Some(conditions) = v.pointer("/status/conditions").and_then(Value::as_array)
+        && conditions.len() <= 32
+    {
+        // Only known, explicitly true types; never project messages or arbitrary types.
+        // An empty summary means no known true condition, not a healthy Deployment.
+        let active = ["Available", "Progressing", "ReplicaFailure"]
+            .into_iter()
+            .filter(|condition| {
+                conditions.iter().any(|item| {
+                    item.get("type").and_then(Value::as_str) == Some(*condition)
+                        && item.get("status").and_then(Value::as_str) == Some("True")
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        insert(c, "conditions", active);
+    }
+    if kind == ResourceKind::ReplicaSets
+        && let Some(revision) = v
+            .pointer("/metadata/annotations/deployment.kubernetes.io~1revision")
+            .and_then(Value::as_str)
+        && !revision.is_empty()
+        && revision.len() <= 20
+        && revision.bytes().all(|byte| byte.is_ascii_digit())
+        && let Ok(revision) = revision.parse::<u64>()
+    {
+        insert(c, "revision", revision.to_string());
+    }
     v.pointer("/status/conditions")
         .and_then(Value::as_array)
         .and_then(|a| {

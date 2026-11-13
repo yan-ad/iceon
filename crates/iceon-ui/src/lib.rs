@@ -17,12 +17,16 @@ mod console_font;
 mod console_probe;
 mod console_tabs;
 mod custom_resource_navigation;
+#[cfg(debug_assertions)]
+mod deployment_probe;
 mod empty_state;
 mod selectable_text;
 mod theme_picker;
 mod themes_settings;
 #[cfg(debug_assertions)]
 pub use console_probe::run as run_console_probe;
+#[cfg(debug_assertions)]
+pub use deployment_probe::run as run_deployment_probe;
 pub mod inspector_view;
 mod kubectl_tools;
 mod local_console;

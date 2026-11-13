@@ -3,6 +3,119 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn deployment_conditions_only_summarize_known_explicitly_true_types() {
+    let base = json!({"metadata":{"name":"app","namespace":"team"}});
+    let missing = resources::project(ResourceKind::Deployments, base.clone()).unwrap();
+    assert!(!missing.columns.contains_key("conditions"));
+    assert_eq!(missing.status, "Unknown");
+    for key in ["desired", "replicas", "ready", "updated", "available"] {
+        assert!(!missing.columns.contains_key(key));
+    }
+    let mut value = base;
+    value["spec"] = json!({"replicas":0,"template":{"PRIVATE":"PRIVATE"}});
+    value["status"] = json!({
+        "replicas":0,"readyReplicas":0,"updatedReplicas":0,"availableReplicas":0,
+        "conditions":[
+            {"type":"ReplicaFailure","status":"True","message":"PRIVATE"},
+            {"type":"Progressing","status":"True","reason":"PRIVATE"},
+            {"type":"Available","status":"False"},
+            {"type":"PRIVATE","status":"True"},
+            {"type":"Progressing","status":"True"}
+        ]
+    });
+    let projected = resources::project(ResourceKind::Deployments, value.clone()).unwrap();
+    assert_eq!(
+        projected.columns["conditions"],
+        "Progressing,ReplicaFailure"
+    );
+    assert_eq!(projected.status, "False");
+    for key in ["desired", "replicas", "ready", "updated", "available"] {
+        assert_eq!(projected.columns[key], "0");
+    }
+    assert!(
+        !serde_json::to_string(&projected)
+            .unwrap()
+            .contains("PRIVATE")
+    );
+    for status in [json!("False"), json!("Unknown"), json!(true), json!(null)] {
+        value["status"]["conditions"] = json!([
+            {"type":"Available","status":status},
+            {"type":"Progressing"}, {"type":"ReplicaFailure","status":"False"}
+        ]);
+        let row = resources::project(ResourceKind::Deployments, value.clone()).unwrap();
+        assert_eq!(row.columns["conditions"], "");
+    }
+    value["status"]["conditions"] = json!([
+        {"type":"Available","status":"True"},
+        {"type":"Progressing","status":"True"},
+        {"type":"ReplicaFailure","status":"True"}
+    ]);
+    assert_eq!(
+        resources::project(ResourceKind::Deployments, value.clone())
+            .unwrap()
+            .columns["conditions"],
+        "Available,Progressing,ReplicaFailure"
+    );
+    value["status"]["conditions"] = json!(vec![json!({"type":"Available","status":"True"}); 33]);
+    assert!(
+        !resources::project(ResourceKind::Deployments, value)
+            .unwrap()
+            .columns
+            .contains_key("conditions")
+    );
+}
+
+#[test]
+fn replica_set_revision_is_a_bounded_numeric_allowlisted_annotation() {
+    let mut value = json!({"metadata":{"name":"app","namespace":"team","annotations":{"unrelated":"PRIVATE"}},"spec":{"template":{"PRIVATE":"PRIVATE"}}});
+    assert!(
+        !resources::project(ResourceKind::ReplicaSets, value.clone())
+            .unwrap()
+            .columns
+            .contains_key("revision")
+    );
+    for (input, expected) in [
+        ("0", "0"),
+        ("42", "42"),
+        ("0002", "2"),
+        ("18446744073709551615", "18446744073709551615"),
+    ] {
+        value["metadata"]["annotations"]["deployment.kubernetes.io/revision"] = json!(input);
+        let row = resources::project(ResourceKind::ReplicaSets, value.clone()).unwrap();
+        assert_eq!(row.columns["revision"], expected);
+        assert!(!serde_json::to_string(&row).unwrap().contains("PRIVATE"));
+        assert!(
+            !resources::project(ResourceKind::Deployments, value.clone())
+                .unwrap()
+                .columns
+                .contains_key("revision")
+        );
+    }
+    for input in [
+        json!(""),
+        json!("-1"),
+        json!("+1"),
+        json!(" 1"),
+        json!("1.0"),
+        json!("1e2"),
+        json!("PRIVATE"),
+        json!("18446744073709551616"),
+        json!("0".repeat(21)),
+        json!(1),
+        json!({"value":"1"}),
+        json!(null),
+    ] {
+        value["metadata"]["annotations"]["deployment.kubernetes.io/revision"] = input;
+        assert!(
+            !resources::project(ResourceKind::ReplicaSets, value.clone())
+                .unwrap()
+                .columns
+                .contains_key("revision")
+        );
+    }
+}
+
+#[test]
 fn fixed_endpoints_cover_every_resource_kind_and_wire_spelling() {
     let kinds = [
         (ResourceKind::Nodes, "nodes", "/api/v1/nodes"),

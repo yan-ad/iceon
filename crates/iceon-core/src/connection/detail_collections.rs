@@ -72,6 +72,7 @@ pub enum CollectionState {
 #[serde(rename_all = "camelCase")]
 pub struct CollectionItem {
     pub reference: ResourceReference,
+    pub created_at: Option<String>,
     pub status: String,
     pub columns: BTreeMap<String, String>,
 }
@@ -439,6 +440,7 @@ fn project_item(kind: ResourceKind, value: Value) -> Result<CollectionItem> {
     }
     Ok(CollectionItem {
         reference,
+        created_at: item.created_at,
         status: item.status,
         columns: item.columns,
     })
@@ -507,6 +509,42 @@ mod tests {
     use super::*;
     use crate::connection::tests::{connected, fake, fixture};
     use serde_json::json;
+    #[test]
+    fn replica_set_history_preserves_valid_creation_time_and_safe_revision() {
+        let r = request(ResourceKind::Deployments, CollectionKind::ReplicaSets);
+        let mut value = child(&r.reference);
+        value["metadata"]["creationTimestamp"] = json!("2026-10-29T12:00:00Z");
+        value["metadata"]["annotations"] =
+            json!({"deployment.kubernetes.io/revision":"12","unrelated":"PRIVATE"});
+        value["spec"] = json!({"replicas":0,"template":{"PRIVATE":"PRIVATE"}});
+        assert!(associated(&r, &value, &[]));
+        let item = project_item(ResourceKind::ReplicaSets, value.clone()).unwrap();
+        assert_eq!(item.created_at.as_deref(), Some("2026-10-29T12:00:00Z"));
+        assert_eq!(item.columns["revision"], "12");
+        assert_eq!(item.columns["desired"], "0");
+        let wire = serde_json::to_value(&item).unwrap();
+        assert_eq!(wire["createdAt"], "2026-10-29T12:00:00Z");
+        assert!(!wire.to_string().contains("PRIVATE"));
+        for timestamp in [json!(null), json!("not-a-date"), json!({"date":"PRIVATE"})] {
+            value["metadata"]["creationTimestamp"] = timestamp;
+            assert_eq!(
+                project_item(ResourceKind::ReplicaSets, value.clone())
+                    .unwrap()
+                    .created_at,
+                None
+            );
+        }
+        value["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("creationTimestamp");
+        assert_eq!(
+            project_item(ResourceKind::ReplicaSets, value)
+                .unwrap()
+                .created_at,
+            None
+        );
+    }
     #[test]
     fn export_frontend_collection_contract() {
         let cases: Vec<_> = [
