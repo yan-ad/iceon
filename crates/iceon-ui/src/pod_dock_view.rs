@@ -1151,7 +1151,13 @@ impl IceonApp {
             .h(px(33.))
             .w_full()
             .flex_shrink_0()
-            .bg(cx.theme().sidebar)
+            // The footer owns its split material; don't stack a second tint.
+            // Expanded console tabs still need their own chrome background.
+            .bg(if self.pod_dock_open {
+                cx.theme().tokens.title_bar
+            } else {
+                gpui_kit::transparent_black().into()
+            })
             .text_color(cx.theme().sidebar_foreground)
             .selected_index(selected_index)
             .children(tabs)

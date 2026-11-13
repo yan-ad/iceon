@@ -42,17 +42,22 @@ impl IceonApp {
         ) && !self.sidebar_collapsed
             && !self.cluster_sidebar_collapsed;
         h_flex()
+            .relative()
             .w_full()
             .h(px(34.))
             .flex_shrink_0()
             .items_center()
             .justify_between()
-            .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .border_t_1()
             .border_color(cx.theme().sidebar_border)
+            .child(crate::shell_theme::chrome_background(
+                sidebar_open.then_some(self.navigation_widths.sidebar_width()),
+                cx,
+            ))
             .child(
                 h_flex()
+                    .relative()
                     .h_full()
                     .when(sidebar_open, |controls| {
                         controls
@@ -119,6 +124,7 @@ impl IceonApp {
             )
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()

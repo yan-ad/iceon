@@ -1298,7 +1298,7 @@ impl IceonApp {
             .h_full()
             .border_l_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.sidebar)
             .overflow_hidden()
             .child(
                 h_flex()

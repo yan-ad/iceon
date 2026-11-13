@@ -34,6 +34,43 @@ fn root_style() -> StyleRefinement {
     StyleRefinement::default().bg(gpui_kit::transparent_black())
 }
 
+/// Paint adjacent chrome regions once, rather than layering translucent fills.
+/// Mounted behind the title bar so the native control inset is included too.
+pub(crate) fn chrome_background(sidebar_width: Option<f32>, cx: &App) -> gpui_kit::Div {
+    use gpui_kit::{ParentElement as _, div, px};
+
+    let theme = Theme::global(cx);
+    let regions = chrome_regions(
+        sidebar_width,
+        theme.tokens.sidebar.into(),
+        theme.tokens.title_bar.into(),
+    );
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .overflow_hidden()
+        .children(regions.into_iter().map(|(width, background)| {
+            let region = div().h_full().bg(background);
+            match width {
+                Some(width) => region.w(px(width)).flex_shrink_0(),
+                None => region.flex_1().min_w_0(),
+            }
+        }))
+}
+
+fn chrome_regions(
+    sidebar_width: Option<f32>,
+    sidebar: gpui_kit::Background,
+    title_bar: gpui_kit::Background,
+) -> Vec<(Option<f32>, gpui_kit::Background)> {
+    sidebar_width
+        .map(|width| (Some(width), sidebar))
+        .into_iter()
+        .chain(std::iter::once((None, title_bar)))
+        .collect()
+}
+
 const CHROME_ALPHA_LIGHT: f32 = 0.48;
 const CHROME_ALPHA_DARK: f32 = 0.38;
 const SELECTED_ALPHA: f32 = 0.12;
@@ -718,6 +755,26 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn header_and_footer_regions_keep_sidebar_width_and_unblended_theme_fills() {
+        for alpha in [0.38, 0.48, 1.0] {
+            let sidebar = super::neutral(0x203040, alpha).into();
+            let header = super::neutral(0x405060, alpha).into();
+            for width in [200.0, 252.0, 420.0] {
+                assert_eq!(
+                    super::chrome_regions(Some(width), sidebar, header),
+                    vec![(Some(width), sidebar), (None, header)],
+                    "both bars need one sidebar-sized fill and one remaining header fill"
+                );
+            }
+            assert_eq!(
+                super::chrome_regions(None, sidebar, header),
+                vec![(None, header)],
+                "collapsed/absent sidebars leave a single header-colored bar"
+            );
+        }
+    }
+
     use super::{
         CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
     };

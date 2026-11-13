@@ -423,6 +423,10 @@ impl IceonApp {
             .find(|item| Some(&item.id) == selected_id.as_ref())
             .cloned();
         let current_namespace = namespace_label(&self.selected_namespaces);
+        let sidebar_open = matches!(self.history.current(), Route::Cluster { .. })
+            && !self.sidebar_collapsed
+            && !self.cluster_sidebar_collapsed;
+        let sidebar_width = self.navigation_widths.sidebar_width();
 
         // Do not replace the delegate on ordinary renders: doing so would reset the
         // filtered view and keyboard cursor while the user types. Exact metadata
@@ -444,8 +448,14 @@ impl IceonApp {
             self.cluster_select_items = items;
         }
 
-        TitleBar::new()
-            .bg(cx.theme().tokens.title_bar)
+        div()
+            .relative()
+            .w_full()
+            .flex_shrink_0()
+            .child(crate::shell_theme::chrome_background(sidebar_open.then_some(sidebar_width), cx))
+            .child(TitleBar::new()
+            .relative()
+            .bg(gpui_kit::transparent_black())
             .text_color(cx.theme().sidebar_foreground)
             .child(
                 h_flex()
@@ -471,7 +481,7 @@ impl IceonApp {
                             .items_center()
                             .gap_0()
                             .child(h_flex().items_center().gap_1p5().h_full().flex_shrink_0().pr_2()
-                                .w(px(header_controls_width(self.navigation_widths.sidebar_width(), matches!(self.history.current(), Route::Cluster { .. }) && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed, cfg!(target_os = "macos"))))
+                                 .w(px(header_controls_width(sidebar_width, sidebar_open, cfg!(target_os = "macos"))))
                                 .border_r_1().border_color(cx.theme().sidebar_border)
                             .when(matches!(self.history.current(), Route::Cluster { .. }), |navigation| navigation.child(
                                 Button::new("nav-toggle-sidebar")
@@ -660,7 +670,7 @@ impl IceonApp {
                             .gap_1p5()
                             .child(self.render_header_resource_controls(window, cx)),
                     ),
-            )
+            ))
     }
 }
 

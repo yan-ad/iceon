@@ -1,6 +1,9 @@
 //! Standard Dock behavior belongs only to the bottom console.
 //! Resources and inspector are ordinary workspace views, not dockable panels.
 
+#[path = "workspace_surface.rs"]
+mod workspace_surface;
+
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -98,7 +101,14 @@ pub(crate) fn create(
         kind: PanelKind::Console,
         focus_handle: cx.focus_handle(),
     });
-    let (dock_area, dock_skin) = DockSkin::dock_area("iceon-workspace", Some(2), window, cx);
+    let mut dock_skin = None;
+    let dock_area = cx.new(|cx| {
+        let skin = DockSkin::new(cx);
+        dock_skin = Some(skin.clone());
+        DockArea::new("iceon-workspace", Some(2), window, cx)
+            .with_renderer(Rc::new(workspace_surface::MaterialDock(skin)))
+    });
+    let dock_skin = dock_skin.expect("dock skin initialized with area");
     dock_skin.set_toggle_button_visible(false, cx);
     dock_area.update(cx, |area, cx| {
         area.set_center(

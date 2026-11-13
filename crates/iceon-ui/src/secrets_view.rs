@@ -380,7 +380,7 @@ impl IceonApp {
 
         h_flex()
             .size_full()
-            .bg(cx.theme().background)
+            .bg(cx.theme().tokens.sidebar)
             .text_color(cx.theme().foreground)
             .child(
                 v_flex()

@@ -2204,7 +2204,7 @@ impl IceonApp {
                 .min_w_0()
                 .items_center()
                 .justify_center()
-                .bg(cx.theme().background)
+                .bg(cx.theme().tokens.sidebar)
                 .p_6()
                 .child(
                     v_flex()
@@ -2387,7 +2387,9 @@ impl IceonApp {
         let deleting = self.bulk_delete.active.is_some();
         let active_kind = section_to_resource_kind(&section);
         v_flex()
-            .bg(cx.theme().background)
+            // Match the sidebar material once; descendants keep their own
+            // elevated/card surfaces rather than stacking translucent fills.
+            .bg(cx.theme().tokens.sidebar)
             .size_full()
             .min_w_0()
             .min_h_0()

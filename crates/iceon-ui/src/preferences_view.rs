@@ -921,7 +921,7 @@ impl Render for PreferencesWindow {
                     .flex_1()
                     .min_h_0()
                     .w_full()
-                    .bg(cx.theme().background)
+                    .bg(cx.theme().tokens.sidebar)
                     .overflow_hidden()
                     .child(
                         v_flex()
