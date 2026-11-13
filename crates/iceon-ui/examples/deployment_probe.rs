@@ -1,5 +1,7 @@
 //! Native offline audit. The supervisor also rejects platform exits which bypass
 //! Rust cleanup (macOS can exit successfully before a GPUI callback completes).
+//! Pass `--daemon-set` for the zero-count scheduling fixture, `--populated` for
+//! owned pod statuses, and `--compact --light` for the narrow light-theme audit.
 #[cfg(debug_assertions)]
 fn main() {
     use std::{
@@ -37,6 +39,8 @@ fn main() {
         .expect("relay probe output");
     if !output.status.success()
         || !String::from_utf8_lossy(&output.stdout).contains("PASS deployment_probe:")
+        || (std::env::args().any(|arg| arg == "--daemon-set")
+            && !String::from_utf8_lossy(&output.stdout).contains("real native DaemonSet inspector"))
     {
         eprintln!(
             "FAIL deployment_probe: native process did not complete measured checks (status {})",

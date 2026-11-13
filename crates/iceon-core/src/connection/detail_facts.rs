@@ -537,7 +537,15 @@ pub(super) fn project(kind: ResourceKind, v: &Value) -> Vec<DetailSection> {
                         ("Updated scheduled", "/status/updatedNumberScheduled"),
                         ("Misscheduled", "/status/numberMisscheduled"),
                         ("Update strategy", "/spec/updateStrategy/type"),
+                        ("Minimum ready seconds", "/spec/minReadySeconds"),
+                        ("Observed generation", "/status/observedGeneration"),
                     ],
+                );
+                f.reviewed(
+                    "DaemonSet rolling update",
+                    v,
+                    "/spec/updateStrategy/rollingUpdate",
+                    &Shape::Object(&[("maxUnavailable", &SCALAR), ("maxSurge", &SCALAR)]),
                 );
             } else {
                 f.fields(

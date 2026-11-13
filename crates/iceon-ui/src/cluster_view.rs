@@ -422,7 +422,7 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
                 width: 80.0,
             },
             ColumnDef {
-                header: "Scheduled",
+                header: "Current",
                 key: "scheduled",
                 width: 90.0,
             },
@@ -432,9 +432,19 @@ pub fn columns_for_kind(kind: ResourceKind) -> &'static [ColumnDef] {
                 width: 80.0,
             },
             ColumnDef {
+                header: "Updated",
+                key: "updated",
+                width: 80.0,
+            },
+            ColumnDef {
                 header: "Available",
                 key: "available",
                 width: 90.0,
+            },
+            ColumnDef {
+                header: "Node Selector",
+                key: "nodeSelector",
+                width: 280.0,
             },
         ],
         Jobs => &[
@@ -3735,6 +3745,24 @@ pub(crate) fn default_yaml_template(kind: ResourceKind, namespace: &str) -> Stri
 mod tests {
     use super::{columns_for_kind, default_yaml_template};
     use iceon_core::connection::ResourceKind;
+
+    #[test]
+    fn daemonset_columns_use_projected_counts_and_node_selector_in_reference_order() {
+        assert_eq!(
+            columns_for_kind(ResourceKind::DaemonSets)
+                .iter()
+                .map(|column| (column.header, column.key))
+                .collect::<Vec<_>>(),
+            [
+                ("Desired", "desired"),
+                ("Current", "scheduled"),
+                ("Ready", "ready"),
+                ("Updated", "updated"),
+                ("Available", "available"),
+                ("Node Selector", "nodeSelector")
+            ]
+        );
+    }
 
     #[test]
     fn deployment_columns_use_projected_replica_counts_in_reference_order() {

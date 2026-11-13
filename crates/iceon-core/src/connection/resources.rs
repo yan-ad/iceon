@@ -696,6 +696,9 @@ fn workload_status(kind: ResourceKind, v: &Value, c: &mut BTreeMap<String, Strin
     for (key, path) in fields {
         number(v, c, key, path);
     }
+    if kind == ResourceKind::DaemonSets {
+        daemon_set_node_selector(v, c);
+    }
     if kind == ResourceKind::Deployments
         && let Some(conditions) = v.pointer("/status/conditions").and_then(Value::as_array)
         && conditions.len() <= 32
@@ -736,6 +739,42 @@ fn workload_status(kind: ResourceKind, v: &Value, c: &mut BTreeMap<String, Strin
         .unwrap_or("Unknown")
         .into()
 }
+fn daemon_set_node_selector(v: &Value, c: &mut BTreeMap<String, String>) {
+    let Some(selector) = v
+        .pointer("/spec/template/spec/nodeSelector")
+        .and_then(Value::as_object)
+        .filter(|map| map.len() <= 12)
+    else {
+        return;
+    };
+    // Project only Kubernetes label pairs. Never stringify nested payloads or silently
+    // truncate a selector into a different selector; unknown/over-budget stays absent.
+    let label = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 63
+            && s.as_bytes()[0].is_ascii_alphanumeric()
+            && s.as_bytes()[s.len() - 1].is_ascii_alphanumeric()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    let mut pairs = Vec::new();
+    for (key, value) in selector {
+        let key_valid = match key.split_once('/') {
+            Some((prefix, name)) => valid_name(prefix) && label(name),
+            None => label(key),
+        };
+        let Some(value) = value.as_str().filter(|s| s.is_empty() || label(s)) else {
+            return;
+        };
+        if !key_valid {
+            return;
+        }
+        pairs.push(format!("{key}={value}"));
+    }
+    pairs.sort();
+    insert(c, "nodeSelector", pairs.join(","));
+}
+
 fn job_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
     for (k, p) in [
         ("completions", "/status/succeeded"),

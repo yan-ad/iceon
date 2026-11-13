@@ -45,6 +45,9 @@ mod pod_inspector;
 #[path = "deployment_inspector.rs"]
 mod deployment_inspector;
 
+#[path = "daemon_set_inspector.rs"]
+mod daemon_set_inspector;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteTarget {
     pub kind: ResourceKind,
@@ -406,7 +409,10 @@ impl IceonApp {
                         collection.items.iter().map(|item| item.reference.clone())
                     })
                     .collect::<Vec<_>>();
-                if reference.kind == ResourceKind::Deployments {
+                if matches!(
+                    reference.kind,
+                    ResourceKind::Deployments | ResourceKind::DaemonSets
+                ) {
                     if let Some(namespace) = &reference.namespace {
                         collection_references.push(ResourceReference {
                             kind: ResourceKind::Namespaces,
@@ -1316,13 +1322,16 @@ impl IceonApp {
             Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Deployments => {
                 format!("Deployment: {}", r.name)
             }
+            Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::DaemonSets => {
+                format!("DaemonSet: {}", r.name)
+            }
             Some(InspectorTarget::Resource(r)) => format!("{:?} · {}", r.kind, r.name),
             Some(InspectorTarget::Helm { name, .. }) => format!("Helm · {name}"),
             None => "Inspector".into(),
         };
         let is_resource = matches!(self.inspector.target, Some(InspectorTarget::Resource(_)));
         let is_pod = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Pods);
-        let is_deployment = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Deployments);
+        let is_workload = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if matches!(r.kind, ResourceKind::Deployments | ResourceKind::DaemonSets));
         let active_tab = self.inspector.tab;
 
         let event_count = self
@@ -1371,7 +1380,6 @@ impl IceonApp {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .bg(cx.theme().table_head)
-                    .when(is_deployment, |header| header.bg(cx.theme().primary))
                     .child(
                         div()
                             .flex_1()
@@ -1379,19 +1387,15 @@ impl IceonApp {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
-                            .child(selectable_text(title).text_color(if is_deployment {
-                                cx.theme().primary_foreground
-                            } else {
-                                cx.theme().foreground
-                            })),
+                            .child(selectable_text(title).text_color(cx.theme().foreground)),
                     )
                     .child(
                         h_flex()
                             .gap_1()
                             .items_center()
                             .when_some(self.inspector.detail.clone(), |el, detail| {
-                                if is_deployment {
-                                    el.child(self.render_deployment_actions(&detail, cx))
+                                if is_workload {
+                                    el.child(self.render_workload_actions(&detail, cx))
                                 } else {
                                     el.child(self.render_inspector_action_bar(&detail, window, cx))
                                 }
@@ -1403,11 +1407,7 @@ impl IceonApp {
                                         .ghost()
                                         .icon(
                                             gpui_kit::component::Icon::new(IconName::Undo2)
-                                                .text_color(if is_deployment {
-                                                    cx.theme().primary_foreground
-                                                } else {
-                                                    cx.theme().foreground
-                                                }),
+                                                .text_color(cx.theme().foreground),
                                         )
                                         .tooltip("Refresh Inspector")
                                         .accessibility_label("Refresh inspector")
@@ -1425,13 +1425,8 @@ impl IceonApp {
                                     .xsmall()
                                     .ghost()
                                     .icon(
-                                        gpui_kit::component::Icon::new(IconName::Close).text_color(
-                                            if is_deployment {
-                                                cx.theme().primary_foreground
-                                            } else {
-                                                cx.theme().foreground
-                                            },
-                                        ),
+                                        gpui_kit::component::Icon::new(IconName::Close)
+                                            .text_color(cx.theme().foreground),
                                     )
                                     .tooltip("Close inspector")
                                     .accessibility_label("Close inspector")
@@ -1443,7 +1438,7 @@ impl IceonApp {
                             ),
                     ),
             )
-            .when(is_resource && !is_pod && !is_deployment, |el| {
+            .when(is_resource && !is_pod && !is_workload, |el| {
                 el.child(
                     h_flex()
                         .w_full()
@@ -1531,8 +1526,8 @@ impl IceonApp {
                     } else if let Some(detail) = self.inspector.detail.clone() {
                         if is_pod {
                             self.render_pod_inspector(&detail, cx).into_any_element()
-                        } else if is_deployment {
-                            self.render_deployment_inspector(&detail, cx)
+                        } else if is_workload {
+                            self.render_workload_inspector(&detail, cx)
                         } else {
                             match active_tab {
                                 InspectorTab::Summary => self

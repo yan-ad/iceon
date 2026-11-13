@@ -1,9 +1,9 @@
-//! Deployment-specific, read-only detail presentation and guarded Scale dialog.
+//! Shared workload detail presentation and guarded Deployment Scale dialog.
 use super::*;
 use gpui_kit::component::input::{InputEvent, InputState};
 use iceon_core::connection::{detail_collections::CollectionItem, detail_metadata::MetadataEntry};
 
-fn fact<'a>(detail: &'a ResourceDetail, label: &str) -> Option<&'a str> {
+pub(super) fn fact<'a>(detail: &'a ResourceDetail, label: &str) -> Option<&'a str> {
     detail
         .sections
         .iter()
@@ -77,7 +77,7 @@ fn state_message(
         _ => None,
     }
 }
-fn field(label: impl Into<SharedString>, content: impl IntoElement, cx: &App) -> Div {
+pub(super) fn field(label: impl Into<SharedString>, content: impl IntoElement, cx: &App) -> Div {
     div()
         .w_full()
         .flex()
@@ -96,10 +96,10 @@ fn field(label: impl Into<SharedString>, content: impl IntoElement, cx: &App) ->
         )
         .child(div().flex_1().min_w_0().text_sm().child(content))
 }
-fn text_field(label: &str, text: impl Into<SharedString>, cx: &App) -> Div {
+pub(super) fn text_field(label: &str, text: impl Into<SharedString>, cx: &App) -> Div {
     field(label.to_owned(), selectable_text(text.into()), cx)
 }
-fn section(title: &str, cx: &App) -> Div {
+pub(super) fn section(title: &str, cx: &App) -> Div {
     div()
         .w_full()
         .px_3()
@@ -232,49 +232,70 @@ impl IceonApp {
         });
     }
 
-    pub(super) fn render_deployment_actions(
+    pub(super) fn render_workload_actions(
         &self,
         detail: &ResourceDetail,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let reference = detail.reference.clone();
         let version = detail.item.resource_version.clone().unwrap_or_default();
-        let identity = valid_scale(&reference, &version);
+        let deployment = reference.kind == ResourceKind::Deployments;
+        let kind_name = if deployment {
+            "Deployment"
+        } else {
+            "DaemonSet"
+        };
+        let identity = matches!(
+            reference.kind,
+            ResourceKind::Deployments | ResourceKind::DaemonSets
+        ) && !reference.name.trim().is_empty()
+            && reference
+                .namespace
+                .as_deref()
+                .is_some_and(|v| !v.trim().is_empty())
+            && reference
+                .uid
+                .as_deref()
+                .is_some_and(|v| !v.trim().is_empty())
+            && !version.trim().is_empty();
         let scale_reference = reference.clone();
         let scale_version = version.clone();
-        let ink = cx.theme().primary_foreground;
+        let ink = cx.theme().foreground;
         h_flex()
             .gap_1()
             .items_center()
-            .child(
-                Button::new("deployment-scale")
-                    .xsmall()
-                    .ghost()
-                    .icon(
-                        gpui_kit::component::Icon::new(gpui_kit_assets::IconName::ArrowUpDown)
-                            .text_color(ink),
-                    )
-                    .tooltip("Scale Deployment")
-                    .accessibility_label("Scale Deployment")
-                    .disabled(
-                        !identity || !self.can_workload_action(&reference, WorkloadAction::Scale),
-                    )
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        app.open_deployment_scale(
-                            scale_reference.clone(),
-                            scale_version.clone(),
-                            window,
-                            cx,
+            .when(deployment, |bar| {
+                bar.child(
+                    Button::new("deployment-scale")
+                        .xsmall()
+                        .ghost()
+                        .icon(
+                            gpui_kit::component::Icon::new(gpui_kit_assets::IconName::ArrowUpDown)
+                                .text_color(ink),
                         )
-                    })),
-            )
+                        .tooltip("Scale Deployment")
+                        .accessibility_label("Scale Deployment")
+                        .disabled(
+                            !identity
+                                || !self.can_workload_action(&reference, WorkloadAction::Scale),
+                        )
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.open_deployment_scale(
+                                scale_reference.clone(),
+                                scale_version.clone(),
+                                window,
+                                cx,
+                            )
+                        })),
+                )
+            })
             .child(
                 Button::new("deployment-restart")
                     .xsmall()
                     .ghost()
                     .icon(crate::action_icons::refresh().text_color(ink))
-                    .tooltip("Restart Deployment")
-                    .accessibility_label("Restart Deployment")
+                    .tooltip(format!("Restart {kind_name}"))
+                    .accessibility_label(format!("Restart {kind_name}"))
                     .disabled(
                         !identity || !self.can_workload_action(&reference, WorkloadAction::Restart),
                     )
@@ -290,8 +311,8 @@ impl IceonApp {
                         gpui_kit::component::Icon::new(gpui_kit_assets::IconName::Pencil)
                             .text_color(ink),
                     )
-                    .tooltip("Edit Deployment YAML")
-                    .accessibility_label("Edit Deployment YAML")
+                    .tooltip(format!("Edit {kind_name} YAML"))
+                    .accessibility_label(format!("Edit {kind_name} YAML"))
                     .disabled(
                         !identity
                             || !self.can_reference_action(&reference, PermissionAction::Patch),
@@ -305,8 +326,8 @@ impl IceonApp {
                     .xsmall()
                     .ghost()
                     .icon(crate::action_icons::delete().text_color(ink))
-                    .tooltip("Delete Deployment")
-                    .accessibility_label("Delete Deployment")
+                    .tooltip(format!("Delete {kind_name}"))
+                    .accessibility_label(format!("Delete {kind_name}"))
                     .disabled(
                         !identity
                             || !self.can_reference_action(&reference, PermissionAction::Delete),
@@ -318,11 +339,16 @@ impl IceonApp {
             .into_any_element()
     }
 
-    pub(super) fn render_deployment_inspector(
+    pub(super) fn render_workload_inspector(
         &self,
         detail: &ResourceDetail,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let kind_name = if detail.reference.kind == ResourceKind::DaemonSets {
+            "DaemonSets"
+        } else {
+            "Deployments"
+        };
         let timezone = &self.preferences_draft.app.timezone;
         let namespace = detail.reference.namespace.clone();
         let created = detail
@@ -339,7 +365,7 @@ impl IceonApp {
             .unwrap_or_else(|| "—".into());
         let mut body = v_flex().w_full().min_w_0()
             .child(div().w_full().p_3().mb_3().rounded(px(4.)).bg(cx.theme().secondary).text_sm()
-                .text_color(cx.theme().muted_foreground).child("Historical CPU, memory, network, and filesystem metrics are not configured for Deployments."))
+                .text_color(cx.theme().muted_foreground).child(format!("Historical CPU, memory, network, and filesystem metrics are not configured for {kind_name}.")))
             .child(text_field("Created", created, cx))
             .child(text_field("Name", detail.reference.name.clone(), cx))
             .child(field("Namespace", div().when_some(namespace, |el, namespace| {
@@ -431,6 +457,10 @@ impl IceonApp {
             }
         } else {
             body = body.child(text_field("Metadata", "Unavailable", cx));
+        }
+        if detail.reference.kind == ResourceKind::DaemonSets {
+            let body = self.render_daemon_set_details(detail, body, cx);
+            return self.render_workload_events(detail, body, cx);
         }
         body = body
             .child(text_field("Replicas", replicas(detail), cx))
@@ -588,12 +618,27 @@ impl IceonApp {
                 );
             }
         }
+        self.render_workload_events(detail, body, cx)
+    }
+
+    pub(super) fn render_workload_events(
+        &self,
+        detail: &ResourceDetail,
+        mut body: Div,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let timezone = &self.preferences_draft.app.timezone;
         body = body.child(section("Events", cx));
         let collection = self.inspector.collections.iter().find(|collection| {
             collection.collection == CollectionKind::Events
                 && collection.reference == detail.reference
         });
         if let Some(message) = state_message(CollectionKind::Events, collection) {
+            let message = if detail.reference.kind == ResourceKind::DaemonSets {
+                message.replace("Deployment", "DaemonSet")
+            } else {
+                message.to_owned()
+            };
             body = body.child(
                 div()
                     .p_3()

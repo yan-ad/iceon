@@ -1,7 +1,9 @@
-//! Fixture-only native Deployment inspector and real ResourceTable audit.
+//! Fixture-only native Deployment/DaemonSet inspector and real ResourceTable audit.
 //! No startup worker, TLS, user home, kubeconfig, connection, or shell is used.
 //! `--preview` holds the verified window for twelve seconds; `--light` and
 //! `--compact` exercise the shared theme path and narrow layout respectively.
+//! `--daemon-set` uses a zero-count DaemonSet with complete empty Pods/Events;
+//! `--populated` adds a truthful scheduled/pod-status snapshot (`--empty` wins).
 //! Inspector bounds/wheel routing and table scroll are measured independently:
 //! without test-support we do not claim inspector text/accessibility assertions
 //! or direct observation of its private scrollbar/header bounds.
@@ -224,6 +226,145 @@ fn fixture() -> (ResourceDetail, Vec<ResourceCollection>) {
     (detail, collections)
 }
 
+/// Scheduling fixture uses the same reviewed section/label contract as core facts.
+fn daemon_set_fixture(populated: bool) -> (ResourceDetail, Vec<ResourceCollection>) {
+    let (mut detail, _) = fixture();
+    detail.cluster_id = "offline-daemon-set-probe".into();
+    detail.reference = reference(ResourceKind::DaemonSets, "node-agent");
+    detail.item.name = detail.reference.name.clone();
+    detail.item.uid = detail.reference.uid.clone();
+    detail.item.status = if populated { "Progressing" } else { "Ready" }.into();
+    let count = if populated { "3" } else { "0" };
+    let ready = if populated { "2" } else { "0" };
+    detail.item.columns = columns(&[
+        ("desired", count),
+        ("scheduled", count),
+        ("ready", ready),
+        ("updated", ready),
+        ("available", ready),
+        ("nodeSelector", "kubernetes.io/os=linux"),
+    ]);
+    let section = |title: &str, values: &[(&str, &str)]| DetailSection {
+        title: title.into(),
+        facts: values
+            .iter()
+            .map(|(label, value)| DetailFact {
+                label: (*label).into(),
+                value: (*value).into(),
+            })
+            .collect(),
+    };
+    detail.sections = vec![
+        section("Selector", &[("Selector · app", "node-agent")]),
+        section(
+            "Node selector",
+            &[("Node selector · kubernetes.io/os", "linux")],
+        ),
+        section(
+            "Container images",
+            &[(
+                "Container images · 1 · image",
+                "registry.example.test/node-agent:v1",
+            )],
+        ),
+        section(
+            "Init container images",
+            &[(
+                "Init container images · 1 · image",
+                "registry.example.test/node-init:v1",
+            )],
+        ),
+        section(
+            "DaemonSet",
+            &[
+                ("Desired scheduled", count),
+                ("Current scheduled", count),
+                ("Ready", ready),
+                ("Updated scheduled", ready),
+                ("Available", ready),
+                ("Unavailable", if populated { "1" } else { "0" }),
+                ("Misscheduled", "0"),
+                ("Update strategy", "RollingUpdate"),
+                ("Minimum ready seconds", "0"),
+                ("Observed generation", "7"),
+            ],
+        ),
+        section(
+            "DaemonSet rolling update",
+            &[
+                ("DaemonSet rolling update · maxUnavailable", "1"),
+                ("DaemonSet rolling update · maxSurge", "0"),
+            ],
+        ),
+        section(
+            "Tolerations",
+            &[
+                (
+                    "Tolerations · 1 · key",
+                    "node-role.kubernetes.io/control-plane",
+                ),
+                ("Tolerations · 1 · operator", "Exists"),
+                ("Tolerations · 1 · effect", "NoSchedule"),
+            ],
+        ),
+        section(
+            "Affinity",
+            &[
+                (
+                    "Affinity · nodeAffinity · requiredDuringSchedulingIgnoredDuringExecution · nodeSelectorTerms · 1 · matchExpressions · 1 · key",
+                    "kubernetes.io/os",
+                ),
+                (
+                    "Affinity · nodeAffinity · requiredDuringSchedulingIgnoredDuringExecution · nodeSelectorTerms · 1 · matchExpressions · 1 · operator",
+                    "In",
+                ),
+                (
+                    "Affinity · nodeAffinity · requiredDuringSchedulingIgnoredDuringExecution · nodeSelectorTerms · 1 · matchExpressions · 1 · values · 1",
+                    "linux",
+                ),
+            ],
+        ),
+    ];
+    let metadata = detail.metadata.as_mut().unwrap();
+    metadata.labels[0].value = "node-agent".into();
+    metadata.labels[1].value = "infrastructure".into();
+    metadata
+        .annotations
+        .retain(|entry| !entry.key.starts_with("deployment."));
+    metadata.managed_fields[0].fields =
+        "[\"status.desiredNumberScheduled\",\"status.numberReady\"]".into();
+    let pods = if populated {
+        ["Running", "Running", "Pending"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, status)| CollectionItem {
+                reference: reference(ResourceKind::Pods, &format!("node-agent-{index}")),
+                created_at: Some(CREATED.into()),
+                status: status.into(),
+                columns: BTreeMap::new(),
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+    let collections = [
+        (CollectionKind::Pods, pods),
+        (CollectionKind::Events, vec![]),
+    ]
+    .into_iter()
+    .map(|(collection, items)| ResourceCollection {
+        cluster_id: detail.cluster_id.clone(),
+        session_id: detail.session_id.clone(),
+        read_id: detail.read_id,
+        reference: detail.reference.clone(),
+        collection,
+        state: CollectionState::Complete,
+        items,
+    })
+    .collect();
+    (detail, collections)
+}
+
 struct Probe {
     owner: Entity<IceonApp>,
     table: Entity<ResourceTable>,
@@ -241,6 +382,8 @@ impl Probe {
         cx: &mut Context<Self>,
         outcome: Outcome,
         directory: Rc<FixtureDirectory>,
+        daemon_set: bool,
+        populated: bool,
     ) -> Self {
         let catalog = Arc::new(CatalogEngine::new_with_home(directory.0.clone(), None));
         let connection = Arc::new(ConnectionEngine::new(catalog.clone()));
@@ -249,7 +392,11 @@ impl Probe {
         let secrets = secrets::Engine::new(directory.0.clone());
         let owner =
             cx.new(|cx| IceonApp::new(catalog, connection, preferences, secrets, window, cx));
-        let expected = fixture();
+        let expected = if daemon_set {
+            daemon_set_fixture(populated)
+        } else {
+            fixture()
+        };
         let initial_operation = owner.read(cx).operation_counter;
         owner.update(cx, |app, _| {
             // This flag selects a default console tab; no terminal is spawned.
@@ -270,12 +417,12 @@ impl Probe {
                     page: Some(Rc::new(ResourcePage {
                         cluster_id: expected.0.cluster_id.clone(),
                         session_id: expected.0.session_id.clone(),
-                        kind: ResourceKind::Deployments,
+                        kind: expected.0.reference.kind,
                         read_id: 1,
                         items: (0..ROWS)
                             .map(|i| {
                                 let mut item = expected.0.item.clone();
-                                item.name = format!("checkout-api-{i:02}");
+                                item.name = format!("{}-{i:02}", expected.0.item.name);
                                 item.uid = Some(format!("fixture-table-{i}"));
                                 item
                             })
@@ -288,7 +435,7 @@ impl Probe {
                     })),
                     scope: ResourceScrollScope {
                         cluster_id: expected.0.cluster_id.clone(),
-                        kind: ResourceKind::Deployments,
+                        kind: expected.0.reference.kind,
                         namespace: None,
                         query: String::new(),
                         status: None,
@@ -351,7 +498,7 @@ impl Probe {
         let stats = self.table.read(cx).stats();
         require(
             stats.row_renders > 0,
-            "real Deployment table rendered no rows",
+            "real workload table rendered no rows",
         )?;
         if scrolled {
             require(
@@ -426,6 +573,14 @@ pub fn run() {
     let preview = std::env::args().any(|arg| arg == "--preview");
     let light = std::env::args().any(|arg| arg == "--light");
     let compact = std::env::args().any(|arg| arg == "--compact");
+    let daemon_set = std::env::args().any(|arg| arg == "--daemon-set");
+    let populated = std::env::args().any(|arg| arg == "--populated")
+        && !std::env::args().any(|arg| arg == "--empty");
+    let kind_name = if daemon_set {
+        "DaemonSet"
+    } else {
+        "Deployment"
+    };
     let runtime = iceon_core::runtime::handle();
     let _guard = runtime.enter();
     let directory = Rc::new(FixtureDirectory::new());
@@ -440,9 +595,9 @@ pub fn run() {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(if compact { 560. } else { 960. }), px(850.)), cx))),
             ..Default::default()
         }, cx, { let result = result.clone(); move |window, cx| {
-            window.set_window_title("Iceon Deployment — offline native probe");
-            cx.new(|cx| Probe::new(window, cx, result, directory))
-        }}).expect("open isolated Deployment window");
+            window.set_window_title(&format!("Iceon {kind_name} — offline native probe"));
+            cx.new(|cx| Probe::new(window, cx, result, directory, daemon_set, populated))
+        }}).expect("open isolated workload window");
         eprintln!("deployment_probe: isolated native window constructed");
         let watchdog = result.clone();
         cx.spawn(async move |cx| {
@@ -472,7 +627,7 @@ pub fn run() {
                         wheel(window, cx, bounds);
                     } else {
                         let probe = view.read(cx);
-                        println!("PASS deployment_probe: real native Deployment inspector bounds={:?}; real table rows={} scroll={:?}; inspector wheel dispatched; fixture unchanged; disconnected actions disabled; no connection/shell", probe.inspector_bounds.get(), probe.table.read(cx).stats().row_renders, probe.table.read(cx).scroll_offsets().0);
+                        println!("PASS deployment_probe: real native {kind_name} inspector bounds={:?}; real table rows={} scroll={:?}; inspector wheel dispatched; fixture unchanged; disconnected actions disabled; no connection/shell", probe.inspector_bounds.get(), probe.table.read(cx).stats().row_renders, probe.table.read(cx).scroll_offsets().0);
                         *probe.outcome.borrow_mut() = Some(Ok(()));
                         if !preview { cx.quit(); }
                     }
@@ -497,6 +652,100 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn daemon_set_fixture_preserves_zero_counts_reviewed_images_and_scheduling() {
+        let (detail, collections) = daemon_set_fixture(false);
+        assert_eq!(detail.reference.kind, ResourceKind::DaemonSets);
+        for key in ["desired", "scheduled", "ready", "updated", "available"] {
+            assert_eq!(detail.item.columns[key], "0", "{key}");
+        }
+        assert_eq!(
+            detail.item.columns["nodeSelector"],
+            "kubernetes.io/os=linux"
+        );
+        assert!(!detail.item.columns.contains_key("replicas"));
+        let facts = |title: &str| {
+            detail
+                .sections
+                .iter()
+                .find(|s| s.title == title)
+                .unwrap()
+                .facts
+                .clone()
+        };
+        assert_eq!(
+            facts("Node selector")[0].label,
+            "Node selector · kubernetes.io/os"
+        );
+        assert_eq!(facts("Node selector")[0].value, "linux");
+        for title in ["Container images", "Init container images"] {
+            let images = facts(title);
+            assert_eq!(images[0].label, format!("{title} · 1 · image"));
+            assert!(images[0].value.starts_with("registry.example.test/"));
+        }
+        assert!(
+            facts("DaemonSet")
+                .iter()
+                .any(|f| f.label == "Update strategy" && f.value == "RollingUpdate")
+        );
+        assert_eq!(facts("Tolerations").len(), 3);
+        assert_eq!(facts("Affinity").len(), 3);
+        assert_eq!(detail.item.resource_version.as_deref(), Some("42"));
+        let metadata = detail.metadata.unwrap();
+        assert!(!metadata.labels.is_empty() && !metadata.managed_fields.is_empty());
+        assert!(
+            metadata
+                .annotations
+                .iter()
+                .all(|e| !e.key.contains("revision"))
+        );
+        assert!(
+            detail
+                .sections
+                .iter()
+                .all(|s| !s.title.contains("Deployment") && !s.title.contains("Replicas"))
+        );
+        assert_eq!(collections.len(), 2);
+        assert_eq!(collections[0].collection, CollectionKind::Pods);
+        assert_eq!(collections[1].collection, CollectionKind::Events);
+        for collection in collections {
+            assert_eq!(collection.reference, detail.reference);
+            assert_eq!(collection.state, CollectionState::Complete);
+            assert!(collection.items.is_empty());
+            assert_ne!(collection.collection, CollectionKind::ReplicaSets);
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn populated_daemon_set_counts_agree_with_owned_pod_statuses_without_revisions() {
+        let (detail, collections) = daemon_set_fixture(true);
+        let pods = &collections[0];
+        assert_eq!(detail.item.columns["desired"], pods.items.len().to_string());
+        assert_eq!(
+            detail.item.columns["scheduled"],
+            pods.items.len().to_string()
+        );
+        let running = pods.items.iter().filter(|p| p.status == "Running").count();
+        for key in ["ready", "updated", "available"] {
+            assert_eq!(detail.item.columns[key], running.to_string());
+        }
+        assert_eq!(
+            pods.items.iter().filter(|p| p.status == "Pending").count(),
+            1
+        );
+        assert!(
+            pods.items
+                .iter()
+                .all(|p| p.reference.kind == ResourceKind::Pods)
+        );
+        assert!(
+            collections
+                .iter()
+                .all(|c| c.collection != CollectionKind::ReplicaSets)
+        );
+        assert!(collections[1].items.is_empty());
+    }
+
     #[::core::prelude::v1::test]
     fn offline_fixture_has_rollout_metadata_revisions_and_events() {
         let (detail, collections) = fixture();

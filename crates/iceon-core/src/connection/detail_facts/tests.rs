@@ -612,3 +612,74 @@ fn sensitive_secret_env_header_and_webhook_ca_sentinels_never_escape() {
         }
     }
 }
+
+#[test]
+fn daemon_set_scheduling_and_rollout_facts_are_reviewed_and_redacted() {
+    let value = json!({"metadata":{"annotations":{"note":"PRIVATE"}},"spec":{
+        "minReadySeconds":0,"selector":{"matchLabels":{"app":"agent"},
+            "matchExpressions":[{"key":"zone","operator":"In","values":["west"]}]},
+        "updateStrategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":"10%","unreviewed":"PRIVATE"}},
+        "template":{"metadata":{"annotations":{"note":"PRIVATE"}},"spec":{
+            "containers":[{"name":"agent","image":"agent:v2","env":[{"value":"PRIVATE","valueFrom":{"secretKeyRef":{"name":"PRIVATE"}}}],"envFrom":[{"secretRef":{"name":"PRIVATE"}}],"command":["PRIVATE"],"args":["PRIVATE"]}],
+            "initContainers":[{"name":"init","image":"init:v1","env":[{"value":"PRIVATE"}]}],
+            "nodeSelector":{"disk":"ssd"},"tolerations":[{"key":"dedicated","operator":"Equal","value":"agents","effect":"NoSchedule","tolerationSeconds":0,"unreviewed":"PRIVATE"}],
+            "affinity":{"podAntiAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":[{"topologyKey":"kubernetes.io/hostname","labelSelector":{"matchLabels":{"app":"agent"}},"unreviewed":"PRIVATE"}]}}
+        }}},"status":{"desiredNumberScheduled":0,"currentNumberScheduled":0,"numberReady":0,"numberAvailable":0,"updatedNumberScheduled":0}});
+    let text = encoded(ResourceKind::DaemonSets, value.clone());
+    for expected in [
+        "agent:v2",
+        "init:v1",
+        "ssd",
+        "dedicated",
+        "agents",
+        "NoSchedule",
+        "kubernetes.io/hostname",
+        "RollingUpdate",
+        "10%",
+        "maxSurge",
+        "west",
+    ] {
+        assert!(text.contains(expected), "{expected}");
+    }
+    for forbidden in ["envFrom", "secretKeyRef", "command", "annotations"] {
+        assert!(!text.contains(forbidden), "{forbidden}");
+    }
+    let sections = project(ResourceKind::DaemonSets, &value);
+    assert_partial(&sections);
+    let status = sections.iter().find(|s| s.title == "DaemonSet").unwrap();
+    assert_eq!(
+        status
+            .facts
+            .iter()
+            .find(|f| f.label == "Ready")
+            .unwrap()
+            .value,
+        "0"
+    );
+    let missing = project(ResourceKind::DaemonSets, &json!({}));
+    assert_eq!(
+        missing[0]
+            .facts
+            .iter()
+            .find(|f| f.label == "Ready")
+            .unwrap()
+            .value,
+        "Not reported"
+    );
+}
+
+#[test]
+fn daemon_set_scheduling_facts_disclose_item_and_value_limits() {
+    for spec in [
+        json!({"nodeSelector":{"zone":{"unreviewed":"PRIVATE"}}}),
+        json!({"nodeSelector":{"zone":"x".repeat(MAX_VALUE + 1)}}),
+        json!({"containers":vec![json!({"name":"agent","image":"agent:v1"}); MAX_ITEMS + 1]}),
+        json!({"tolerations":vec![json!({"key":"dedicated"}); MAX_ITEMS + 1]}),
+        json!({"affinity":{"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":vec![json!({"matchExpressions":[]}); MAX_ITEMS + 1]}}}}),
+    ] {
+        let value = json!({"spec":{"template":{"spec":spec}}});
+        let sections = project(ResourceKind::DaemonSets, &value);
+        assert_partial(&sections);
+        encoded(ResourceKind::DaemonSets, value);
+    }
+}

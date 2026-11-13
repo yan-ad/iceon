@@ -1273,3 +1273,63 @@ fn workload_overview_projects_observed_readiness_and_terminal_job_conditions() {
         assert_eq!(row.columns["active"], "0");
     }
 }
+
+#[test]
+fn daemon_set_columns_preserve_zero_missing_and_safe_node_selectors() {
+    let base = json!({"metadata":{"name":"agent","namespace":"team"}});
+    let missing = resources::project(ResourceKind::DaemonSets, base.clone()).unwrap();
+    for key in [
+        "desired",
+        "scheduled",
+        "ready",
+        "updated",
+        "available",
+        "nodeSelector",
+    ] {
+        assert!(!missing.columns.contains_key(key), "{key}");
+    }
+    let mut value = base;
+    value["status"] = json!({"desiredNumberScheduled":0,"currentNumberScheduled":0,
+        "numberReady":0,"updatedNumberScheduled":0,"numberAvailable":0});
+    value["spec"] = json!({"template":{"spec":{"nodeSelector":{"kubernetes.io/os":"linux","empty":""},
+        "containers":[{"env":[{"value":"PRIVATE"}],"command":["PRIVATE"]}]}}});
+    let row = resources::project(ResourceKind::DaemonSets, value.clone()).unwrap();
+    for key in ["desired", "scheduled", "ready", "updated", "available"] {
+        assert_eq!(row.columns[key], "0");
+    }
+    assert_eq!(row.columns["nodeSelector"], "empty=,kubernetes.io/os=linux");
+    assert!(!serde_json::to_string(&row).unwrap().contains("PRIVATE"));
+    value["spec"]["template"]["spec"]["nodeSelector"] = json!({});
+    assert_eq!(
+        resources::project(ResourceKind::DaemonSets, value.clone())
+            .unwrap()
+            .columns["nodeSelector"],
+        ""
+    );
+    for selector in [
+        json!({"zone":{"value":"PRIVATE"}}),
+        json!({"zone":42}),
+        json!({"zone":"west\nPRIVATE"}),
+        json!({"zone":"\u{202e}PRIVATE"}),
+        json!({"bad key":"west"}),
+        json!({"zone":"x".repeat(64)}),
+        serde_json::Value::Object(
+            (0..13)
+                .map(|i| (format!("key{i}"), json!("west")))
+                .collect(),
+        ),
+        serde_json::Value::Object(
+            (0..6)
+                .map(|i| (format!("key{i}"), json!("x".repeat(63))))
+                .collect(),
+        ),
+    ] {
+        value["spec"]["template"]["spec"]["nodeSelector"] = selector;
+        assert!(
+            !resources::project(ResourceKind::DaemonSets, value.clone())
+                .unwrap()
+                .columns
+                .contains_key("nodeSelector")
+        );
+    }
+}
