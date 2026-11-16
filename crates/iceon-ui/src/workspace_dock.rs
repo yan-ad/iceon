@@ -60,7 +60,9 @@ fn resource_projection(app: &IceonApp, cx: &App) -> Option<ResourceProjection> {
         namespace: app.selected_namespace.clone(),
         namespaces: app.namespaces.clone(),
         query: app.resource_filter_input.read(cx).value().to_string(),
-        status: app.selected_status_filter.clone(),
+        status: iceon_core::connection::resource_status::encode_status_selection(
+            &app.selected_status_filter,
+        ),
         loading: app.cluster_loading,
         error: app.cluster_error.clone(),
         sync_id: app.active_pod_sync_id.clone(),
@@ -303,7 +305,9 @@ impl Render for WorkspacePanel {
                 PanelKind::Console => gpui_kit::component::v_flex()
                     .track_focus(&app.console_focus)
                     .key_context("IceonConsole")
-                    .child(app.render_console_tabs(window, cx))
+                    // Session navigation lives in the persistent shell footer.
+                    // A second strip here left an empty footer below the output
+                    // whenever the console was expanded.
                     .size_full()
                     .min_h_0()
                     .min_w_0()

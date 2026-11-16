@@ -1031,7 +1031,7 @@ impl IceonApp {
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
         if normalized != self.active_cluster_section {
-            self.selected_status_filter = None;
+            self.selected_status_filter.clear();
         }
         self.active_cluster_section = normalized.clone();
         self.cluster_error = None;
@@ -1580,7 +1580,7 @@ impl IceonApp {
                 == req.namespace
             && (req.kind != ResourceKind::CustomResourceDefinitions
                 || self.custom_definition_group == req.group)
-            && self.selected_status_filter == req.status
+            && self.encoded_status_filter(req.kind) == req.status
             && self.resource_filter_input.read(cx).value().trim()
                 == req.query.as_deref().unwrap_or_default()
             && matches!(self.history.current(), Route::Cluster { cluster_id, .. } if cluster_id == &req.cluster_id)
@@ -1621,7 +1621,7 @@ impl IceonApp {
             },
             continue_token: token,
             query: (!query.is_empty()).then_some(query),
-            status: self.selected_status_filter.clone(),
+            status: self.encoded_status_filter(kind),
             group: (kind == ResourceKind::CustomResourceDefinitions)
                 .then(|| self.custom_definition_group.clone())
                 .flatten(),
@@ -2526,11 +2526,28 @@ impl IceonApp {
         }
     }
 
+    pub(crate) fn encoded_status_filter(&self, kind: ResourceKind) -> Option<String> {
+        if iceon_core::connection::resource_status::filters(kind).is_empty() {
+            None
+        } else {
+            iceon_core::connection::resource_status::encode_status_selection(
+                &self.selected_status_filter,
+            )
+        }
+    }
+
     pub(crate) fn render_status_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let statuses = section_to_resource_kind(&self.active_cluster_section)
+        let kind = section_to_resource_kind(&self.active_cluster_section);
+        let statuses = kind
             .and_then(|kind| resource_view_by_kind(kind).map(|view| view.statuses))
             .unwrap_or(&[]);
         let owner = cx.entity().downgrade();
+        let section = self.active_cluster_section.clone();
+        let route = self.history.current().clone();
+        let session = self
+            .cluster_session
+            .as_ref()
+            .map(|s| (s.cluster_id.clone(), s.session_id.clone()));
         h_flex()
             .items_center()
             .gap_2()
@@ -2540,34 +2557,59 @@ impl IceonApp {
                         .xsmall()
                         .text_color(cx.theme().muted_foreground),
                 )
+                .children(
+                    self.selected_status_filter
+                        .iter()
+                        .map(|status| crate::badge::Badge::for_resource_status(status)),
+                )
                 .child(
                     Button::new("breadcrumb-status")
                         .ghost()
                         .xsmall()
                         .text_color(cx.theme().sidebar_foreground)
-                        .label(
-                            self.selected_status_filter
-                                .clone()
-                                .unwrap_or_else(|| "All Status".into()),
-                        )
+                        .label(if self.selected_status_filter.is_empty() {
+                            "All Status"
+                        } else {
+                            "Status"
+                        })
                         .accessibility_label("Filter resource status")
                         .dropdown_menu(move |mut menu, _, cx| {
                             let selected = owner
                                 .upgrade()
-                                .and_then(|app| app.read(cx).selected_status_filter.clone());
+                                .map(|app| app.read(cx).selected_status_filter.clone())
+                                .unwrap_or_default();
                             for status in std::iter::once(None)
                                 .chain(statuses.iter().map(|status| Some((*status).to_owned())))
                             {
                                 let owner = owner.clone();
+                                let section = section.clone();
+                                let route = route.clone();
+                                let session = session.clone();
+                                let checked =
+                                    status.as_ref().map_or(selected.is_empty(), |status| {
+                                        selected.contains(status)
+                                    });
                                 menu = menu.item(
                                     gpui_kit::component::menu::PopupMenuItem::new(
                                         status.clone().unwrap_or_else(|| "All Status".into()),
                                     )
-                                    .checked(selected == status)
+                                    .checked(checked)
                                     .on_click(
                                         move |_, window, cx| {
                                             let _ = owner.update(cx, |app, cx| {
-                                                app.selected_status_filter = status.clone();
+                                                // An old popup cannot change another cluster, lease or kind.
+                                                if app.active_cluster_section != section
+                                                    || app.history.current() != &route
+                                                    || app.cluster_session.as_ref().map(|s| {
+                                                        (s.cluster_id.clone(), s.session_id.clone())
+                                                    }) != session
+                                                {
+                                                    return;
+                                                }
+                                                toggle_status_selection(
+                                                    &mut app.selected_status_filter,
+                                                    status.as_deref(),
+                                                );
                                                 app.current_continue_token = None;
                                                 app.continue_token_history.clear();
                                                 app.reload_active_section(window, cx);
@@ -2860,7 +2902,7 @@ impl IceonApp {
                         crate::resource_table::matches_filter(
                             item,
                             &query,
-                            self.selected_status_filter.as_deref(),
+                            self.encoded_status_filter(kind).as_deref(),
                         )
                     })
                     .collect()
@@ -2892,7 +2934,7 @@ impl IceonApp {
                 .value()
                 .trim()
                 .to_owned();
-            let filtered = !query.is_empty() || self.selected_status_filter.is_some();
+            let filtered = !query.is_empty() || self.encoded_status_filter(kind).is_some();
             let pending = self.cluster_loading || self.resource_pagination.loading;
             let more = self
                 .resource_page
@@ -2961,7 +3003,7 @@ impl IceonApp {
                     .value()
                     .trim()
                     .to_lowercase(),
-                status: self.selected_status_filter.clone(),
+                status: self.encoded_status_filter(kind),
                 page_token: None,
             },
         };
@@ -3677,6 +3719,20 @@ impl IceonApp {
     }
 }
 
+fn toggle_status_selection(selected: &mut Vec<String>, status: Option<&str>) {
+    let Some(status) = status else {
+        selected.clear();
+        return;
+    };
+    if selected.iter().any(|label| label == status) {
+        selected.retain(|label| label != status);
+    } else {
+        selected.push(status.to_owned());
+    }
+    selected.sort();
+    selected.dedup();
+}
+
 pub(crate) fn row_status_tag(status: &str) -> Tag {
     let normalized = status.to_ascii_lowercase();
     let tag = match normalized.as_str() {
@@ -3718,6 +3774,26 @@ pub(crate) fn default_yaml_template(kind: ResourceKind, namespace: &str) -> Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_selection_toggles_independently_and_all_clears() {
+        let mut selected = Vec::new();
+        super::toggle_status_selection(&mut selected, Some("Running"));
+        super::toggle_status_selection(&mut selected, Some("Pending"));
+        assert_eq!(selected, vec!["Pending", "Running"]);
+        assert_eq!(
+            iceon_core::connection::resource_status::encode_status_selection(&selected).as_deref(),
+            Some("pending|running")
+        );
+        super::toggle_status_selection(&mut selected, Some("Running"));
+        assert_eq!(selected, vec!["Pending"]);
+        super::toggle_status_selection(&mut selected, Some("Pending"));
+        assert!(selected.is_empty());
+        super::toggle_status_selection(&mut selected, Some("Failed"));
+        super::toggle_status_selection(&mut selected, Some("Running"));
+        super::toggle_status_selection(&mut selected, None);
+        assert!(selected.is_empty());
+    }
+
     use super::{columns_for_kind, default_yaml_template};
     use iceon_core::connection::ResourceKind;
 

@@ -184,6 +184,26 @@ mod tests {
         assert!(!cancelled.accepts(&r, &page(&[], None)));
     }
     #[test]
+    fn multi_status_identity_is_canonical_but_different_sets_are_stale() {
+        use iceon_core::connection::resource_status::encode_status_selection;
+        let mut first = request();
+        first.status = encode_status_selection(&["Running".into(), "Pending".into()]);
+        let state = ResourcePagination {
+            request: Some(first.clone()),
+            ..Default::default()
+        };
+        let mut equivalent = first.clone();
+        equivalent.status =
+            encode_status_selection(&["Pending".into(), "Running".into(), "Pending".into()]);
+        assert!(state.accepts(&equivalent, &page(&[], None)));
+        for status in [None, Some("running".into()), Some("failed|running".into())] {
+            let mut changed = first.clone();
+            changed.status = status;
+            assert!(!state.accepts(&changed, &page(&[], None)));
+        }
+    }
+
+    #[test]
     fn failed_continuation_can_retry_without_becoming_a_token_cycle() {
         let mut state = ResourcePagination::default();
         state.begin_next("next").unwrap();

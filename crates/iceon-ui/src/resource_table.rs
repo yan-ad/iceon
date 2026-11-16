@@ -5,7 +5,7 @@ use crate::{
     cluster_view::{
         ColumnDef, RESOURCE_ACTIONS_WIDTH, RESOURCE_AGE_WIDTH, RESOURCE_NAME_WIDTH,
         RESOURCE_NAMESPACE_WIDTH, RESOURCE_STATUS_WIDTH, columns_for_kind, namespaced_kind,
-        row_status_tag, table_cell,
+        table_cell,
     },
     inspector_view::DeleteTarget,
     navigation::{Route, cell_value},
@@ -105,56 +105,6 @@ fn node_selector_tags(selector: &str) -> impl Iterator<Item = &str> {
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "—")
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum ConditionTone {
-    Success,
-    Info,
-    Danger,
-    Warning,
-    Neutral,
-}
-
-fn condition_tone(condition: &str) -> ConditionTone {
-    let normalized = condition.trim().to_ascii_lowercase();
-    let (name, status) = normalized
-        .split_once(['=', ':'])
-        .map_or((normalized.as_str(), "true"), |(name, status)| {
-            (name.trim(), status.trim())
-        });
-    // An explicitly false/unknown condition never inherits a positive type's tone.
-    match status {
-        "false" => return ConditionTone::Warning,
-        "true" => {}
-        _ => return ConditionTone::Neutral,
-    }
-    match name {
-        "available"
-        | "ready"
-        | "established"
-        | "namesaccepted"
-        | "abletoscale"
-        | "scalingactive"
-        | "disruptionallowed"
-        | "recommendationprovided" => ConditionTone::Success,
-        "progressing" | "fetchinghistory" => ConditionTone::Info,
-        "scalinglimited" | "lowconfidence" | "nopodsmatched" | "terminating" => {
-            ConditionTone::Warning
-        }
-        "replicafailure" | "failed" | "degraded" => ConditionTone::Danger,
-        _ => ConditionTone::Neutral,
-    }
-}
-
-fn deployment_condition_tag(condition: &str) -> Tag {
-    match condition_tone(condition) {
-        ConditionTone::Success => Tag::success(),
-        ConditionTone::Info => Tag::info(),
-        ConditionTone::Danger => Tag::danger(),
-        ConditionTone::Warning => Tag::warning(),
-        ConditionTone::Neutral => Tag::secondary(),
-    }
 }
 
 fn condition_text(item: &ResourceItem) -> &str {
@@ -1204,16 +1154,14 @@ impl ResourceTable {
                                         .map(str::trim)
                                         .filter(|v| !v.is_empty())
                                         .map(|condition| {
-                                            deployment_condition_tag(condition)
-                                                .small()
-                                                .child(condition.to_owned())
+                                            crate::badge::Badge::for_resource_status(condition)
                                         }),
                                 )
                                 .into_any_element()
                         } else {
                             table_cell(layout.width("status"), false, true, cx.theme().border)
                                 .items_center()
-                                .child(row_status_tag(status_text(item)))
+                                .child(crate::badge::Badge::for_resource_status(status_text(item)))
                                 .into_any_element()
                         },
                     )
@@ -2184,14 +2132,17 @@ mod tests {
             "RecommendationProvided",
             "DisruptionAllowed",
         ] {
-            assert_eq!(condition_tone(name), ConditionTone::Success);
             assert_eq!(
-                condition_tone(&format!("{name}: False")),
-                ConditionTone::Warning
+                crate::badge::Badge::for_resource_status(name).variant,
+                crate::badge::BadgeVariant::Success
             );
             assert_eq!(
-                condition_tone(&format!("{name}: Unknown")),
-                ConditionTone::Neutral
+                crate::badge::Badge::for_resource_status(&format!("{name}: False")).variant,
+                crate::badge::BadgeVariant::Warning
+            );
+            assert_eq!(
+                crate::badge::Badge::for_resource_status(&format!("{name}: Unknown")).variant,
+                crate::badge::BadgeVariant::Secondary
             );
         }
         for unknown in [
@@ -2200,11 +2151,23 @@ mod tests {
             "Unknown",
             "SomeFutureCondition",
         ] {
-            assert_eq!(condition_tone(unknown), ConditionTone::Neutral);
+            assert_eq!(
+                crate::badge::Badge::for_resource_status(unknown).variant,
+                crate::badge::BadgeVariant::Secondary
+            );
         }
-        assert_eq!(condition_tone("ReplicaFailure"), ConditionTone::Danger);
-        assert_eq!(condition_tone("LowConfidence"), ConditionTone::Warning);
-        assert_eq!(condition_tone("Progressing"), ConditionTone::Info);
+        assert_eq!(
+            crate::badge::Badge::for_resource_status("ReplicaFailure").variant,
+            crate::badge::BadgeVariant::Danger
+        );
+        assert_eq!(
+            crate::badge::Badge::for_resource_status("LowConfidence").variant,
+            crate::badge::BadgeVariant::Warning
+        );
+        assert_eq!(
+            crate::badge::Badge::for_resource_status("Progressing").variant,
+            crate::badge::BadgeVariant::Warning
+        );
     }
 
     #[::core::prelude::v1::test]
@@ -2668,6 +2631,26 @@ mod tests {
             scope: scope("missing", None),
         });
         assert!(cache.indices.is_empty());
+    }
+
+    #[::core::prelude::v1::test]
+    fn multi_status_filters_cached_rows_with_or_semantics() {
+        let mut cache = TableCache::default();
+        cache.update(TableData {
+            page: Some(page()),
+            scope: scope("", Some("Pending|Running")),
+        });
+        assert_eq!(cache.indices.as_slice(), &[0, 1]);
+        cache.update(TableData {
+            page: Some(page()),
+            scope: scope("", Some("Run|Failed")),
+        });
+        assert!(cache.indices.is_empty());
+        cache.update(TableData {
+            page: Some(page()),
+            scope: scope("web", Some("Pending|Running")),
+        });
+        assert_eq!(cache.indices.as_slice(), &[0]);
     }
 
     #[::core::prelude::v1::test]

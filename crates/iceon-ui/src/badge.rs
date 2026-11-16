@@ -15,7 +15,7 @@ pub enum BadgeVariant {
 
 #[derive(IntoElement)]
 pub struct Badge {
-    variant: BadgeVariant,
+    pub(crate) variant: BadgeVariant,
     small: bool,
     show_dot: bool,
     label: SharedString,

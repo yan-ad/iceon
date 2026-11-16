@@ -145,7 +145,7 @@ pub struct IceonApp {
     /// Empty means all namespaces; multiple entries are a client-side list scope.
     pub(crate) selected_namespaces: Vec<String>,
     pub(crate) selected_namespace: Option<String>,
-    pub(crate) selected_status_filter: Option<String>,
+    pub(crate) selected_status_filter: Vec<String>,
     pub(crate) cluster_loading: bool,
     pub(crate) cluster_error: Option<String>,
     pub(crate) operation_counter: u64,
@@ -410,7 +410,7 @@ impl IceonApp {
             namespaces: vec![],
             selected_namespaces: vec![],
             selected_namespace: None,
-            selected_status_filter: None,
+            selected_status_filter: Vec::new(),
             cluster_loading: false,
             cluster_error: None,
             operation_counter: 1,

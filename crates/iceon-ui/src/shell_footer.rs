@@ -9,6 +9,23 @@ use gpui_kit::{
     prelude::*,
     *,
 };
+
+// One physical row: the top separator plus the session strip. Keep this
+// relationship explicit so the strip cannot leave an empty band underneath it.
+pub(crate) const FOOTER_HEIGHT: f32 = 34.;
+const FOOTER_BORDER: f32 = 1.;
+
+pub(crate) fn footer_frame(border: Hsla) -> Div {
+    h_flex()
+        .relative()
+        .w_full()
+        .h(px(FOOTER_HEIGHT))
+        .flex_shrink_0()
+        .items_center()
+        .justify_between()
+        .border_t(px(FOOTER_BORDER))
+        .border_color(border)
+}
 #[derive(Default)]
 pub(crate) enum UpdateStatus {
     #[default]
@@ -41,20 +58,17 @@ impl IceonApp {
             crate::navigation::Route::Cluster { .. }
         ) && !self.sidebar_collapsed
             && !self.cluster_sidebar_collapsed;
-        h_flex()
-            .relative()
-            .w_full()
-            .h(px(34.))
-            .flex_shrink_0()
-            .items_center()
-            .justify_between()
+        footer_frame(cx.theme().sidebar_border)
             .text_color(cx.theme().sidebar_foreground)
-            .border_t_1()
-            .border_color(cx.theme().sidebar_border)
-            .child(crate::shell_theme::chrome_background(
-                sidebar_open.then_some(self.navigation_widths.sidebar_width()),
-                cx,
-            ))
+            .child(
+                crate::shell_theme::chrome_background(
+                    sidebar_open.then_some(self.navigation_widths.sidebar_width()),
+                    cx,
+                )
+                // The absolute material layer must not paint over the top
+                // separator; children paint after the parent's border.
+                .top(px(FOOTER_BORDER)),
+            )
             .child(
                 h_flex()
                     .relative()
@@ -130,15 +144,26 @@ impl IceonApp {
                     .h_full()
                     .track_focus(&self.console_focus)
                     .key_context("IceonConsole")
-                    .when(!self.pod_dock_open, |area| {
-                        area.child(self.render_console_tabs(window, cx))
-                    }),
+                    .child(self.render_console_tabs(window, cx)),
             )
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::UpdateStatus;
+    use super::{FOOTER_BORDER, FOOTER_HEIGHT, UpdateStatus, footer_frame};
+    use gpui_kit::{Styled as _, px, rgb};
+
+    #[test]
+    fn footer_reserves_exactly_one_session_row_and_separator() {
+        let mut frame = footer_frame(rgb(0x112233).into());
+        assert_eq!(frame.style().size.height, Some(px(FOOTER_HEIGHT).into()));
+        assert_eq!(
+            frame.style().border_widths.top,
+            Some(px(FOOTER_BORDER).into())
+        );
+        assert_eq!(FOOTER_HEIGHT - FOOTER_BORDER, 33.);
+        assert_eq!(frame.style().border_widths.bottom, None);
+    }
     #[test]
     fn update_status_never_claims_current_before_success() {
         assert_eq!(UpdateStatus::default().label(false), "Check for updates");

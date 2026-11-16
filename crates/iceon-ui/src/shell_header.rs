@@ -162,6 +162,7 @@ pub(super) struct ClusterChoice {
     id: String,
     name: String,
     context_name: String,
+    source_label: String,
     color: String,
 }
 
@@ -198,10 +199,11 @@ impl SelectItem for ClusterChoice {
         let query = query.trim().to_lowercase();
         self.name.to_lowercase().contains(&query)
             || self.context_name.to_lowercase().contains(&query)
+            || self.source_label.to_lowercase().contains(&query)
     }
 
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        // Context text disambiguates clusters that share a display name.
+        // Keep the full catalog source path: contexts and file basenames can repeat.
         gpui_kit::component::v_flex()
             .min_w_0()
             .gap_0p5()
@@ -213,10 +215,27 @@ impl SelectItem for ClusterChoice {
                     .truncate()
                     .child(self.context_name.clone()),
             )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(self.source_label.clone()),
+            )
     }
 }
 
 pub(super) type ClusterSelectState = SelectState<SearchableVec<ClusterChoice>>;
+
+/// Catalog labels already contain safe source metadata; never inspect kubeconfig here.
+fn cluster_source_label(labels: &[String]) -> String {
+    labels
+        .iter()
+        .filter_map(|label| label.strip_prefix("file="))
+        .find(|path| !path.trim().is_empty())
+        .map(|path| format!("Source: {path}"))
+        .unwrap_or_else(|| "Source unavailable".into())
+}
 
 fn cluster_choices(snapshot: &CatalogSnapshot) -> Vec<ClusterChoice> {
     snapshot
@@ -226,6 +245,7 @@ fn cluster_choices(snapshot: &CatalogSnapshot) -> Vec<ClusterChoice> {
             id: cluster.id.clone(),
             name: cluster.name.clone(),
             context_name: cluster.context_name.clone(),
+            source_label: cluster_source_label(&cluster.labels),
             color: cluster.color.clone(),
         })
         .collect()
@@ -253,14 +273,23 @@ fn breadcrumb_separator(cx: &App) -> impl IntoElement {
         .text_color(cx.theme().muted_foreground)
 }
 
+fn cluster_connection_icon(status: &str) -> Icon {
+    match status {
+        "connected" => Icon::new(gpui_kit_assets::IconName::Link),
+        "connecting" => Icon::new(IconName::Loader),
+        "error" => Icon::new(IconName::TriangleAlert),
+        _ => Icon::new(IconName::Close),
+    }
+}
+
 fn connection_indicator(status: &str, cx: &App) -> Icon {
-    let (icon, color) = match status {
-        "connected" => (IconName::Check, cx.theme().success),
-        "connecting" => (IconName::Loader, cx.theme().warning),
-        "error" => (IconName::TriangleAlert, cx.theme().danger),
-        _ => (IconName::Close, cx.theme().muted_foreground),
+    let color = match status {
+        "connected" => cx.theme().success,
+        "connecting" => cx.theme().warning,
+        "error" => cx.theme().danger,
+        _ => cx.theme().muted_foreground,
     };
-    Icon::new(icon).xsmall().text_color(color)
+    cluster_connection_icon(status).xsmall().text_color(color)
 }
 
 fn breadcrumb_choices(section: &str, group_level: bool) -> Vec<(String, String)> {
@@ -690,6 +719,7 @@ impl IceonApp {
                                                                         let selected = matches!(app.history.current(), Route::Cluster { cluster_id, .. } if *cluster_id == id);
                                                                         let owner = owner.clone();
                                                                         let name = item.name.clone();
+                                                                        let source_label = cluster_source_label(&item.labels);
                                                                         let (status, version) = app.header_cluster_metadata(&item.id, item.status);
                                                                         menu = menu.item(PopupMenuItem::element(move |_, cx| {
                                                                             v_flex().w(px(360.0)).min_w_0().max_w(px(392.0)).gap_1()
@@ -699,6 +729,7 @@ impl IceonApp {
                                                                                 .child(h_flex().items_center().gap_2().text_xs().text_color(cx.theme().muted_foreground)
                                                                                     .child(connection_indicator(&status, cx))
                                                                                     .child(div().truncate().child(format!("Version {version}"))))
+                                                                                .child(div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(source_label.clone()))
                                                                         }).checked(selected).on_click(move |_, window, cx| {
                                                                             let _ = owner.update(cx, |app, cx| app.navigate(Route::Cluster { cluster_id: id.clone(), section: "overview".into() }, true, window, cx));
                                                                         }));
@@ -786,6 +817,48 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     use super::cluster_choices;
+    #[test]
+    fn cluster_sources_use_only_nonempty_file_labels() {
+        for labels in [
+            vec![],
+            vec!["token=fixture-not-a-source".into()],
+            vec!["file=   ".into()],
+            vec!["prefix-file=/ignored".into()],
+        ] {
+            assert_eq!(super::cluster_source_label(&labels), "Source unavailable");
+        }
+        assert_eq!(
+            super::cluster_source_label(&["other=ignored".into(), "file=~/.kube/config".into()]),
+            "Source: ~/.kube/config"
+        );
+        assert_eq!(
+            super::cluster_source_label(&[
+                "file=".into(),
+                "file=/fixtures/team config.yaml".into()
+            ]),
+            "Source: /fixtures/team config.yaml"
+        );
+    }
+
+    #[test]
+    fn duplicate_contexts_and_file_names_keep_full_source_paths_and_ids() {
+        let mut catalog = snapshot();
+        for (cluster, team) in catalog.clusters.iter_mut().zip(["east", "west"]) {
+            cluster.context_name = "same-context".into();
+            cluster.labels = vec![format!("file=/fixtures/{team}/config")];
+        }
+        let choices = cluster_choices(&catalog);
+        assert_eq!(choices[0].title(), choices[1].title());
+        assert_eq!(choices[0].context_name, choices[1].context_name);
+        assert_ne!(choices[0].value(), choices[1].value());
+        assert_eq!(choices[0].source_label, "Source: /fixtures/east/config");
+        assert_eq!(choices[1].source_label, "Source: /fixtures/west/config");
+        assert!(choices[0].matches("/FIXTURES/EAST/config"));
+        assert!(!choices[1].matches("/fixtures/east/config"));
+        catalog.clusters[0].labels = vec!["file=/fixtures/replacement/config".into()];
+        assert_ne!(choices, cluster_choices(&catalog));
+    }
+
     #[test]
     fn header_split_tracks_sidebar_width_and_native_inset() {
         assert_eq!(super::header_controls_width(252., true, true) + 80., 252.);

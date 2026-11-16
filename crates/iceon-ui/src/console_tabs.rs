@@ -41,7 +41,7 @@ fn boxed_style(
     background: Hsla,
     foreground: Hsla,
     border: Hsla,
-    selected: bool,
+    _selected: bool,
 ) -> StyleRefinement {
     StyleRefinement::default()
         .h(px(33.))
@@ -49,7 +49,8 @@ fn boxed_style(
         .bg(background)
         .text_color(foreground)
         .border_r_1()
-        .border_b(px(if selected { 0.0 } else { 1.0 }))
+        // Footer owns the single top edge; no baseline below session tabs.
+        .border_b(px(0.))
         .border_color(border)
 }
 #[derive(Clone, Copy, Debug)]
@@ -409,7 +410,7 @@ mod tests {
                 bg.into()
             );
             assert_eq!(active.border_widths.bottom, Some(px(0.).into()));
-            assert_eq!(inactive.border_widths.bottom, Some(px(1.).into()));
+            assert_eq!(inactive.border_widths.bottom, Some(px(0.).into()));
             assert_eq!(
                 active.corner_radii,
                 gpui_kit::StyleRefinement::default()

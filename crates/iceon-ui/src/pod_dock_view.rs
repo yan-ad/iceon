@@ -919,7 +919,7 @@ impl IceonApp {
         cx.notify();
     }
 
-    /// Persistent session strip, rendered by the workspace outside the dock body.
+    /// Persistent session strip, rendered once in the shell footer.
     /// Rendering this strip never starts a shell or constructs pod output caches.
     pub(crate) fn render_console_tabs(
         &mut self,
@@ -1120,11 +1120,7 @@ impl IceonApp {
             .min_w_0()
             .flex_shrink_0()
             .items_center()
-            .bg::<Background>(if self.pod_dock_open {
-                cx.theme().tokens.title_bar.into()
-            } else {
-                gpui_kit::transparent_black().into()
-            })
+            // The footer owns the material fill; do not stack translucent layers.
             .text_color(cx.theme().sidebar_foreground)
             .child(
                 gpui_kit::base::Tabs::new("console-boxed-tabs")
@@ -1136,14 +1132,7 @@ impl IceonApp {
                     .overflow_y_hidden()
                     .track_scroll(&scroll)
                     .children(tabs)
-                    .child(
-                        div()
-                            .h_full()
-                            .flex_1()
-                            .min_w(px(16.))
-                            .border_b_1()
-                            .border_color(cx.theme().border),
-                    ),
+                    .child(div().h_full().flex_1().min_w(px(16.))),
             )
             .child(
                 div()
@@ -1151,15 +1140,11 @@ impl IceonApp {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .child(new_menu),
             )
             .child(
                 h_flex()
                     .h_full()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
                     .flex_shrink_0()
                     .gap_1()
                     .items_center()

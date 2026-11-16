@@ -986,7 +986,7 @@ async fn filtered_scan_finds_second_page_and_combines_status_group() {
     r.query = Some("WIDGET".into());
     r.group = Some("example.io".into());
     let baseline = resources::project(ResourceKind::CustomResourceDefinitions, json!({"metadata":{"name":"x"},"spec":{"group":"example.io"},"status":{"conditions":[{"type":"Established","status":"True"}]}})).unwrap();
-    r.status = Some(baseline.status);
+    r.status = Some(format!("NeverObserved|{}", baseline.status));
     let page = transport::resources(&client, &r, &CancellationToken::new())
         .await
         .unwrap();

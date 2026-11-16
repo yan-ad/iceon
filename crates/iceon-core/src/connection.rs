@@ -288,6 +288,8 @@ pub struct ResourceRequest {
     #[serde(default)]
     pub query: Option<String>,
     #[serde(default)]
+    /// Exact status labels OR-ed with `|`; legacy scalar labels remain supported.
+    /// UI callers use `resource_status::encode_status_selection` for stable identity.
     pub status: Option<String>,
     #[serde(default)]
     pub group: Option<String>,

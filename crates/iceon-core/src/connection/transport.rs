@@ -367,6 +367,13 @@ pub(super) fn validate_resource_request(request: &ResourceRequest) -> Result<()>
             return Err(ConnectionError::InvalidInput);
         }
     }
+    if request
+        .status
+        .as_deref()
+        .is_some_and(|status| super::resource_status::decode_status_selection(status).is_none())
+    {
+        return Err(ConnectionError::InvalidInput);
+    }
     if request.group.is_some() && request.kind != ResourceKind::CustomResourceDefinitions {
         return Err(ConnectionError::InvalidInput);
     }
@@ -648,6 +655,59 @@ mod status_filter_tests {
             );
             assert!(has_filters(&req));
         }
+    }
+
+    #[test]
+    fn multi_status_or_is_exact_and_composes_with_query() {
+        let mut req = request(ResourceKind::Pods, Some("Running|Pending"));
+        assert!(validate_resource_request(&req).is_ok());
+        assert!(has_filters(&req));
+        for status in ["Running", "Pending", "running"] {
+            assert!(matches_filter(&req, &item(status, None)));
+        }
+        for status in [
+            "",
+            "Unknown",
+            "Not reported",
+            "Not running",
+            "Run",
+            "Failed",
+        ] {
+            assert!(!matches_filter(&req, &item(status, None)), "{status}");
+        }
+        req.query = Some("missing".into());
+        assert!(!matches_filter(&req, &item("Running", None)));
+        let conditions = item(
+            "Unavailable",
+            Some("Available: False, Progressing: Unknown"),
+        );
+        req = request(ResourceKind::Deployments, Some("Available|Progressing"));
+        assert!(!matches_filter(&req, &conditions));
+        req.status = Some("Available|Progressing: Unknown".into());
+        assert!(matches_filter(&req, &conditions));
+        req = request(ResourceKind::Pods, Some("Unknown|Failed"));
+        assert!(!matches_filter(&req, &item("Not reported", None)));
+        assert!(matches_filter(&req, &item("Unknown", None)));
+        req = request(ResourceKind::Services, Some("Running|Pending"));
+        assert!(!has_filters(&req));
+        assert!(matches_filter(&req, &item("", None)));
+    }
+
+    #[test]
+    fn invalid_multi_status_fails_closed() {
+        for status in [
+            "Running|",
+            "|Pending",
+            "Running||Pending",
+            " Running",
+            "Running\n",
+        ] {
+            let req = request(ResourceKind::Pods, Some(status));
+            assert!(validate_resource_request(&req).is_err(), "{status:?}");
+            assert!(!matches_filter(&req, &item("Running", None)));
+        }
+        let oversized = "a".repeat(257);
+        assert!(validate_resource_request(&request(ResourceKind::Pods, Some(&oversized))).is_err());
     }
 
     #[test]

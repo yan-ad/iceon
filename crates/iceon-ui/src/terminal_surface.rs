@@ -826,14 +826,17 @@ impl Render for TerminalSurface {
             )
             .child(
                 canvas(
-                    move |bounds, window, _| {
+                    move |bounds, window, cx| {
                         // Canvas is already inset: do not subtract padding twice.
                         if bounds.size.width <= px(0.) || bounds.size.height <= px(0.) {
                             return;
                         }
                         let measured = grid_dimensions(bounds, cell_width, line_height);
                         if bounds != previous_bounds || measured != (cols, rows) {
-                            window.on_next_frame(move |_, cx| {
+                            // Publish after prepaint releases the entity borrow, not
+                            // after another display-link frame: occluded native windows
+                            // may not receive one even though layout already changed.
+                            window.defer(cx, move |_, cx| {
                                 let _ = weak.update(cx, |this, cx| {
                                     this.bounds = bounds;
                                     // Preferences may have changed since layout.

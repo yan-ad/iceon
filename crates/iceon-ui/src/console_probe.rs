@@ -157,6 +157,8 @@ impl Render for ProbePanel {
 }
 
 struct ConsoleProbe {
+    body_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    footer_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     shortcut_hits: usize,
     shortcut_focus: FocusHandle,
     area: Entity<DockArea>,
@@ -233,6 +235,8 @@ impl ConsoleProbe {
             area.set_dock_size(DockPlacement::Bottom, px(180.), window, cx);
         });
         Self {
+            body_bounds: Rc::new(Cell::new(None)),
+            footer_bounds: Rc::new(Cell::new(None)),
             shortcut_hits: 0,
             shortcut_focus: cx.focus_handle(),
             area,
@@ -258,6 +262,17 @@ impl ConsoleProbe {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let body = self.body_bounds.get().ok_or("body did not lay out")?;
+        let footer = self.footer_bounds.get().ok_or("footer did not lay out")?;
+        // Canvas measures the footer's content box, inside its one-pixel top border.
+        if (body.bottom() + px(1.) - footer.top()).abs() > px(0.5)
+            || footer.size.height + px(1.) != px(crate::shell_footer::FOOTER_HEIGHT)
+            || (footer.bottom() - window.viewport_size().height).abs() > px(0.5)
+        {
+            return Err(format!(
+                "console/footer geometry leaves a gap: {body:?} {footer:?}"
+            ));
+        }
         let grid = self.terminal.read(cx).size();
         let contents = self.terminal.read(cx).contents();
         let require = |ok: bool, message: &str| {
@@ -270,6 +285,9 @@ impl ConsoleProbe {
         require(grid.0 > 0 && grid.1 > 0, "terminal has an empty grid")?;
         match stage {
             0 => {
+                println!(
+                    "PASS console_footer_geometry: shared footer content reaches the native viewport bottom with only its one-pixel top separator; no empty footer band"
+                );
                 require(
                     cx.text_system()
                         .all_font_names()
@@ -497,6 +515,11 @@ impl Render for ConsoleProbe {
                             (0..=10).collect()
                         };
                         for stage in stages {
+                            // macOS can suspend display-link frames for an occluded
+                            // probe window. Commit real native layout before checking
+                            // the previous stage's mutation (also used by the offline
+                            // render-performance probe); do not force-refresh caches.
+                            cx.update(|window, cx| window.draw(cx).clear(cx)).ok();
                             cx.background_executor()
                                 .timer(Duration::from_millis(350))
                                 .await;
@@ -550,6 +573,8 @@ impl Render for ConsoleProbe {
                 });
             });
         }
+        let body = self.body_bounds.clone();
+        let footer = self.footer_bounds.clone();
         div()
             .key_context("Iceon")
             .track_focus(&self.shortcut_focus)
@@ -564,7 +589,29 @@ impl Render for ConsoleProbe {
             .min_w_0()
             .min_h_0()
             .child(div().h(px(30.)).flex_shrink_0().px_3().child(TITLE))
-            .child(div().flex_1().min_h_0().min_w_0().child(self.area.clone()))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(self.area.clone())
+                    .child(
+                        canvas(move |bounds, _, _| body.set(Some(bounds)), |_, _, _, _| {})
+                            .absolute()
+                            .inset_0(),
+                    ),
+            )
+            .child(
+                crate::shell_footer::footer_frame(rgb(0x454545).into()).child(
+                    canvas(
+                        move |bounds, _, _| footer.set(Some(bounds)),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                ),
+            )
     }
 }
 
