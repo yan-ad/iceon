@@ -3696,6 +3696,8 @@ impl IceonApp {
 
     fn render_helm_inspector(&self, helm: &HelmDetail, cx: &mut Context<Self>) -> impl IntoElement {
         let is_chart = helm.view == HelmView::Charts;
+        let release_name = helm.name.clone();
+        let release_namespace = helm.namespace.clone();
         let chart_name = helm.name.clone();
         let chart_ver = helm.version.clone().unwrap_or_else(|| "latest".into());
 
@@ -3739,6 +3741,39 @@ impl IceonApp {
                                     this.helm_install_version = Some(chart_ver.clone());
                                     this.helm_install_message = None;
                                     cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .when_some(release_namespace.filter(|_| !is_chart), |el, namespace| {
+                el.child(
+                    h_flex()
+                        .w_full()
+                        .p_3()
+                        .justify_between()
+                        .items_center()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().secondary)
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(selectable_text(format!("{release_name} · {namespace}"))),
+                        )
+                        .child(
+                            Button::new("insp-helm-upgrade-release-btn")
+                                .xsmall()
+                                .primary()
+                                .label("Upgrade / Edit Values")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_helm_upgrade(
+                                        release_name.clone(),
+                                        namespace.clone(),
+                                        window,
+                                        cx,
+                                    );
                                 })),
                         ),
                 )

@@ -3,6 +3,42 @@ use serde_json::json;
 use std::ffi::OsString;
 
 #[test]
+fn release_listing_preserves_all_statuses_on_helm_3_and_4() {
+    for namespace in [None, Some("dev")] {
+        for version in ["v3.16.2+g13654a5", "v3.17.0", "v4.0.0", "v4.3.1+build"] {
+            let args = release_arguments(namespace, version.as_bytes()).unwrap();
+            assert_eq!(args.contains(&"--all".into()), version.starts_with("v3."));
+            assert_eq!(
+                args.contains(&"--all-namespaces".into()),
+                namespace.is_none()
+            );
+            assert_eq!(args.contains(&"--namespace".into()), namespace.is_some());
+            assert_eq!(
+                &args[args.len() - 2..],
+                ["--output", "json"].map(OsString::from)
+            );
+        }
+    }
+    for version in [
+        "",
+        "garbage",
+        "v2.17.0",
+        "v5.0.0",
+        "v4.0",
+        "v4.0.0\nwarning",
+    ] {
+        assert_eq!(
+            release_arguments(None, version.as_bytes()),
+            Err(ConnectionError::HelmUnavailable)
+        );
+    }
+    assert_eq!(
+        release_arguments(None, &[0xff]),
+        Err(ConnectionError::HelmUnavailable)
+    );
+}
+
+#[test]
 fn executable_lookup_rejects_relative_path_entries() {
     assert_eq!(
         lookup_executable(OsString::from("relative").as_os_str()),
@@ -240,11 +276,11 @@ fn command_arguments_are_allowlisted() {
     );
     assert_eq!(
         arguments(HelmView::Releases, None),
-        ["list", "--all", "--all-namespaces", "--output", "json"].map(OsString::from)
+        ["list", "--all-namespaces", "--output", "json"].map(OsString::from)
     );
     assert_eq!(
         arguments(HelmView::Releases, Some("dev")),
-        ["list", "--all", "--namespace", "dev", "--output", "json"].map(OsString::from)
+        ["list", "--namespace", "dev", "--output", "json"].map(OsString::from)
     );
 }
 

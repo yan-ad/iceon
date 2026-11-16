@@ -21,6 +21,7 @@ mod custom_resource_navigation;
 #[cfg(debug_assertions)]
 mod deployment_probe;
 mod empty_state;
+mod helm_upgrade;
 mod selectable_text;
 mod theme_picker;
 mod themes_settings;
@@ -170,6 +171,7 @@ pub struct IceonApp {
     pub(crate) helm_install_chart: Option<String>,
     pub(crate) helm_install_version: Option<String>,
     pub(crate) helm_install_message: Option<String>,
+    pub(crate) helm_upgrade: Option<helm_upgrade::HelmUpgradeState>,
 
     pub(crate) custom_definitions_page: Option<ResourcePage>,
     pub(crate) custom_discovery_generation: u64,
@@ -433,6 +435,7 @@ impl IceonApp {
             helm_install_chart: None,
             helm_install_version: None,
             helm_install_message: None,
+            helm_upgrade: None,
             custom_definitions_page: None,
             custom_discovery_generation: 0,
             custom_discovery_loading: false,

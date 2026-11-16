@@ -1063,6 +1063,7 @@ impl IceonApp {
         self.resource_page = None;
         self.overview_snapshot = OverviewSnapshot::default();
         self.helm_page = None;
+        self.helm_upgrade = None;
         self.custom_discovery_generation = self.next_operation_id();
         self.custom_discovery_loading = false;
         self.custom_discovery_error = None;
@@ -1806,7 +1807,12 @@ impl IceonApp {
         .detach();
     }
 
-    fn load_helm_section(&mut self, view: HelmView, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn load_helm_section(
+        &mut self,
+        view: HelmView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.cluster_session.clone() else {
             return;
         };
@@ -3028,6 +3034,22 @@ impl IceonApp {
             .p_4()
             .gap_3()
             .overflow_y_scrollbar()
+            .when(view == HelmView::Releases, |el| {
+                el.children(self.render_helm_upgrade_panel(cx))
+            })
+            .when(
+                view == HelmView::Releases && self.helm_upgrade.is_none(),
+                |el| {
+                    el.when_some(self.helm_install_message.clone(), |el, msg| {
+                        el.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(msg),
+                        )
+                    })
+                },
+            )
             .when_some(self.helm_install_chart.clone(), |el, chart| {
                 el.child(
                     v_flex()
@@ -3132,6 +3154,8 @@ impl IceonApp {
                 let ver = item.version.clone();
                 let name_install = name.clone();
                 let ver_install = ver.clone();
+                let name_upgrade = name.clone();
+                let ns_upgrade = ns.clone();
 
                 h_flex()
                     .w_full()
@@ -3197,6 +3221,31 @@ impl IceonApp {
                                         })),
                                 )
                             })
+                            .when_some(
+                                ns_upgrade.filter(|_| view == HelmView::Releases),
+                                |el, namespace| {
+                                    el.child(
+                                        Button::new(SharedString::from(format!(
+                                            "helm-upgrade-{idx}"
+                                        )))
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(IconName::ArrowUp)
+                                        .tooltip("Upgrade release / edit values")
+                                        .accessibility_label("Upgrade Helm release and edit values")
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.open_helm_upgrade(
+                                                    name_upgrade.clone(),
+                                                    namespace.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    )
+                                },
+                            )
                             .child(
                                 Button::new(SharedString::from(format!("helm-detail-{idx}")))
                                     .xsmall()
