@@ -79,6 +79,7 @@ fn chrome_regions(
 
 const CHROME_ALPHA_LIGHT: f32 = 0.48;
 const CHROME_ALPHA_DARK: f32 = 0.38;
+const DEFAULT_CHROME_ALPHA: f32 = 0.85;
 const SELECTED_ALPHA: f32 = 0.12;
 pub(crate) const PRIMARY_RGB: u32 = 0x1a43bf;
 
@@ -159,7 +160,7 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
         primary,
     ] = selected.palette_colors().expect("built-in default palette");
     if mode.is_dark() {
-        colors.sidebar = neutral(surface, CHROME_ALPHA_DARK);
+        colors.sidebar = neutral(surface, DEFAULT_CHROME_ALPHA);
         colors.title_bar = colors.sidebar;
         colors.sidebar_foreground = neutral(foreground, 1.0);
         colors.sidebar_border = neutral(0xffffff, 0.08);
@@ -179,7 +180,7 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
         colors.secondary_hover = neutral(0xffffff, 0.08);
         colors.border = neutral(0xffffff, 0.10);
     } else {
-        colors.sidebar = neutral(surface, CHROME_ALPHA_LIGHT);
+        colors.sidebar = neutral(surface, DEFAULT_CHROME_ALPHA);
         colors.title_bar = colors.sidebar;
         colors.sidebar_foreground = neutral(foreground, 1.0);
         colors.sidebar_border = neutral(0x000000, 0.08);
@@ -790,7 +791,7 @@ mod tests {
     }
 
     use super::{
-        CHROME_ALPHA_DARK, CHROME_ALPHA_LIGHT, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
+        CHROME_ALPHA_DARK, DEFAULT_CHROME_ALPHA, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
     };
     use gpui_kit::component::theme::{ThemeColor, ThemeMode};
 
@@ -1160,7 +1161,8 @@ mod tests {
     fn chrome_colors_match_mode_palette() {
         let mut dark_colors = ThemeColor::default();
         brand_colors(&mut dark_colors, ThemeMode::Dark);
-        assert_eq!(dark_colors.sidebar, neutral(0x121214, CHROME_ALPHA_DARK));
+        assert_eq!(dark_colors.sidebar, neutral(0x121214, DEFAULT_CHROME_ALPHA));
+        assert_eq!(dark_colors.title_bar.a, 0.85);
         assert_eq!(dark_colors.title_bar, dark_colors.sidebar);
         assert_eq!(
             dark_colors.sidebar_accent,
@@ -1174,7 +1176,11 @@ mod tests {
 
         let mut light_colors = ThemeColor::default();
         brand_colors(&mut light_colors, ThemeMode::Light);
-        assert_eq!(light_colors.sidebar, neutral(0xf6f6f7, CHROME_ALPHA_LIGHT));
+        assert_eq!(
+            light_colors.sidebar,
+            neutral(0xf6f6f7, DEFAULT_CHROME_ALPHA)
+        );
+        assert_eq!(light_colors.title_bar.a, 0.85);
         assert_eq!(light_colors.title_bar, light_colors.sidebar);
         assert_eq!(
             light_colors.sidebar_accent,
