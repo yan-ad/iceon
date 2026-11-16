@@ -10,7 +10,6 @@ use gpui_kit::component::{
     ActiveTheme as _, ColorName, Disableable as _, IconName, Selectable as _, Sizable as _,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
-    collapsible::Collapsible,
     h_flex,
     input::{Input, InputState},
     resizable::{HandleEdge, resize_handle},
@@ -2221,10 +2220,14 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let scope = self.rbac_planner_scope.clone();
         let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.rbac_user_plan(req).await;
             let _ = this.update_in(cx, |this, _, cx| {
+                if !scope.as_ref().is_some_and(|scope| scope.is_current(this)) {
+                    return;
+                }
                 match result {
                     Ok(plan) => {
                         this.rbac_apply_response = None;
@@ -2256,10 +2259,14 @@ impl IceonApp {
             read_id: self.next_operation_id(),
             plan_id,
         };
+        let scope = self.rbac_planner_scope.clone();
         let connection = self.connection.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = connection.rbac_user_apply(req).await;
             let _ = this.update_in(cx, |this, window, cx| {
+                if !scope.as_ref().is_some_and(|scope| scope.is_current(this)) {
+                    return;
+                }
                 if let Ok(applied) = result {
                     this.rbac_apply_response = Some(applied);
                 }
@@ -2393,7 +2400,7 @@ impl IceonApp {
                                     cx.new(|_| drag.clone())
                                 })
                                 .on_double_click(cx.listener(|this, _, _, cx| {
-                                    this.navigation_widths.inspector = 420.0;
+                                    this.navigation_widths.inspector = 720.0;
                                     this.navigation_widths.dirty = true;
                                     this.navigation_widths.save();
                                     cx.notify();
@@ -2722,6 +2729,24 @@ impl IceonApp {
                     ),
                 )
             })
+            .when(
+                crate::rbac_planner_dialog::users_header_route(self.history.current(), &section),
+                |el| {
+                    el.child(
+                        Button::new("rbac-planner-open")
+                            .xsmall()
+                            .outline()
+                            .label("ServiceAccount planner")
+                            .accessibility_label("Open ServiceAccount planner")
+                            .disabled(
+                                self.rbac_planner_scope.is_some() || self.cluster_session.is_none(),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.open_rbac_planner(window, cx);
+                            })),
+                    )
+                },
+            )
             .when(
                 active_kind == Some(ResourceKind::CustomResourceDefinitions),
                 |el| {
@@ -3265,8 +3290,18 @@ impl IceonApp {
     fn render_rbac_users_body(
         &self,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        v_flex()
+            .flex_1()
+            .size_full()
+            .min_h_0()
+            .p_4()
+            .overflow_hidden()
+            .child(self.rbac_users_table.clone())
+    }
+
+    pub(crate) fn render_rbac_planner_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let coverage = self
             .rbac_users_response
             .as_ref()
@@ -3276,155 +3311,119 @@ impl IceonApp {
         let selected_templates = self.rbac_selected_templates.clone();
         let cluster_access = self.rbac_selected_cluster_access.clone();
         let all_ns = self.rbac_all_namespaces;
-        let planner_open = self.rbac_planner_open
-            || self.rbac_active_plan.is_some()
-            || self.rbac_apply_response.is_some();
-
         v_flex()
-            .flex_1()
+            .id("rbac-planner-content")
             .w_full()
-            .h_full()
-            .min_h_0()
-            .p_4()
-            .gap_4()
-            .overflow_hidden()
-            // Keep the planner available without displacing the primary inventory.
+            .p_3()
+            .gap_2p5()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
             .child(
-                Collapsible::new()
-                    .open(planner_open)
-                    .w_full()
-                    .flex_shrink_0()
+                h_flex()
+                    .justify_between()
+                    .items_center()
                     .child(
-                        Button::new("rbac-planner-toggle")
-                            .small()
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Managed ServiceAccount Users & Permission Planner"),
+                    )
+                    .child(h_flex().gap_1().children(coverage.into_iter().map(|cov| {
+                        let badge = if cov.state == "complete" {
+                            Tag::success().small()
+                        } else {
+                            Tag::warning().small()
+                        };
+                        badge.child(format!("{}: {}", cov.resource, cov.state))
+                    }))),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(240.0))
+                            .child(Input::new(&self.rbac_new_user_input).small()),
+                    )
+                    .child(
+                        Button::new("rbac-scope-toggle")
+                            .xsmall()
                             .ghost()
-                            .icon(if planner_open { IconName::ChevronDown } else { IconName::ChevronRight })
-                            .label("ServiceAccount planner")
-                            .accessibility_label("Toggle ServiceAccount planner")
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.rbac_planner_open = !app.rbac_planner_open;
+                            .selected(all_ns)
+                            .label(if all_ns {
+                                "Scope: All Namespaces"
+                            } else {
+                                "Scope: Current Namespace"
+                            })
+                            .on_click(self.rbac_planner_listener(cx, |this, _, _, cx| {
+                                this.rbac_all_namespaces = !this.rbac_all_namespaces;
                                 cx.notify();
                             })),
                     )
-                    .content(
-                v_flex()
-                    .id("rbac-planner-content")
-                    .w_full()
-                    .max_h(px(280.0))
-                    .overflow_y_scrollbar()
-                    .p_3()
-                    .gap_2p5()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
+                    .children(
+                        [
+                            (ClusterAccess::None, "Cluster: None"),
+                            (ClusterAccess::Read, "Cluster: Read"),
+                            (ClusterAccess::Write, "Cluster: Write"),
+                        ]
+                        .into_iter()
+                        .map(|(lvl, label)| {
+                            let active = cluster_access == lvl;
+                            Button::new(SharedString::from(format!("rbac-cluster-lvl-{label}")))
+                                .xsmall()
+                                .ghost()
+                                .selected(active)
+                                .label(label)
+                                .on_click(self.rbac_planner_listener(cx, move |this, _, _, cx| {
+                                    this.rbac_selected_cluster_access = lvl.clone();
+                                    cx.notify();
+                                }))
+                        }),
+                    )
                     .child(
+                        Button::new("rbac-plan-create-btn")
+                            .xsmall()
+                            .primary()
+                            .label("Preview Create Plan")
+                            .on_click(self.rbac_planner_listener(cx, |this, _, window, cx| {
+                                this.create_rbac_user_plan(window, cx);
+                            })),
+                    ),
+            )
+            .when_some(mgmt.clone(), |el, snap| {
+                let ns_templates: Vec<_> = snap
+                    .templates
+                    .iter()
+                    .filter(|t| t.scope == "namespaced")
+                    .cloned()
+                    .collect();
+                el.when(!ns_templates.is_empty(), |card| {
+                    card.child(
                         h_flex()
-                            .justify_between()
+                            .gap_1p5()
+                            .flex_wrap()
                             .items_center()
                             .child(
                                 div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Managed ServiceAccount Users & Permission Planner"),
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Templates:"),
                             )
-                            .child(
-                                h_flex().gap_1().children(coverage.into_iter().map(|cov| {
-                                    let badge = if cov.state == "complete" {
-                                        Tag::success().small()
-                                    } else {
-                                        Tag::warning().small()
-                                    };
-                                    badge.child(format!("{}: {}", cov.resource, cov.state))
-                                })),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .w(px(240.0))
-                                    .child(Input::new(&self.rbac_new_user_input).small()),
-                            )
-                            .child(
-                                Button::new("rbac-scope-toggle")
+                            .children(ns_templates.into_iter().map(|tpl| {
+                                let tname = tpl.name.clone();
+                                let selected = selected_templates.contains(&tname);
+                                Button::new(SharedString::from(format!("rbac-tpl-toggle-{tname}")))
                                     .xsmall()
-                                    .ghost()
-                                    .selected(all_ns)
-                                    .label(if all_ns {
-                                        "Scope: All Namespaces"
-                                    } else {
-                                        "Scope: Current Namespace"
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.rbac_all_namespaces = !this.rbac_all_namespaces;
-                                        cx.notify();
-                                    })),
-                            )
-                            .children(
-                                [
-                                    (ClusterAccess::None, "Cluster: None"),
-                                    (ClusterAccess::Read, "Cluster: Read"),
-                                    (ClusterAccess::Write, "Cluster: Write"),
-                                ]
-                                .into_iter()
-                                .map(|(lvl, label)| {
-                                    let active = cluster_access == lvl;
-                                    Button::new(SharedString::from(format!(
-                                        "rbac-cluster-lvl-{label}"
-                                    )))
-                                    .xsmall()
-                                    .ghost()
-                                    .selected(active)
-                                    .label(label)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.rbac_selected_cluster_access = lvl.clone();
-                                        cx.notify();
-                                    }))
-                                }),
-                            )
-                            .child(
-                                Button::new("rbac-plan-create-btn")
-                                    .xsmall()
-                                    .primary()
-                                    .label("Preview Create Plan")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.create_rbac_user_plan(window, cx);
-                                    })),
-                            ),
-                    )
-                    .when_some(mgmt.clone(), |el, snap| {
-                        let ns_templates: Vec<_> = snap
-                            .templates
-                            .iter()
-                            .filter(|t| t.scope == "namespaced")
-                            .cloned()
-                            .collect();
-                        el.when(!ns_templates.is_empty(), |card| {
-                            card.child(
-                                h_flex()
-                                    .gap_1p5()
-                                    .flex_wrap()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child("Templates:"),
-                                    )
-                                    .children(ns_templates.into_iter().map(|tpl| {
-                                        let tname = tpl.name.clone();
-                                        let selected = selected_templates.contains(&tname);
-                                        Button::new(SharedString::from(format!(
-                                            "rbac-tpl-toggle-{tname}"
-                                        )))
-                                        .xsmall()
-                                        .outline()
-                                        .selected(selected)
-                                        .label(format!("{} ({} rules)", tpl.name, tpl.rules.len()))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                    .outline()
+                                    .selected(selected)
+                                    .label(format!("{} ({} rules)", tpl.name, tpl.rules.len()))
+                                    .on_click(self.rbac_planner_listener(
+                                        cx,
+                                        move |this, _, _, cx| {
                                             if let Some(pos) = this
                                                 .rbac_selected_templates
                                                 .iter()
@@ -3435,241 +3434,230 @@ impl IceonApp {
                                                 this.rbac_selected_templates.push(tname.clone());
                                             }
                                             cx.notify();
-                                        }))
-                                    })),
-                            )
-                        })
-                        .when(!snap.users.is_empty(), |card| {
-                            card.child(
-                                v_flex()
-                                    .w_full()
-                                    .gap_1p5()
-                                    .pt_2()
-                                    .border_t_1()
-                                    .border_color(cx.theme().border)
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(format!(
-                                                "Managed ServiceAccount Users ({})",
-                                                snap.users.len()
-                                            )),
-                                    )
-                                    .children(snap.users.into_iter().enumerate().map(
-                                        |(uidx, u)| {
-                                            let u_del = u.clone();
-                                            let sa_ref = ResourceReference {
-                                                kind: ResourceKind::ServiceAccounts,
-                                                name: u.name.clone(),
-                                                namespace: Some(u.namespace.clone()),
-                                                uid: u.uid.clone(),
-                                            };
-                                            h_flex()
-                                                .justify_between()
-                                                .items_center()
-                                                .p_2()
-                                                .rounded(px(6.0))
-                                                .border_1()
-                                                .border_color(cx.theme().border)
-                                                .bg(cx.theme().background)
-                                                .child(
-                                                    h_flex()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .gap_2()
-                                                        .items_center()
-                                                        .child(
-                                                            div()
-                                                                .text_xs()
-                                                                .font_weight(FontWeight::SEMIBOLD)
-                                                                .child(format!(
-                                                                    "{}/{}",
-                                                                    u.namespace, u.name
-                                                                )),
-                                                        )
-                                                        .child(
-                                                            Tag::secondary().small().child(
-                                                                format!(
-                                                                    "{} templates · cluster {:?}",
-                                                                    u.assignments.len(),
-                                                                    u.cluster_access
-                                                                ),
-                                                            ),
-                                                        ),
-                                                )
-                                                .child(
-                                                    h_flex()
-                                                        .ml_auto()
-                                                        .flex_shrink_0()
-                                                        .justify_end()
-                                                        .gap_1()
-                                                        .child(
-                                                            Button::new(SharedString::from(
-                                                                format!("managed-sa-insp-{uidx}"),
-                                                            ))
-                                                            .xsmall()
-                                                            .ghost()
-                                                            .icon(IconName::Eye)
-                                                            .tooltip("Inspect ServiceAccount")
-                                                            .accessibility_label("Inspect ServiceAccount")
-                                                            .on_click(cx.listener(
-                                                                move |this, _, window, cx| {
-                                                                    this.open_resource_inspector(
-                                                                        sa_ref.clone(),
-                                                                        window,
-                                                                        cx,
-                                                                    );
-                                                                },
-                                                            )),
-                                                        )
-                                                        .child(
-                                                            Button::new(SharedString::from(
-                                                                format!("managed-sa-del-{uidx}"),
-                                                            ))
-                                                            .xsmall()
-                                                            .ghost()
-                                                            .icon(crate::action_icons::delete())
-                                                            .tooltip("Preview ServiceAccount deletion plan")
-                                                            .accessibility_label("Preview ServiceAccount deletion plan")
-                                                            .on_click(cx.listener(
-                                                                move |this, _, window, cx| {
-                                                                    this.plan_existing_rbac_user(
-                                                                        u_del.clone(),
-                                                                        PlanOperation::Delete,
-                                                                        window,
-                                                                        cx,
-                                                                    );
-                                                                },
-                                                            )),
-                                                        ),
-                                                )
                                         },
-                                    )),
-                            )
-                        })
-                    })
-                    .when_some(self.rbac_active_plan.clone(), |el, plan| {
-                        let pid = plan.plan_id.clone();
-                        el.child(
-                            v_flex()
-                                .p_2p5()
-                                .gap_1p5()
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .bg(cx.theme().background)
-                                .child(
-                                    h_flex()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(format!(
-                                                    "Dry-Run Verified Plan {:?} for {}/{} ({} steps)",
-                                                    plan.operation,
-                                                    plan.user.namespace,
-                                                    plan.user.name,
-                                                    plan.steps.len()
-                                                )),
-                                        )
-                                        .child(
-                                            h_flex()
-                                                .gap_1p5()
-                                                .child(
-                                                    Button::new("rbac-apply-plan-btn")
-                                                        .xsmall()
-                                                        .primary()
-                                                        .label("Apply Plan")
-                                                        .on_click(cx.listener(
-                                                            move |this, _, window, cx| {
-                                                                this.apply_rbac_user_plan(
-                                                                    pid.clone(),
-                                                                    window,
-                                                                    cx,
-                                                                );
-                                                            },
-                                                        )),
-                                                )
-                                                .child(
-                                                    Button::new("rbac-discard-plan-btn")
-                                                        .xsmall()
-                                                        .ghost()
-                                                        .label("Discard")
-                                                        .on_click(cx.listener(
-                                                            |this, _, _, cx| {
-                                                                this.rbac_active_plan = None;
-                                                                cx.notify();
-                                                            },
-                                                        )),
-                                                ),
-                                        ),
-                                )
-                                .children(plan.steps.iter().map(|step| {
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "• {:?} {} {}",
-                                            step.operation, step.kind, step.name
-                                        ))
-                                }))
-                                .children(plan.warnings.iter().map(|w| {
-                                    div().text_xs().text_color(cx.theme().warning).child(w.clone())
-                                })),
-                        )
-                    })
-                    .when_some(self.rbac_apply_response.clone(), |el, applied| {
-                        el.child(
-                            v_flex()
-                                .p_2p5()
-                                .gap_1()
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .child(
-                                    h_flex()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(format!(
-                                                    "Plan Execution {:?} · Complete: {}",
-                                                    applied.operation, applied.complete
-                                                )),
-                                        )
-                                        .child(
-                                            Button::new("dismiss-rbac-apply-res")
+                                    ))
+                            })),
+                    )
+                })
+                .when(!snap.users.is_empty(), |card| {
+                    card.child(
+                        v_flex()
+                            .w_full()
+                            .gap_1p5()
+                            .pt_2()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                                format!("Managed ServiceAccount Users ({})", snap.users.len()),
+                            ))
+                            .children(snap.users.into_iter().enumerate().map(|(uidx, u)| {
+                                let u_del = u.clone();
+                                let sa_ref = ResourceReference {
+                                    kind: ResourceKind::ServiceAccounts,
+                                    name: u.name.clone(),
+                                    namespace: Some(u.namespace.clone()),
+                                    uid: u.uid.clone(),
+                                };
+                                h_flex()
+                                    .justify_between()
+                                    .items_center()
+                                    .p_2()
+                                    .rounded(px(6.0))
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().background)
+                                    .child(
+                                        h_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(format!("{}/{}", u.namespace, u.name)),
+                                            )
+                                            .child(Tag::secondary().small().child(format!(
+                                                "{} templates · cluster {:?}",
+                                                u.assignments.len(),
+                                                u.cluster_access
+                                            ))),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .ml_auto()
+                                            .flex_shrink_0()
+                                            .justify_end()
+                                            .gap_1()
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "managed-sa-insp-{uidx}"
+                                                )))
                                                 .xsmall()
                                                 .ghost()
-                                                .icon(IconName::Close)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.rbac_apply_response = None;
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                )
-                                .children(applied.results.iter().map(|r| {
+                                                .icon(IconName::Eye)
+                                                .tooltip("Inspect ServiceAccount")
+                                                .accessibility_label("Inspect ServiceAccount")
+                                                .on_click(self.rbac_planner_listener(
+                                                    cx,
+                                                    move |this, _, window, cx| {
+                                                        this.open_resource_inspector(
+                                                            sa_ref.clone(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            )
+                                            .child(
+                                                Button::new(SharedString::from(format!(
+                                                    "managed-sa-del-{uidx}"
+                                                )))
+                                                .xsmall()
+                                                .ghost()
+                                                .icon(crate::action_icons::delete())
+                                                .tooltip("Preview ServiceAccount deletion plan")
+                                                .accessibility_label(
+                                                    "Preview ServiceAccount deletion plan",
+                                                )
+                                                .on_click(self.rbac_planner_listener(
+                                                    cx,
+                                                    move |this, _, window, cx| {
+                                                        this.plan_existing_rbac_user(
+                                                            u_del.clone(),
+                                                            PlanOperation::Delete,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            ),
+                                    )
+                            })),
+                    )
+                })
+            })
+            .when_some(self.rbac_active_plan.clone(), |el, plan| {
+                let pid = plan.plan_id.clone();
+                el.child(
+                    v_flex()
+                        .p_2p5()
+                        .gap_1p5()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().background)
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                                    format!(
+                                        "Dry-Run Verified Plan {:?} for {}/{} ({} steps)",
+                                        plan.operation,
+                                        plan.user.namespace,
+                                        plan.user.name,
+                                        plan.steps.len()
+                                    ),
+                                ))
+                                .child(
                                     h_flex()
-                                        .justify_between()
-                                        .items_center()
+                                        .gap_1p5()
                                         .child(
-                                            div().text_xs().child(format!(
-                                                "{:?} {} {}",
-                                                r.operation, r.kind, r.name
-                                            )),
+                                            Button::new("rbac-apply-plan-btn")
+                                                .xsmall()
+                                                .primary()
+                                                .label("Apply Plan")
+                                                .on_click(self.rbac_planner_listener(
+                                                    cx,
+                                                    move |this, _, window, cx| {
+                                                        this.apply_rbac_user_plan(
+                                                            pid.clone(),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
                                         )
-                                        .child(row_status_tag(&r.state))
-                                })),
+                                        .child(
+                                            Button::new("rbac-discard-plan-btn")
+                                                .xsmall()
+                                                .ghost()
+                                                .label("Discard")
+                                                .on_click(self.rbac_planner_listener(
+                                                    cx,
+                                                    |this, _, _, cx| {
+                                                        this.rbac_active_plan = None;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                ),
                         )
-                    }),
-                    ),
-            )
-            .child(self.rbac_users_table.clone())
+                        .children(plan.steps.iter().map(|step| {
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!(
+                                    "• {:?} {} {}",
+                                    step.operation, step.kind, step.name
+                                ))
+                        }))
+                        .children(plan.warnings.iter().map(|w| {
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().warning)
+                                .child(w.clone())
+                        })),
+                )
+            })
+            .when_some(self.rbac_apply_response.clone(), |el, applied| {
+                el.child(
+                    v_flex()
+                        .p_2p5()
+                        .gap_1()
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
+                                    format!(
+                                        "Plan Execution {:?} · Complete: {}",
+                                        applied.operation, applied.complete
+                                    ),
+                                ))
+                                .child(
+                                    Button::new("dismiss-rbac-apply-res")
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(IconName::Close)
+                                        .on_click(self.rbac_planner_listener(
+                                            cx,
+                                            |this, _, _, cx| {
+                                                this.rbac_apply_response = None;
+                                                cx.notify();
+                                            },
+                                        )),
+                                ),
+                        )
+                        .children(applied.results.iter().map(|r| {
+                            h_flex()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .child(format!("{:?} {} {}", r.operation, r.kind, r.name)),
+                                )
+                                .child(row_status_tag(&r.state))
+                        })),
+                )
+            })
+            .into_any_element()
     }
 }
 

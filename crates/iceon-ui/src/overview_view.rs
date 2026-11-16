@@ -493,7 +493,11 @@ impl IceonApp {
                                         reference.namespace.as_deref(),
                                         Some(&reference.name),
                                     ) {
-                                        app.open_resource_inspector(reference.clone(), window, cx);
+                                        app.toggle_resource_inspector(
+                                            reference.clone(),
+                                            window,
+                                            cx,
+                                        );
                                     }
                                 }))
                             })

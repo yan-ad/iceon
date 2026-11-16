@@ -6,6 +6,18 @@ const TEXT_BYTES: usize = 1024;
 const TOTAL_BYTES: usize = 32 * 1024;
 const FIELD_BYTES: usize = 8 * 1024;
 
+/// `kubectl apply` stores the manifest as JSON in the
+/// `kubectl.kubernetes.io/last-applied-configuration` annotation.
+/// Format it as clean YAML for read-only inspection, matching Freelens behavior.
+pub fn format_last_applied_configuration(value: &str) -> String {
+    if let Ok(json_val) = serde_json::from_str::<Value>(value) {
+        if let Ok(yaml_str) = serde_yaml_ng::to_string(&json_val) {
+            return yaml_str;
+        }
+    }
+    value.to_string()
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DetailMetadata {
@@ -501,5 +513,15 @@ mod tests {
         let result = project(ResourceKind::Pods, &json!({"metadata":{"managedFields":[{"manager":"controller","operation":"Update","fieldsType":"FieldsV1","fieldsV1":tree}]}})).unwrap();
         assert!(result.partial);
         assert_eq!(result.managed_fields[0].fields, "[]");
+    }
+    #[test]
+    fn formats_last_applied_configuration_from_json_to_yaml() {
+        let json_manifest = r#"{"apiVersion":"v1","kind":"Pod","metadata":{"name":"test-pod"}}"#;
+        let formatted = format_last_applied_configuration(json_manifest);
+        assert!(formatted.contains("kind: Pod"));
+        assert!(formatted.contains("name: test-pod"));
+
+        let invalid = "not a valid json";
+        assert_eq!(format_last_applied_configuration(invalid), invalid);
     }
 }

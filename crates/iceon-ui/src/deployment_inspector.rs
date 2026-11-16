@@ -1,4 +1,5 @@
 //! Shared workload detail presentation and guarded Deployment Scale dialog.
+use super::ReadOnlyCodeViewer;
 use super::*;
 use gpui_kit::component::input::{InputEvent, InputState};
 use iceon_core::connection::{detail_collections::CollectionItem, detail_metadata::MetadataEntry};
@@ -110,7 +111,7 @@ pub(super) fn section(title: &str, cx: &App) -> Div {
         .font_weight(FontWeight::MEDIUM)
         .child(title.to_owned())
 }
-fn metadata(entries: &[MetadataEntry], cx: &App) -> Div {
+pub(super) fn metadata(entries: &[MetadataEntry], cx: &App) -> Div {
     div()
         .flex()
         .flex_col()
@@ -311,7 +312,7 @@ impl IceonApp {
                         gpui_kit::component::Icon::new(gpui_kit_assets::IconName::Pencil)
                             .text_color(ink),
                     )
-                    .tooltip(format!("Edit {kind_name} YAML"))
+                    .tooltip("Edit")
                     .accessibility_label(format!("Edit {kind_name} YAML"))
                     .disabled(
                         !identity
@@ -342,9 +343,11 @@ impl IceonApp {
     pub(super) fn render_workload_inspector(
         &self,
         detail: &ResourceDetail,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let kind_name = if detail.reference.kind == ResourceKind::DaemonSets {
+        let kind = detail.reference.kind;
+        let kind_name = if kind == ResourceKind::DaemonSets {
             "DaemonSets"
         } else {
             "Deployments"
@@ -375,10 +378,74 @@ impl IceonApp {
                     .on_click(cx.listener(move |app, _, window, cx| app.open_resource_inspector(target.clone(), window, cx))))
             }), cx));
         if let Some(meta) = &detail.metadata {
+            let last_applied = meta
+                .annotations
+                .iter()
+                .find(|entry| entry.key == "kubectl.kubernetes.io/last-applied-configuration");
+            let filtered_annotations: Vec<_> = meta
+                .annotations
+                .iter()
+                .filter(|entry| entry.key != "kubectl.kubernetes.io/last-applied-configuration")
+                .cloned()
+                .collect();
             body = body
                 .child(field("Labels", metadata(&meta.labels, cx), cx))
-                .child(field("Annotations", metadata(&meta.annotations, cx), cx))
                 .child(field(
+                    "Annotations",
+                    metadata(&filtered_annotations, cx),
+                    cx,
+                ));
+
+            if let Some(entry) = last_applied {
+                let key = format!("workload-last-applied-{}", detail.reference.name);
+                let expanded = self.inspector.pod_expanded.contains(&key);
+                let formatted =
+                    iceon_core::connection::detail_metadata::format_last_applied_configuration(
+                        &entry.value,
+                    );
+                body = body.child(field(
+                    "Last Applied Configuration",
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("kubectl.kubernetes.io/last-applied-configuration"),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(key.clone()))
+                                        .xsmall()
+                                        .ghost()
+                                        .label(if expanded { "Hide" } else { "Show" })
+                                        .accessibility_label("Toggle Last Applied Configuration")
+                                        .on_click(cx.listener(move |app, _, _, cx| {
+                                            if !app.inspector.pod_expanded.remove(&key) {
+                                                app.inspector.pod_expanded.insert(key.clone());
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .when(expanded, |el| {
+                            el.child(ReadOnlyCodeViewer::new(
+                                format!("workload-last-applied-viewer-{}", detail.reference.name),
+                                formatted,
+                                "yaml",
+                                px(200.0),
+                            ))
+                        }),
+                    cx,
+                ));
+            }
+            body =
+                body.child(field(
                     "Managed fields",
                     v_flex()
                         .w_full()
@@ -434,13 +501,15 @@ impl IceonApp {
                                             ),
                                     )
                                     .when(expanded, |el| {
-                                        el.child(
-                                            div()
-                                                .text_xs()
-                                                .p_2()
-                                                .bg(cx.theme().secondary)
-                                                .child(selectable_text(managed.fields.clone())),
-                                        )
+                                        el.child(ReadOnlyCodeViewer::new(
+                                            format!(
+                                                "workload-managed-viewer-{index}-{}",
+                                                detail.reference.name
+                                            ),
+                                            managed.fields.clone(),
+                                            "json",
+                                            px(160.0),
+                                        ))
                                     })
                             },
                         )),
@@ -618,6 +687,66 @@ impl IceonApp {
                 );
             }
         }
+        if iceon_core::connection::resource_edit::supports_yaml_edit(kind) {
+            let yaml_key = format!("workload-yaml-editor-{}", detail.reference.name);
+            let expanded = self.inspector.pod_expanded.contains(&yaml_key);
+            body = body.child(section("Resource YAML", cx));
+            body = body.child(
+                v_flex()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Inspect and edit reviewed YAML in-drawer, or open in the bottom dock."),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        Button::new(SharedString::from(yaml_key.clone()))
+                                            .xsmall()
+                                            .ghost()
+                                            .label(if expanded { "Hide" } else { "Show" })
+                                            .accessibility_label("Toggle YAML Editor in drawer")
+                                            .on_click(cx.listener(move |app, _, window, cx| {
+                                                if !app.inspector.pod_expanded.remove(&yaml_key) {
+                                                    app.inspector.pod_expanded.insert(yaml_key.clone());
+                                                    if app.inspector.edit_load.is_none() {
+                                                        app.load_inspector_yaml(window, cx);
+                                                    }
+                                                }
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("yaml-open-dock-btn")
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(gpui_kit_assets::IconName::Pencil)
+                                            .label("Edit in Dock")
+                                            .accessibility_label("Edit in bottom dock tab")
+                                            .on_click(cx.listener(|app, _, window, cx| {
+                                                app.edit_inspected_yaml(window, cx);
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .when(expanded, |el| {
+                        el.child(self.render_inspector_yaml(detail, window, cx))
+                    }),
+            );
+        }
+
         self.render_workload_events(detail, body, cx)
     }
 

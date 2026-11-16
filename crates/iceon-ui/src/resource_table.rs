@@ -978,7 +978,7 @@ impl ResourceTable {
             .cursor_pointer()
             .hover(|row| row.bg(cx.theme().muted))
             .on_click(self.action(move |app, _, window, cx| {
-                app.open_resource_inspector(row_reference.clone(), window, cx);
+                app.toggle_resource_inspector(row_reference.clone(), window, cx);
             }))
             .w_full()
             .h(px(42.0))
@@ -1194,7 +1194,11 @@ impl ResourceTable {
                                     .tooltip("Inspect resource")
                                     .accessibility_label("Inspect resource")
                                     .on_click(self.action(move |this, _, window, cx| {
-                                        this.open_resource_inspector(reference.clone(), window, cx);
+                                        this.toggle_resource_inspector(
+                                            reference.clone(),
+                                            window,
+                                            cx,
+                                        );
                                     })),
                             )
                         },
@@ -1235,7 +1239,7 @@ impl ResourceTable {
             .cursor_pointer()
             .hover(|row| row.bg(cx.theme().muted))
             .on_click(self.action(move |app, _, window, cx| {
-                app.open_resource_inspector(row_reference.clone(), window, cx)
+                app.toggle_resource_inspector(row_reference.clone(), window, cx)
             }))
             .children(layout.columns.iter().map(|column| {
                 let cell = table_cell(
@@ -1295,7 +1299,7 @@ impl ResourceTable {
                                 .on_click(self.action({
                                     let reference = reference.clone();
                                     move |app, _, window, cx| {
-                                        app.open_resource_inspector(reference.clone(), window, cx)
+                                        app.toggle_resource_inspector(reference.clone(), window, cx)
                                     }
                                 })),
                         )

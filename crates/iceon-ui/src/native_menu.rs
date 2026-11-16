@@ -30,6 +30,7 @@ gpui_kit::actions!(
         NewDeviceTerminal,
         CloseWindow,
         ToggleSidebar,
+        CloseInspector,
         CommandPalette,
         ThemePicker,
         FocusResourceSearch,
@@ -140,6 +141,7 @@ pub(crate) fn bindings(macos: bool) -> Vec<KeyBinding> {
         Some("IceonConsole"),
     ));
     bind!("b", ToggleSidebar);
+    keys.push(KeyBinding::new("escape", CloseInspector, Some("Iceon")));
     bind!("k", CommandPalette);
     bind!("*", ThemePicker);
     bind!("f", FocusResourceSearch);
@@ -221,6 +223,13 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(ToggleSidebar, |this, _: &ToggleSidebar, _, cx| {
         this.sidebar_collapsed = !this.sidebar_collapsed;
         cx.notify();
+    });
+    register!(CloseInspector, |this, _: &CloseInspector, _, cx| {
+        if this.inspector_open {
+            this.inspector_open = false;
+            this.inspector.target = None;
+            cx.notify();
+        }
     });
     register!(CheckForUpdates, |this, _: &CheckForUpdates, window, cx| {
         this.check_for_updates(window, cx);

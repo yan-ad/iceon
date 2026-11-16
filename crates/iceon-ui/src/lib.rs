@@ -51,6 +51,7 @@ pub mod pod_dock_view;
 mod preference_runtime;
 pub mod preferences_view;
 mod rbac_access;
+mod rbac_planner_dialog;
 mod rbac_users_table;
 #[cfg(debug_assertions)]
 pub use rbac_users_table::run_probe as run_rbac_users_probe;
@@ -194,7 +195,7 @@ pub struct IceonApp {
     pub(crate) rbac_selected_templates: Vec<String>,
     pub(crate) rbac_selected_cluster_access: iceon_core::connection::rbac_management::ClusterAccess,
     pub(crate) rbac_all_namespaces: bool,
-    pub(crate) rbac_planner_open: bool,
+    pub(crate) rbac_planner_scope: Option<rbac_planner_dialog::PlannerScope>,
     pub(crate) rbac_users_operation: u64,
     pub(crate) rbac_users_table: Entity<rbac_users_table::RbacUsersTable>,
 
@@ -363,7 +364,7 @@ impl IceonApp {
                     return;
                 }
                 match event {
-                    helm_table::HelmTableEvent::Inspect(_, _) => this.open_helm_inspector(
+                    helm_table::HelmTableEvent::Inspect(_, _) => this.toggle_helm_inspector(
                         view,
                         item.name.clone(),
                         item.namespace.clone(),
@@ -509,7 +510,7 @@ impl IceonApp {
             rbac_selected_cluster_access:
                 iceon_core::connection::rbac_management::ClusterAccess::None,
             rbac_all_namespaces: false,
-            rbac_planner_open: false,
+            rbac_planner_scope: None,
             rbac_users_operation: 0,
             rbac_users_table,
             inspector: InspectorState::default(),

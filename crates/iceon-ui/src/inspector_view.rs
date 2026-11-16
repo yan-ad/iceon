@@ -1,7 +1,7 @@
 //! Right-hand Resource & Helm Inspector drawer with Summary, Metadata, Related, Events, and YAML tabs.
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
     h_flex,
@@ -118,6 +118,53 @@ pub struct InspectorState {
     helm_read: Option<helm_inspector::HelmInspectorRead>,
     pub drain_review: Option<DrainReview>,
     pub drain_result: Option<DrainResult>,
+    pub copied_title: bool,
+}
+
+pub(crate) fn singular_kind_name(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Nodes => "Node",
+        ResourceKind::Namespaces => "Namespace",
+        ResourceKind::Pods => "Pod",
+        ResourceKind::Deployments => "Deployment",
+        ResourceKind::DaemonSets => "DaemonSet",
+        ResourceKind::StatefulSets => "StatefulSet",
+        ResourceKind::ReplicaSets => "ReplicaSet",
+        ResourceKind::ReplicationControllers => "ReplicationController",
+        ResourceKind::Jobs => "Job",
+        ResourceKind::CronJobs => "CronJob",
+        ResourceKind::ConfigMaps => "ConfigMap",
+        ResourceKind::Secrets => "Secret",
+        ResourceKind::ResourceQuotas => "ResourceQuota",
+        ResourceKind::LimitRanges => "LimitRange",
+        ResourceKind::HorizontalPodAutoscalers => "HorizontalPodAutoscaler",
+        ResourceKind::VerticalPodAutoscalers => "VerticalPodAutoscaler",
+        ResourceKind::PodDisruptionBudgets => "PodDisruptionBudget",
+        ResourceKind::PriorityClasses => "PriorityClass",
+        ResourceKind::RuntimeClasses => "RuntimeClass",
+        ResourceKind::Leases => "Lease",
+        ResourceKind::Services => "Service",
+        ResourceKind::Endpoints => "Endpoints",
+        ResourceKind::Ingresses => "Ingress",
+        ResourceKind::IngressClasses => "IngressClass",
+        ResourceKind::NetworkPolicies => "NetworkPolicy",
+        ResourceKind::EndpointSlices => "EndpointSlice",
+        ResourceKind::MutatingWebhookConfigurations => "MutatingWebhookConfiguration",
+        ResourceKind::ValidatingWebhookConfigurations => "ValidatingWebhookConfiguration",
+        ResourceKind::ValidatingAdmissionPolicies => "ValidatingAdmissionPolicy",
+        ResourceKind::ValidatingAdmissionPolicyBindings => "ValidatingAdmissionPolicyBinding",
+        ResourceKind::PodSecurityPolicies => "PodSecurityPolicy",
+        ResourceKind::PersistentVolumes => "PersistentVolume",
+        ResourceKind::PersistentVolumeClaims => "PersistentVolumeClaim",
+        ResourceKind::StorageClasses => "StorageClass",
+        ResourceKind::Events => "Event",
+        ResourceKind::ServiceAccounts => "ServiceAccount",
+        ResourceKind::Roles => "Role",
+        ResourceKind::RoleBindings => "RoleBinding",
+        ResourceKind::ClusterRoles => "ClusterRole",
+        ResourceKind::ClusterRoleBindings => "ClusterRoleBinding",
+        ResourceKind::CustomResourceDefinitions => "CustomResourceDefinition",
+    }
 }
 
 impl InspectorState {
@@ -250,6 +297,23 @@ impl IceonApp {
     pub(crate) fn can_review_drain(&self, reference: &ResourceReference) -> bool {
         self.can_reference_action(reference, PermissionAction::Patch)
             && self.can_action(ResourceKind::Pods, PermissionAction::List, None, None)
+    }
+
+    pub(crate) fn toggle_resource_inspector(
+        &mut self,
+        reference: ResourceReference,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.inspector_open
+            && self.inspector.target.as_ref() == Some(&InspectorTarget::Resource(reference.clone()))
+        {
+            self.inspector_open = false;
+            self.inspector.target = None;
+            cx.notify();
+        } else {
+            self.open_resource_inspector(reference, window, cx);
+        }
     }
 
     pub(crate) fn open_resource_inspector(
@@ -487,6 +551,30 @@ impl IceonApp {
         .detach();
     }
 
+    pub(crate) fn toggle_helm_inspector(
+        &mut self,
+        view: HelmView,
+        name: String,
+        namespace: Option<String>,
+        version: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = InspectorTarget::Helm {
+            view,
+            name: name.clone(),
+            namespace: namespace.clone(),
+            version: version.clone(),
+        };
+        if self.inspector_open && self.inspector.target.as_ref() == Some(&target) {
+            self.inspector_open = false;
+            self.inspector.target = None;
+            cx.notify();
+        } else {
+            self.open_helm_inspector(view, name, namespace, version, window, cx);
+        }
+    }
+
     pub(crate) fn open_helm_inspector(
         &mut self,
         view: HelmView,
@@ -645,6 +733,7 @@ impl IceonApp {
         .detach();
     }
 
+    #[allow(dead_code)]
     fn apply_inspector_yaml(&mut self, dry_run: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.inspector_can(PermissionAction::Patch) {
             return;
@@ -1328,6 +1417,9 @@ impl IceonApp {
             });
         if let Some(reference) = reference {
             self.open_yaml_editor(reference, window, cx);
+            self.inspector_open = false;
+            self.inspector.target = None;
+            cx.notify();
         }
     }
 
@@ -1336,52 +1428,28 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let title = match &self.inspector.target {
-            Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Pods => {
-                format!("Pod: {}", r.name)
-            }
-            Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Deployments => {
-                format!("Deployment: {}", r.name)
-            }
-            Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::DaemonSets => {
-                format!("DaemonSet: {}", r.name)
-            }
-            Some(InspectorTarget::Resource(r)) => format!("{:?} · {}", r.kind, r.name),
-            Some(InspectorTarget::Helm { name, .. }) => format!("Helm · {name}"),
-            None => "Inspector".into(),
+        let (kind_str, object_name) = match &self.inspector.target {
+            Some(InspectorTarget::Resource(r)) => (singular_kind_name(r.kind), r.name.as_str()),
+            Some(InspectorTarget::Helm { name, .. }) => ("Helm", name.as_str()),
+            None => ("Inspector", ""),
         };
+        let title = if object_name.is_empty() {
+            kind_str.to_string()
+        } else {
+            format!("{kind_str}: {object_name}")
+        };
+        let can_copy_title = !object_name.is_empty();
+        let is_copied = self.inspector.copied_title;
+        let name_for_copy = object_name.to_string();
+        let copy_icon = if is_copied {
+            IconName::Check
+        } else {
+            IconName::Copy
+        };
+        let copy_tooltip = if is_copied { "Copied!" } else { "Copy" };
         let is_resource = matches!(self.inspector.target, Some(InspectorTarget::Resource(_)));
         let is_pod = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if r.kind == ResourceKind::Pods);
         let is_workload = matches!(&self.inspector.target, Some(InspectorTarget::Resource(r)) if matches!(r.kind, ResourceKind::Deployments | ResourceKind::DaemonSets));
-        let active_tab = self.inspector.tab;
-
-        let event_count = self
-            .inspector
-            .pod_detail
-            .as_ref()
-            .map(|p| p.events.len())
-            .unwrap_or(0)
-            + self
-                .inspector
-                .collections
-                .iter()
-                .filter(|c| c.collection == CollectionKind::Events)
-                .map(|c| c.items.len())
-                .sum::<usize>();
-
-        let related_count = self
-            .inspector
-            .detail
-            .as_ref()
-            .map(|d| d.related.len())
-            .unwrap_or(0)
-            + self
-                .inspector
-                .collections
-                .iter()
-                .filter(|c| c.collection != CollectionKind::Events)
-                .map(|c| c.items.len())
-                .sum::<usize>();
 
         v_flex()
             .w_full()
@@ -1402,13 +1470,54 @@ impl IceonApp {
                     .border_color(cx.theme().border)
                     .bg(cx.theme().table_head)
                     .child(
-                        div()
+                        h_flex()
                             .flex_1()
                             .min_w_0()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(selectable_text(title).text_color(cx.theme().foreground)),
+                            .gap_1p5()
+                            .items_center()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .font_weight(FontWeight::BOLD)
+                                    .truncate()
+                                    .child(
+                                        selectable_text(title).text_color(cx.theme().foreground),
+                                    ),
+                            )
+                            .when(can_copy_title, |row| {
+                                row.child(
+                                    Button::new("inspector-copy-title-btn")
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(gpui_kit::component::Icon::new(copy_icon).text_color(
+                                            if is_copied {
+                                                cx.theme().success
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            },
+                                        ))
+                                        .tooltip(copy_tooltip)
+                                        .accessibility_label("Copy object name")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                name_for_copy.clone(),
+                                            ));
+                                            this.inspector.copied_title = true;
+                                            cx.notify();
+                                            cx.spawn_in(window, async move |this, cx| {
+                                                cx.background_executor()
+                                                    .timer(std::time::Duration::from_secs(3))
+                                                    .await;
+                                                let _ = this.update(cx, |this, cx| {
+                                                    this.inspector.copied_title = false;
+                                                    cx.notify();
+                                                });
+                                            })
+                                            .detach();
+                                        })),
+                                )
+                            }),
                     )
                     .child(
                         h_flex()
@@ -1449,7 +1558,7 @@ impl IceonApp {
                                         gpui_kit::component::Icon::new(IconName::Close)
                                             .text_color(cx.theme().foreground),
                                     )
-                                    .tooltip("Close inspector")
+                                    .tooltip("Close")
                                     .accessibility_label("Close inspector")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.inspector.helm_read = None;
@@ -1460,58 +1569,6 @@ impl IceonApp {
                             ),
                     ),
             )
-            .when(is_resource && !is_pod && !is_workload, |el| {
-                el.child(
-                    h_flex()
-                        .w_full()
-                        .px_3()
-                        .py_1p5()
-                        .gap_1()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().table_head)
-                        .children(
-                            [
-                                (InspectorTab::Summary, "Summary".to_string()),
-                                (InspectorTab::Metadata, "Metadata".to_string()),
-                                (
-                                    InspectorTab::Relations,
-                                    if related_count > 0 {
-                                        format!("Related ({related_count})")
-                                    } else {
-                                        "Related".to_string()
-                                    },
-                                ),
-                                (
-                                    InspectorTab::Events,
-                                    if event_count > 0 {
-                                        format!("Events ({event_count})")
-                                    } else {
-                                        "Events".to_string()
-                                    },
-                                ),
-                                (InspectorTab::Yaml, "YAML".to_string()),
-                            ]
-                            .into_iter()
-                            .map(|(tab, label)| {
-                                Button::new(SharedString::from(format!("insp-tab-{label}")))
-                                    .xsmall()
-                                    .ghost()
-                                    .selected(active_tab == tab)
-                                    .label(label)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.inspector.tab = tab;
-                                        if tab == InspectorTab::Yaml
-                                            && this.inspector.edit_load.is_none()
-                                        {
-                                            this.load_inspector_yaml(window, cx);
-                                        }
-                                        cx.notify();
-                                    }))
-                            }),
-                        ),
-                )
-            })
             .when_some(self.inspector.action_message.clone(), |el, msg| {
                 el.child(
                     div()
@@ -1524,11 +1581,27 @@ impl IceonApp {
                 )
             })
             .when_some(self.inspector.error.clone(), |el, err| {
-                el.child(inspector_empty_state(
-                    IconName::CircleAlert,
-                    "Unable to load this view",
-                    err,
-                ))
+                el.child(
+                    div()
+                        .w_full()
+                        .py_8()
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .child(
+                            div()
+                                .p_4()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(cx.theme().danger)
+                                .bg(cx.theme().secondary)
+                                .text_sm()
+                                .child(
+                                    selectable_text(format!("Resource loading has failed: {err}"))
+                                        .text_color(cx.theme().danger),
+                                ),
+                        ),
+                )
             })
             .child(
                 v_flex()
@@ -1539,9 +1612,23 @@ impl IceonApp {
                     .overflow_y_scrollbar()
                     .child(if self.inspector.loading {
                         div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(selectable_text("Loading resource details..."))
+                            .w_full()
+                            .py_8()
+                            .flex()
+                            .justify_center()
+                            .items_center()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        gpui_kit::component::Icon::new(IconName::Loader)
+                                            .text_color(cx.theme().primary),
+                                    )
+                                    .child(selectable_text("Loading resource details...")),
+                            )
                             .into_any_element()
                     } else if let Some(helm) = self.inspector.helm_detail.clone() {
                         self.render_helm_inspector(&helm, cx).into_any_element()
@@ -1549,25 +1636,10 @@ impl IceonApp {
                         if is_pod {
                             self.render_pod_inspector(&detail, cx).into_any_element()
                         } else if is_workload {
-                            self.render_workload_inspector(&detail, cx)
+                            self.render_workload_inspector(&detail, window, cx)
                         } else {
-                            match active_tab {
-                                InspectorTab::Summary => self
-                                    .render_inspector_summary(&detail, window, cx)
-                                    .into_any_element(),
-                                InspectorTab::Metadata => self
-                                    .render_inspector_metadata(&detail, cx)
-                                    .into_any_element(),
-                                InspectorTab::Relations => self
-                                    .render_inspector_relations(&detail, cx)
-                                    .into_any_element(),
-                                InspectorTab::Events => {
-                                    self.render_inspector_events(&detail, cx).into_any_element()
-                                }
-                                InspectorTab::Yaml => self
-                                    .render_inspector_yaml(&detail, window, cx)
-                                    .into_any_element(),
-                            }
+                            self.render_generic_continuous_inspector(&detail, window, cx)
+                                .into_any_element()
                         }
                     } else {
                         inspector_empty_state(
@@ -1578,6 +1650,464 @@ impl IceonApp {
                         .into_any_element()
                     }),
             )
+    }
+
+    pub(super) fn render_generic_continuous_inspector(
+        &self,
+        detail: &ResourceDetail,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use deployment_inspector::{field, metadata, section, text_field};
+        let kind = detail.reference.kind;
+        let kind_singular = singular_kind_name(kind);
+        let timezone = &self.preferences_draft.app.timezone;
+        let namespace = detail.reference.namespace.clone();
+        let created = detail
+            .item
+            .created_at
+            .as_deref()
+            .map(|timestamp| {
+                format!(
+                    "{} ago ({})",
+                    crate::navigation::format_age_at(Some(timestamp), jiff::Timestamp::now()),
+                    crate::preference_runtime::timestamp(timestamp, timezone)
+                )
+            })
+            .unwrap_or_else(|| "—".into());
+
+        let mut body = v_flex().w_full().min_w_0();
+
+        // 1. Metrics banner (orderNumber: -1)
+        body = body.child(
+            div()
+                .w_full()
+                .p_3()
+                .mb_3()
+                .rounded(px(4.))
+                .bg(cx.theme().secondary)
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "Historical CPU, memory, network, and filesystem metrics are not configured for {}.",
+                    match kind {
+                        ResourceKind::Nodes => "Nodes",
+                        ResourceKind::Namespaces => "Namespaces",
+                        ResourceKind::Services => "Services",
+                        ResourceKind::ConfigMaps => "ConfigMaps",
+                        ResourceKind::Secrets => "Secrets",
+                        ResourceKind::Ingresses => "Ingresses",
+                        ResourceKind::Jobs => "Jobs",
+                        ResourceKind::CronJobs => "CronJobs",
+                        ResourceKind::StatefulSets => "StatefulSets",
+                        ResourceKind::ReplicaSets => "ReplicaSets",
+                        _ => kind_singular,
+                    }
+                )),
+        );
+
+        // 2. Metadata (orderNumber: 0)
+        body = body
+            .child(text_field("Created", created, cx))
+            .child(text_field("Name", detail.reference.name.clone(), cx))
+            .child(field(
+                "Namespace",
+                div().when_some(namespace, |el, ns| {
+                    let target = ResourceReference {
+                        kind: ResourceKind::Namespaces,
+                        name: ns.clone(),
+                        namespace: None,
+                        uid: None,
+                    };
+                    el.child(
+                        Button::new("inspector-namespace-link")
+                            .xsmall()
+                            .ghost()
+                            .label(ns)
+                            .text_color(cx.theme().link)
+                            .disabled(!self.can_reference_action(&target, PermissionAction::Get))
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.open_resource_inspector(target.clone(), window, cx);
+                            })),
+                    )
+                }),
+                cx,
+            ));
+
+        let uid_opt = detail.reference.uid.clone().or(detail.item.uid.clone());
+        if let Some(uid) = uid_opt {
+            let uid_copy = uid.clone();
+            body = body.child(field(
+                "UID",
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(selectable_text(uid)),
+                    )
+                    .child(
+                        Button::new("insp-copy-uid-btn")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Copy)
+                            .tooltip("Copy UID")
+                            .accessibility_label("Copy UID")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(uid_copy.clone()));
+                            })),
+                    ),
+                cx,
+            ));
+        }
+
+        if let Some(rv) = detail.item.resource_version.as_ref() {
+            body = body.child(text_field("Resource Version", rv.clone(), cx));
+        }
+
+        if let Some(meta) = &detail.metadata {
+            if let Some(dt) = meta.deletion_timestamp.as_ref() {
+                body = body.child(text_field(
+                    "Deleted",
+                    crate::preference_runtime::timestamp(dt, timezone),
+                    cx,
+                ));
+            }
+            let last_applied = meta
+                .annotations
+                .iter()
+                .find(|entry| entry.key == "kubectl.kubernetes.io/last-applied-configuration");
+            let filtered_annotations: Vec<_> = meta
+                .annotations
+                .iter()
+                .filter(|entry| entry.key != "kubectl.kubernetes.io/last-applied-configuration")
+                .cloned()
+                .collect();
+            body = body
+                .child(field("Labels", metadata(&meta.labels, cx), cx))
+                .child(field(
+                    "Annotations",
+                    metadata(&filtered_annotations, cx),
+                    cx,
+                ));
+
+            if let Some(entry) = last_applied {
+                let key = format!("generic-last-applied-{}", detail.reference.name);
+                let expanded = self.inspector.pod_expanded.contains(&key);
+                let formatted =
+                    iceon_core::connection::detail_metadata::format_last_applied_configuration(
+                        &entry.value,
+                    );
+                body = body.child(field(
+                    "Last Applied Configuration",
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("kubectl.kubernetes.io/last-applied-configuration"),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(key.clone()))
+                                        .xsmall()
+                                        .ghost()
+                                        .label(if expanded { "Hide" } else { "Show" })
+                                        .accessibility_label("Toggle Last Applied Configuration")
+                                        .on_click(cx.listener(move |app, _, _, cx| {
+                                            if !app.inspector.pod_expanded.remove(&key) {
+                                                app.inspector.pod_expanded.insert(key.clone());
+                                            }
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .when(expanded, |el| {
+                            el.child(ReadOnlyCodeViewer::new(
+                                format!("last-applied-viewer-{}", detail.reference.name),
+                                formatted,
+                                "yaml",
+                                px(200.0),
+                            ))
+                        }),
+                    cx,
+                ));
+            }
+
+            if let Some(owner) = detail.related.get("controlledBy") {
+                let target = owner.clone();
+                let label = format!("{}: {}", singular_kind_name(owner.kind), owner.name);
+                body = body.child(field(
+                    "Controlled By",
+                    h_flex().items_center().gap_1().child(
+                        Button::new("owner-controlled-by")
+                            .xsmall()
+                            .ghost()
+                            .label(label)
+                            .text_color(cx.theme().link)
+                            .disabled(!self.can_reference_action(&target, PermissionAction::Get))
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.open_resource_inspector(target.clone(), window, cx);
+                            })),
+                    ),
+                    cx,
+                ));
+            }
+
+            if !meta.managed_fields.is_empty() {
+                body = body.child(field(
+                    "Managed fields",
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .children(meta.managed_fields.iter().enumerate().map(
+                            |(index, managed)| {
+                                let key = format!("generic-managed-{index}");
+                                let expanded = self.inspector.pod_expanded.contains(&key);
+                                let summary = format!(
+                                    "{}: {}{}",
+                                    managed.manager,
+                                    managed.operation,
+                                    managed
+                                        .subresource
+                                        .as_ref()
+                                        .map(|s| format!(" ({s})"))
+                                        .unwrap_or_default()
+                                );
+                                v_flex()
+                                    .w_full()
+                                    .gap_2()
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap_2()
+                                            .justify_between()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .child(selectable_text(summary)),
+                                            )
+                                            .child(
+                                                Button::new(SharedString::from(key.clone()))
+                                                    .xsmall()
+                                                    .ghost()
+                                                    .label(if expanded { "Hide" } else { "Show" })
+                                                    .accessibility_label(format!(
+                                                        "{} managed fields for {}",
+                                                        if expanded { "Hide" } else { "Show" },
+                                                        managed.manager
+                                                    ))
+                                                    .on_click(cx.listener(move |app, _, _, cx| {
+                                                        if !app.inspector.pod_expanded.remove(&key)
+                                                        {
+                                                            app.inspector
+                                                                .pod_expanded
+                                                                .insert(key.clone());
+                                                        }
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                    .when(expanded, |el| {
+                                        el.child(ReadOnlyCodeViewer::new(
+                                            format!(
+                                                "managed-viewer-{index}-{}",
+                                                detail.reference.name
+                                            ),
+                                            managed.fields.clone(),
+                                            "json",
+                                            px(160.0),
+                                        ))
+                                    })
+                            },
+                        )),
+                    cx,
+                ));
+            }
+
+            if meta.partial {
+                body = body.child(
+                    div()
+                        .py_2()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Some metadata was omitted for safety or size limits."),
+                );
+            }
+        }
+
+        // 3. Resource controls (Scale controls, Node controls, Service controls)
+        if matches!(
+            kind,
+            ResourceKind::StatefulSets
+                | ResourceKind::ReplicaSets
+                | ResourceKind::ReplicationControllers
+        ) {
+            body = body.child(div().py_2().child(self.scale_controls(cx)));
+        } else if kind == ResourceKind::Nodes {
+            body = body.child(div().py_2().child(self.node_controls(cx)));
+            if let Some(ninfo) = detail.item.node.clone().or_else(|| {
+                self.resource_page
+                    .as_ref()
+                    .filter(|p| p.kind == ResourceKind::Nodes)
+                    .and_then(|p| p.items.iter().find(|i| i.name == detail.reference.name))
+                    .and_then(|i| i.node.clone())
+            }) {
+                body = body.child(self.render_node_info_card(&ninfo, cx));
+            }
+            if let Some(review) = self.inspector.drain_review.clone() {
+                body = body.child(self.render_drain_review_card(&review, cx));
+            }
+            if let Some(result) = self.inspector.drain_result.clone() {
+                body = body.child(self.render_drain_result_card(&result, cx));
+            }
+        } else if kind == ResourceKind::Services {
+            body = body.child(div().py_2().child(self.service_controls(cx)));
+        }
+
+        // 4. Resource-specific Sections & Facts
+        for sect in &detail.sections {
+            body = body.child(section(&sect.title, cx));
+            for f in &sect.facts {
+                body = body.child(text_field(&f.label, f.value.clone(), cx));
+            }
+        }
+
+        // 5. Related collections (Pods, ReplicaSets, EndpointSlices, etc.)
+        for col in &self.inspector.collections {
+            if col.collection == CollectionKind::Events {
+                continue;
+            }
+            let col_name = match col.collection {
+                CollectionKind::Pods => "Pods",
+                CollectionKind::ReplicaSets => "ReplicaSets",
+                CollectionKind::Jobs => "Jobs",
+                CollectionKind::EndpointSlices => "EndpointSlices",
+                CollectionKind::ResourceQuotas => "ResourceQuotas",
+                CollectionKind::LimitRanges => "LimitRanges",
+                CollectionKind::Events => "Events",
+            };
+            body = body.child(section(col_name, cx));
+            if col.items.is_empty() {
+                body = body.child(
+                    div()
+                        .p_3()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("No owned {col_name} found.")),
+                );
+            } else {
+                for item in &col.items {
+                    let target = item.reference.clone();
+                    let item_title = format!(
+                        "{}: {}",
+                        singular_kind_name(item.reference.kind),
+                        item.reference.name
+                    );
+                    body =
+                        body.child(
+                            h_flex()
+                                .w_full()
+                                .px_3()
+                                .py_2()
+                                .justify_between()
+                                .items_center()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "col-item-{}",
+                                        item.reference.name
+                                    )))
+                                    .xsmall()
+                                    .ghost()
+                                    .label(item_title)
+                                    .text_color(cx.theme().link)
+                                    .on_click(cx.listener(move |app, _, window, cx| {
+                                        app.open_resource_inspector(target.clone(), window, cx);
+                                    })),
+                                )
+                                .when_some(item.columns.get("status").cloned(), |el, st| {
+                                    el.child(crate::badge::Badge::for_resource_status(&st).small())
+                                }),
+                        );
+                }
+            }
+        }
+
+        if iceon_core::connection::resource_edit::supports_yaml_edit(kind) {
+            let yaml_key = format!("generic-yaml-editor-{}", detail.reference.name);
+            let expanded = self.inspector.pod_expanded.contains(&yaml_key);
+            body = body.child(section("Resource YAML", cx));
+            body = body.child(
+                v_flex()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Inspect and edit reviewed YAML in-drawer, or open in the bottom dock."),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        Button::new(SharedString::from(yaml_key.clone()))
+                                            .xsmall()
+                                            .ghost()
+                                            .label(if expanded { "Hide" } else { "Show" })
+                                            .accessibility_label("Toggle YAML Editor in drawer")
+                                            .on_click(cx.listener(move |app, _, window, cx| {
+                                                if !app.inspector.pod_expanded.remove(&yaml_key) {
+                                                    app.inspector.pod_expanded.insert(yaml_key.clone());
+                                                    if app.inspector.edit_load.is_none() {
+                                                        app.load_inspector_yaml(window, cx);
+                                                    }
+                                                }
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("yaml-open-dock-btn")
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(gpui_kit_assets::IconName::Pencil)
+                                            .label("Edit in Dock")
+                                            .accessibility_label("Edit in bottom dock tab")
+                                            .on_click(cx.listener(|app, _, window, cx| {
+                                                app.edit_inspected_yaml(window, cx);
+                                            })),
+                                    ),
+                            ),
+                    )
+                    .when(expanded, |el| {
+                        el.child(self.render_inspector_yaml(detail, window, cx))
+                    }),
+            );
+        }
+
+        // 6. Events (orderNumber: Infinity)
+        self.render_workload_events(detail, body, cx)
     }
 
     fn render_inspector_action_bar(
@@ -1673,7 +2203,7 @@ impl IceonApp {
                     .xsmall()
                     .ghost()
                     .icon(gpui_kit_assets::IconName::Pencil)
-                    .tooltip("Edit YAML")
+                    .tooltip("Edit")
                     .accessibility_label("Edit YAML")
                     .disabled(
                         !self.inspector_can(PermissionAction::Get)
@@ -1965,6 +2495,7 @@ impl IceonApp {
         )
     }
 
+    #[allow(dead_code)]
     fn render_inspector_summary(
         &self,
         detail: &ResourceDetail,
@@ -2514,6 +3045,7 @@ impl IceonApp {
             }))
     }
 
+    #[allow(dead_code)]
     fn render_pod_summary_cards(
         &self,
         pod: &PodDetails,
@@ -2977,6 +3509,7 @@ impl IceonApp {
             )
     }
 
+    #[allow(dead_code)]
     fn render_inspector_metadata(
         &self,
         detail: &ResourceDetail,
@@ -3205,6 +3738,7 @@ impl IceonApp {
             .into_any_element()
     }
 
+    #[allow(dead_code)]
     fn render_inspector_relations(
         &self,
         detail: &ResourceDetail,
@@ -3433,6 +3967,7 @@ impl IceonApp {
             )
     }
 
+    #[allow(dead_code)]
     fn render_inspector_events(
         &self,
         detail: &ResourceDetail,
@@ -3634,10 +4169,21 @@ impl IceonApp {
 
         v_flex()
             .w_full()
-            .flex_1()
-            .min_h(px(420.0))
+            .h(px(420.0))
             .min_w_0()
             .gap_2()
+            .when_some(self.inspector.action_message.clone(), |el, msg| {
+                el.child(
+                    div()
+                        .px_1()
+                        .py_0p5()
+                        .text_xs()
+                        .rounded(px(3.))
+                        .bg(cx.theme().secondary)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(msg),
+                )
+            })
             .child(
                 h_flex()
                     .justify_between()
@@ -3714,6 +4260,56 @@ impl IceonApp {
                         &self.inspector_yaml_editor,
                         &self.preferences_draft.editor,
                     )),
+            )
+    }
+}
+
+#[derive(IntoElement)]
+pub(super) struct ReadOnlyCodeViewer {
+    id: SharedString,
+    content: String,
+    language: &'static str,
+    height: Pixels,
+}
+
+impl ReadOnlyCodeViewer {
+    pub(super) fn new(
+        id: impl Into<SharedString>,
+        content: impl Into<String>,
+        language: &'static str,
+        height: Pixels,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            content: content.into(),
+            language,
+            height,
+        }
+    }
+}
+
+impl RenderOnce for ReadOnlyCodeViewer {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        use gpui_kit::component::input::{Editor, EditorState};
+        let content = self.content;
+        let language = self.language;
+        let editor = window.use_keyed_state(self.id, cx, |window, cx| {
+            EditorState::new(window, cx)
+                .language(language)
+                .line_number(true)
+                .default_value(content)
+        });
+        div()
+            .w_full()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(px(4.))
+            .overflow_hidden()
+            .child(
+                Editor::new(&editor)
+                    .readonly(true)
+                    .h(self.height)
+                    .aria_label(format!("{language} code viewer, read only")),
             )
     }
 }
@@ -3835,5 +4431,33 @@ mod destructive_confirmation_tests {
         assert_eq!(captured, original);
         assert_eq!(captured.uid, "original-uid");
         assert_eq!(captured.resource_version, "123");
+    }
+
+    #[test]
+    fn singular_kind_name_matches_freelens_naming_conventions() {
+        use super::singular_kind_name;
+        assert_eq!(singular_kind_name(ResourceKind::Pods), "Pod");
+        assert_eq!(singular_kind_name(ResourceKind::Deployments), "Deployment");
+        assert_eq!(singular_kind_name(ResourceKind::DaemonSets), "DaemonSet");
+        assert_eq!(
+            singular_kind_name(ResourceKind::StatefulSets),
+            "StatefulSet"
+        );
+        assert_eq!(singular_kind_name(ResourceKind::Services), "Service");
+        assert_eq!(singular_kind_name(ResourceKind::ConfigMaps), "ConfigMap");
+        assert_eq!(singular_kind_name(ResourceKind::Secrets), "Secret");
+        assert_eq!(singular_kind_name(ResourceKind::Nodes), "Node");
+        assert_eq!(singular_kind_name(ResourceKind::Ingresses), "Ingress");
+        assert_eq!(singular_kind_name(ResourceKind::Jobs), "Job");
+        assert_eq!(singular_kind_name(ResourceKind::CronJobs), "CronJob");
+    }
+
+    #[test]
+    fn inspector_state_defaults_with_copied_title_false() {
+        use super::InspectorState;
+        let state = InspectorState::default();
+        assert!(!state.copied_title);
+        assert!(state.target.is_none());
+        assert!(!state.loading);
     }
 }
