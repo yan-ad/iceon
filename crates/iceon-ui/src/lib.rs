@@ -39,6 +39,9 @@ pub mod pod_dock_view;
 mod preference_runtime;
 pub mod preferences_view;
 mod rbac_access;
+mod rbac_users_table;
+#[cfg(debug_assertions)]
+pub use rbac_users_table::run_probe as run_rbac_users_probe;
 #[cfg(debug_assertions)]
 mod render_performance_probe;
 mod resource_pagination;
@@ -178,6 +181,9 @@ pub struct IceonApp {
     pub(crate) rbac_selected_templates: Vec<String>,
     pub(crate) rbac_selected_cluster_access: iceon_core::connection::rbac_management::ClusterAccess,
     pub(crate) rbac_all_namespaces: bool,
+    pub(crate) rbac_planner_open: bool,
+    pub(crate) rbac_users_operation: u64,
+    pub(crate) rbac_users_table: Entity<rbac_users_table::RbacUsersTable>,
 
     pub(crate) inspector: InspectorState,
     pub(crate) pod_dock_open: bool,
@@ -306,6 +312,7 @@ impl IceonApp {
             cx.new(|cx| InputState::new(window, cx).default_value("default"));
         let rbac_new_user_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("new-service-account"));
+        let rbac_users_table = cx.new(|cx| rbac_users_table::RbacUsersTable::new(window, cx));
 
         let inspector_yaml_editor = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -433,6 +440,9 @@ impl IceonApp {
             rbac_selected_cluster_access:
                 iceon_core::connection::rbac_management::ClusterAccess::None,
             rbac_all_namespaces: false,
+            rbac_planner_open: false,
+            rbac_users_operation: 0,
+            rbac_users_table,
             inspector: InspectorState::default(),
             pod_dock_open: false,
             pod_dock_tabs: vec![],

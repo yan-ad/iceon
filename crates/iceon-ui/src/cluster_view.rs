@@ -10,6 +10,7 @@ use gpui_kit::component::{
     ActiveTheme as _, ColorName, Disableable as _, IconName, Selectable as _, Sizable as _,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
+    collapsible::Collapsible,
     h_flex,
     input::Input,
     resizable::{HandleEdge, resize_handle},
@@ -247,6 +248,21 @@ pub(crate) const RESOURCE_NAME_WIDTH: f32 = 260.0;
 pub(crate) const RESOURCE_NAMESPACE_WIDTH: f32 = 144.0;
 pub(crate) const RESOURCE_AGE_WIDTH: f32 = 164.0;
 pub(crate) const RESOURCE_STATUS_WIDTH: f32 = 148.0;
+
+fn users_result_is_current(
+    operation: u64,
+    expected_operation: u64,
+    section: &str,
+    expected_section: &str,
+    namespace: Option<&str>,
+    expected_namespace: Option<&str>,
+    same_session: bool,
+) -> bool {
+    operation == expected_operation
+        && section == expected_section
+        && namespace == expected_namespace
+        && same_session
+}
 
 // Shared cell geometry: padding is inside each column; only internal vertical rules.
 pub(crate) fn table_cell(width: f32, flexible: bool, _separator: bool, _border: Hsla) -> Div {
@@ -1954,12 +1970,21 @@ impl IceonApp {
             namespace: self.selected_namespace.clone(),
         };
         let mgmt_req = ManagementRequest {
-            cluster_id: session.cluster_id,
-            session_id: session.session_id,
+            cluster_id: session.cluster_id.clone(),
+            session_id: session.session_id.clone(),
             read_id: self.next_operation_id(),
             namespace: ns,
         };
         let connection = self.connection.clone();
+        let operation = users_req.read_id;
+        self.rbac_users_operation = operation;
+        let section = self.active_cluster_section.clone();
+        let namespace = self.selected_namespace.clone();
+        self.rbac_users_response = None;
+        self.rbac_management_snapshot = None;
+        self.rbac_users_table.update(cx, |table, cx| {
+            table.sync(None, true, None, cx);
+        });
         self.cluster_loading = true;
         cx.notify();
 
@@ -1967,9 +1992,36 @@ impl IceonApp {
             let users_res = connection.rbac_users(users_req).await;
             let mgmt_res = connection.rbac_management_snapshot(mgmt_req).await;
             let _ = this.update_in(cx, |this, _, cx| {
+                if !users_result_is_current(
+                    this.rbac_users_operation,
+                    operation,
+                    &this.active_cluster_section,
+                    &section,
+                    this.selected_namespace.as_deref(),
+                    namespace.as_deref(),
+                    this.cluster_session.as_ref().is_some_and(|current| {
+                        current.cluster_id == session.cluster_id
+                            && current.session_id == session.session_id
+                    }),
+                ) {
+                    return;
+                }
                 this.cluster_loading = false;
-                if let Ok(u) = users_res {
-                    this.rbac_users_response = Some(u);
+                match users_res {
+                    Ok(u) => {
+                        this.rbac_users_table.update(cx, |table, cx| {
+                            table.sync(Some(u.clone()), false, None, cx);
+                        });
+                        this.rbac_users_response = Some(u);
+                    }
+                    Err(error) => this.rbac_users_table.update(cx, |table, cx| {
+                        table.sync(
+                            None,
+                            false,
+                            Some(crate::navigation::connection_error_message(error).into()),
+                            cx,
+                        );
+                    }),
                 }
                 if let Ok(m) = mgmt_res {
                     this.rbac_management_snapshot = Some(m);
@@ -3262,11 +3314,6 @@ impl IceonApp {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let subjects = self
-            .rbac_users_response
-            .as_ref()
-            .map(|r| r.items.clone())
-            .unwrap_or_default();
         let coverage = self
             .rbac_users_response
             .as_ref()
@@ -3276,6 +3323,9 @@ impl IceonApp {
         let selected_templates = self.rbac_selected_templates.clone();
         let cluster_access = self.rbac_selected_cluster_access.clone();
         let all_ns = self.rbac_all_namespaces;
+        let planner_open = self.rbac_planner_open
+            || self.rbac_active_plan.is_some()
+            || self.rbac_apply_response.is_some();
 
         v_flex()
             .flex_1()
@@ -3284,17 +3334,37 @@ impl IceonApp {
             .min_h_0()
             .p_4()
             .gap_4()
-            .overflow_y_scrollbar()
-            // Managed ServiceAccount User Builder & Template Selector
+            .overflow_hidden()
+            // Keep the planner available without displacing the primary inventory.
             .child(
-                v_flex()
+                Collapsible::new()
+                    .open(planner_open)
                     .w_full()
+                    .flex_shrink_0()
+                    .child(
+                        Button::new("rbac-planner-toggle")
+                            .small()
+                            .ghost()
+                            .icon(if planner_open { IconName::ChevronDown } else { IconName::ChevronRight })
+                            .label("ServiceAccount planner")
+                            .accessibility_label("Toggle ServiceAccount planner")
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.rbac_planner_open = !app.rbac_planner_open;
+                                cx.notify();
+                            })),
+                    )
+                    .content(
+                v_flex()
+                    .id("rbac-planner-content")
+                    .w_full()
+                    .max_h(px(280.0))
+                    .overflow_y_scrollbar()
                     .p_3()
                     .gap_2p5()
                     .rounded(px(8.0))
                     .border_1()
                     .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
+                    .bg(cx.theme().background)
                     .child(
                         h_flex()
                             .justify_between()
@@ -3644,61 +3714,9 @@ impl IceonApp {
                                 })),
                         )
                     }),
+                    ),
             )
-            // Discovered RBAC Subjects & Effective RoleBindings
-            .child(
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .children(subjects.into_iter().map(|subj| {
-                        v_flex()
-                            .w_full()
-                            .p_3()
-                            .gap_1p5()
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().secondary)
-                            .child(
-                                h_flex()
-                                    .justify_between()
-                                    .items_center()
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .items_center()
-                                            .child(Tag::secondary().small().child(subj.kind))
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(subj.name),
-                                            )
-                                            .when_some(subj.namespace, |el, ns| {
-                                                el.child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child(format!("ns: {ns}")),
-                                                )
-                                            }),
-                                    )
-                                    .child(
-                                        Tag::secondary()
-                                            .small()
-                                            .child(format!("{} bindings", subj.bindings.len())),
-                                    ),
-                            )
-                            .children(subj.bindings.into_iter().take(8).map(|b| {
-                                h_flex()
-                                    .justify_between()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("{} · {}", b.kind, b.name))
-                                    .child(format!("→ {}/{}", b.role_ref.kind, b.role_ref.name))
-                            }))
-                    })),
-            )
+            .child(self.rbac_users_table.clone())
     }
 }
 
@@ -3745,6 +3763,56 @@ pub(crate) fn default_yaml_template(kind: ResourceKind, namespace: &str) -> Stri
 mod tests {
     use super::{columns_for_kind, default_yaml_template};
     use iceon_core::connection::ResourceKind;
+
+    #[test]
+    fn users_results_require_operation_route_namespace_and_lease_identity() {
+        use super::users_result_is_current;
+        assert!(users_result_is_current(
+            4,
+            4,
+            "users",
+            "users",
+            Some("dev"),
+            Some("dev"),
+            true
+        ));
+        assert!(!users_result_is_current(
+            5,
+            4,
+            "users",
+            "users",
+            Some("dev"),
+            Some("dev"),
+            true
+        ));
+        assert!(!users_result_is_current(
+            4,
+            4,
+            "pods",
+            "users",
+            Some("dev"),
+            Some("dev"),
+            true
+        ));
+        assert!(!users_result_is_current(
+            4,
+            4,
+            "users",
+            "users",
+            None,
+            Some("dev"),
+            true
+        ));
+        assert!(!users_result_is_current(
+            4,
+            4,
+            "users",
+            "users",
+            Some("dev"),
+            Some("dev"),
+            false
+        ));
+    }
 
     #[test]
     fn daemonset_columns_use_projected_counts_and_node_selector_in_reference_order() {
