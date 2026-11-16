@@ -1,5 +1,5 @@
 use super::*;
-use crate::connection::tests::{connected, fake, fixture};
+use crate::connection::tests::{connected, fixture};
 use serde_json::json;
 
 #[path = "transport_tests.rs"]
@@ -32,6 +32,11 @@ async fn discovery_normal_crd_and_instances_have_independent_cancellation_slots(
         crate::connection::transport::CancelService(tower::service_fn(move |r: Request<Body>| {
             let reached = reached.clone();
             async move {
+                if r.uri().path().ends_with("/selfsubjectaccessreviews") {
+                    return Ok::<_, std::io::Error>(Response::new(Body::from(
+                        serde_json::to_vec(&allow_review(r).await).unwrap(),
+                    )));
+                }
                 if r.uri().path() != "/version" {
                     reached.add_permits(1);
                     std::future::pending::<()>().await;
@@ -207,6 +212,11 @@ async fn dedicated_discovery_deadline_cancels_transport_and_releases_worker() {
         crate::connection::transport::CancelService(tower::service_fn(move |r: Request<Body>| {
             let reached = reached.clone();
             async move {
+                if r.uri().path().ends_with("/selfsubjectaccessreviews") {
+                    return Ok::<_, std::io::Error>(Response::new(Body::from(
+                        serde_json::to_vec(&allow_review(r).await).unwrap(),
+                    )));
+                }
                 if r.uri().path() != "/version" {
                     reached.notify_one();
                     std::future::pending::<()>().await;
@@ -447,6 +457,11 @@ async fn disconnect_cancels_pending_transport_and_rejects_late_result() {
         crate::connection::transport::CancelService(tower::service_fn(move |r: Request<Body>| {
             let reached = reached.clone();
             async move {
+                if r.uri().path().ends_with("/selfsubjectaccessreviews") {
+                    return Ok::<_, std::io::Error>(Response::new(Body::from(
+                        serde_json::to_vec(&allow_review(r).await).unwrap(),
+                    )));
+                }
                 if r.uri().path() != "/version" {
                     reached.notify_one();
                     std::future::pending::<()>().await;
@@ -471,4 +486,38 @@ async fn disconnect_cancels_pending_transport_and_rejects_late_result() {
     .await
     .unwrap();
     assert_eq!(result, Err(ConnectionError::StaleSession));
+}
+
+// Keep path-only resource fixtures behind a real, echoing SSAR endpoint.
+fn fake(response: impl Fn(&str) -> (u16, Vec<u8>) + Send + Sync + 'static) -> kube::Client {
+    use http::{Request, Response};
+    use kube::client::Body;
+    let response = std::sync::Arc::new(response);
+    kube::Client::new(
+        crate::connection::transport::CancelService(tower::service_fn(move |r: Request<Body>| {
+            let response = response.clone();
+            async move {
+                let (status, bytes) = if r.uri().path().ends_with("/selfsubjectaccessreviews") {
+                    (200, serde_json::to_vec(&allow_review(r).await).unwrap())
+                } else {
+                    response(&r.uri().to_string())
+                };
+                Ok::<_, std::io::Error>(
+                    Response::builder()
+                        .status(status)
+                        .body(Body::from(bytes))
+                        .unwrap(),
+                )
+            }
+        })),
+        "default",
+    )
+}
+
+async fn allow_review(r: http::Request<kube::client::Body>) -> Value {
+    use http_body_util::BodyExt;
+    let mut value: Value =
+        serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    value["status"] = json!({"allowed":true});
+    value
 }

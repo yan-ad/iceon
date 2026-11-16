@@ -222,7 +222,7 @@ impl ConnectionEngine {
             .workers
             .try_acquire()
             .map_err(|_| ConnectionError::Busy)?;
-        let (client, cancel) = {
+        let (client, cancel, epoch) = {
             let mut state = self
                 .session
                 .lock()
@@ -233,24 +233,34 @@ impl ConnectionEngine {
                 .clone()
                 .ok_or(ConnectionError::NotConnected)?;
             super::validate_credentials(&client)?;
+            let epoch =
+                super::permissions::AuthorizationEpoch::capture(&self.authentication_generation);
             let cancel = start_slot(
                 &mut session.custom_discovery,
                 request.clone(),
                 &session.cancel,
             )?;
-            (client, cancel)
+            (client, cancel, epoch)
         };
         let _guard = CancelOnDrop(cancel.clone());
-        let result = super::bounded(
-            &cancel,
-            super::transport::resources(&client, &request, &cancel),
-        )
+        let result = super::bounded(&cancel, async {
+            super::permissions::require_attribute(
+                &client,
+                serde_json::json!({"group":"apiextensions.k8s.io", "version":"v1",
+                    "resource":"customresourcedefinitions", "verb":"list"}),
+                &cancel,
+            )
+            .await?;
+            let guarded = super::permissions::authorized_client(client, epoch.clone());
+            super::transport::resources(&guarded, &request, &cancel).await
+        })
         .await;
         let mut state = self
             .session
             .lock()
             .map_err(|_| ConnectionError::StoreUnavailable)?;
         let session = super::current_mut(&mut state, &request.session())?;
+        epoch.validate()?;
         let slot = session
             .custom_discovery
             .as_mut()
@@ -287,7 +297,7 @@ impl ConnectionEngine {
             .workers
             .try_acquire()
             .map_err(|_| ConnectionError::Busy)?;
-        let (client, cancel) = {
+        let (client, cancel, epoch) = {
             let mut state = self
                 .session
                 .lock()
@@ -298,8 +308,10 @@ impl ConnectionEngine {
                 .clone()
                 .ok_or(ConnectionError::NotConnected)?;
             super::validate_credentials(&client)?;
+            let epoch =
+                super::permissions::AuthorizationEpoch::capture(&self.authentication_generation);
             let cancel = start_slot(&mut session.custom_instances, slot_request, &session.cancel)?;
-            (client, cancel)
+            (client, cancel, epoch)
         };
         let _guard = CancelOnDrop(cancel.clone());
         let result = super::bounded(&cancel, async {
@@ -307,11 +319,32 @@ impl ConnectionEngine {
                 "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/{}",
                 request.target.definition_name
             );
-            let value = super::transport::get(&client, &path, 16 * 1024 * 1024, &cancel).await?;
+            // The definition read is itself protected.  A route-level check is not
+            // sufficient: the CRD may have changed since navigation was built.
+            let crd_attributes = serde_json::json!({
+                "group": "apiextensions.k8s.io",
+                "version": "v1",
+                "resource": "customresourcedefinitions",
+                "verb": "get",
+                "name": request.target.definition_name,
+            });
+            super::permissions::require_attribute(&client, crd_attributes, &cancel).await?;
+            let guarded = super::permissions::authorized_client(client.clone(), epoch.clone());
+            let value = super::transport::get(&guarded, &path, 16 * 1024 * 1024, &cancel).await?;
             let definition = definition(&request.target, value)?;
             let path = instance_path(&definition, &request)?;
+            let mut attributes = serde_json::json!({
+                "group": definition.group,
+                "version": definition.version,
+                "resource": definition.plural,
+                "verb": "list",
+            });
+            if let Some(namespace) = &request.namespace {
+                attributes["namespace"] = serde_json::json!(namespace);
+            }
+            super::permissions::require_attribute(&client, attributes, &cancel).await?;
             let value = super::transport::get_with_accept(
-                &client,
+                &guarded,
                 &path,
                 BODY_LIMIT,
                 &cancel,
@@ -326,6 +359,7 @@ impl ConnectionEngine {
             .lock()
             .map_err(|_| ConnectionError::StoreUnavailable)?;
         let session = super::current_mut(&mut state, &request.session())?;
+        epoch.validate()?;
         let slot = session
             .custom_instances
             .as_mut()

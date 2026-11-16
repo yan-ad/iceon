@@ -6,6 +6,32 @@ use iceon_core::connection::{
 };
 use std::collections::BTreeMap;
 
+/// Discovery permits navigation only; core performs fresh, exact access reviews
+/// before reading the definition and its instances.
+pub(crate) fn discovered_route(
+    page: Option<&ResourcePage>,
+    cluster_id: &str,
+    session_id: &str,
+    section: &str,
+) -> bool {
+    let Some((group, Some(name))) = crate::cluster_view::parse_custom_resource_target(section)
+    else {
+        return false;
+    };
+    page.is_some_and(|page| {
+        page.cluster_id == cluster_id
+            && page.session_id == session_id
+            && page.kind == iceon_core::connection::ResourceKind::CustomResourceDefinitions
+            && page.items.iter().any(|item| {
+                item.name == name
+                    && item.uid.as_ref().is_some_and(|uid| !uid.is_empty())
+                    && item.columns.get("group").is_some_and(|value| {
+                        !value.is_empty() && group.as_ref().is_none_or(|group| group == value)
+                    })
+            })
+    })
+}
+
 pub(crate) fn grouped_definitions(
     page: Option<&ResourcePage>,
 ) -> BTreeMap<String, Vec<ResourceItem>> {
@@ -94,7 +120,7 @@ impl IceonApp {
 
 #[cfg(test)]
 mod tests {
-    use super::grouped_definitions;
+    use super::{discovered_route, grouped_definitions};
     use iceon_core::connection::{ResourceItem, ResourceKind, ResourcePage};
 
     #[test]
@@ -125,7 +151,7 @@ mod tests {
                 .into(),
             })
             .collect();
-        let page = ResourcePage {
+        let mut page = ResourcePage {
             cluster_id: "cluster".into(),
             session_id: "lease".into(),
             kind: ResourceKind::CustomResourceDefinitions,
@@ -145,6 +171,36 @@ mod tests {
         assert_eq!(groups.values().map(Vec::len).sum::<usize>(), 60);
         assert_eq!(groups["alpha.io"][0].columns["kind"], "Resource00");
         assert_eq!(groups["beta.io"][0].columns["kind"], "Resource01");
+        let route = "crd:resource-00.example.io";
+        assert!(discovered_route(Some(&page), "cluster", "lease", route));
+        assert!(discovered_route(
+            Some(&page),
+            "cluster",
+            "lease",
+            "custom-resources/alpha.io/resource-00.example.io"
+        ));
+        for invalid in [
+            "crd:missing.example.io",
+            "custom-resources/beta.io/resource-00.example.io",
+            "custom-resources/alpha.io",
+            "pods",
+        ] {
+            assert!(!discovered_route(Some(&page), "cluster", "lease", invalid));
+        }
+        assert!(!discovered_route(Some(&page), "other", "lease", route));
+        assert!(!discovered_route(
+            Some(&page),
+            "cluster",
+            "old-lease",
+            route
+        ));
+        assert!(!discovered_route(None, "cluster", "lease", route));
+        page.items
+            .iter_mut()
+            .find(|item| item.name == "resource-00.example.io")
+            .unwrap()
+            .uid = None;
+        assert!(!discovered_route(Some(&page), "cluster", "lease", route));
     }
 
     #[test]

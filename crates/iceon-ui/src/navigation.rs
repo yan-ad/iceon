@@ -2,7 +2,7 @@
 //! YAML creation scaffolds, age formatters, and sanitized error messages.
 
 use iceon_core::catalog::{CatalogError, ClusterSummary};
-use iceon_core::connection::{ConnectionError, ResourceItem, ResourceKind};
+use iceon_core::connection::{ConnectionError, ResourceItem, ResourceKind, resource_status};
 use iceon_core::preferences::PreferencesError;
 use iceon_core::route_history::SavedRoute;
 use iceon_core::secrets;
@@ -221,6 +221,18 @@ mod route_tests {
             let saved = route.to_saved_route();
             iceon_core::route_history::validate(&saved).unwrap();
             assert_eq!(Route::from_saved_route(saved), route);
+        }
+    }
+
+    #[test]
+    fn resource_status_filters_follow_shared_policy() {
+        for view in RESOURCE_VIEWS {
+            assert_eq!(
+                view.statuses,
+                resource_status::filters(view.kind),
+                "{}",
+                view.id
+            );
         }
     }
 
@@ -854,7 +866,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 140.0,
             },
         ],
-        statuses: &["Ready", "NotReady", "SchedulingDisabled"],
+        statuses: resource_status::filters(ResourceKind::Nodes),
         creatable: false,
     },
     ResourceView {
@@ -884,7 +896,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Active", "Terminating"],
+        statuses: resource_status::filters(ResourceKind::Namespaces),
         creatable: true,
     },
     ResourceView {
@@ -949,7 +961,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Running", "Pending", "Succeeded", "Failed", "Terminating"],
+        statuses: resource_status::filters(ResourceKind::Pods),
         creatable: true,
     },
     ResourceView {
@@ -989,7 +1001,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 150.0,
             },
         ],
-        statuses: &["Available", "Progressing", "ReplicaFailure", "Paused"],
+        statuses: resource_status::filters(ResourceKind::Deployments),
         creatable: true,
     },
     ResourceView {
@@ -1029,7 +1041,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Ready", "Progressing", "Empty"],
+        statuses: resource_status::filters(ResourceKind::DaemonSets),
         creatable: true,
     },
     ResourceView {
@@ -1069,7 +1081,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Ready", "Progressing", "ScaledDown"],
+        statuses: resource_status::filters(ResourceKind::StatefulSets),
         creatable: true,
     },
     ResourceView {
@@ -1114,7 +1126,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Ready", "Scaling", "ScaledDown"],
+        statuses: resource_status::filters(ResourceKind::ReplicaSets),
         creatable: true,
     },
     ResourceView {
@@ -1159,7 +1171,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Ready", "Progressing", "ScaledDown"],
+        statuses: resource_status::filters(ResourceKind::ReplicationControllers),
         creatable: true,
     },
     ResourceView {
@@ -1194,7 +1206,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 130.0,
             },
         ],
-        statuses: &["Running", "Complete", "Failed", "Suspended"],
+        statuses: resource_status::filters(ResourceKind::Jobs),
         creatable: true,
     },
     ResourceView {
@@ -1244,7 +1256,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Scheduled", "Active", "Suspended"],
+        statuses: resource_status::filters(ResourceKind::CronJobs),
         creatable: true,
     },
     ResourceView {
@@ -1279,7 +1291,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ConfigMaps),
         creatable: true,
     },
     ResourceView {
@@ -1324,7 +1336,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::Secrets),
         creatable: true,
     },
     ResourceView {
@@ -1354,7 +1366,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 160.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ResourceQuotas),
         creatable: true,
     },
     ResourceView {
@@ -1384,7 +1396,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 160.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::LimitRanges),
         creatable: true,
     },
     ResourceView {
@@ -1434,7 +1446,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 130.0,
             },
         ],
-        statuses: &["AbleToScale", "ScalingActive", "ScalingLimited"],
+        statuses: resource_status::filters(ResourceKind::HorizontalPodAutoscalers),
         creatable: true,
     },
     ResourceView {
@@ -1469,7 +1481,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 140.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::VerticalPodAutoscalers),
         creatable: true,
     },
     ResourceView {
@@ -1519,7 +1531,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Healthy", "DisruptionBlocked"],
+        statuses: resource_status::filters(ResourceKind::PodDisruptionBudgets),
         creatable: true,
     },
     ResourceView {
@@ -1554,7 +1566,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 150.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::PriorityClasses),
         creatable: true,
     },
     ResourceView {
@@ -1584,7 +1596,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::RuntimeClasses),
         creatable: true,
     },
     ResourceView {
@@ -1619,7 +1631,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::Leases),
         creatable: true,
     },
     ResourceView {
@@ -1649,7 +1661,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::MutatingWebhookConfigurations),
         creatable: true,
     },
     ResourceView {
@@ -1679,7 +1691,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ValidatingWebhookConfigurations),
         creatable: true,
     },
     ResourceView {
@@ -1714,7 +1726,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 90.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ValidatingAdmissionPolicies),
         creatable: true,
     },
     ResourceView {
@@ -1749,7 +1761,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 90.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ValidatingAdmissionPolicyBindings),
         creatable: true,
     },
     ResourceView {
@@ -1804,7 +1816,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 110.0,
             },
         ],
-        statuses: &["Active", "Pending"],
+        statuses: resource_status::filters(ResourceKind::Services),
         creatable: true,
     },
     ResourceView {
@@ -1849,7 +1861,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 80.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::EndpointSlices),
         creatable: true,
     },
     ResourceView {
@@ -1884,7 +1896,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Ready", "Empty"],
+        statuses: resource_status::filters(ResourceKind::Endpoints),
         creatable: true,
     },
     ResourceView {
@@ -1924,7 +1936,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 130.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::Ingresses),
         creatable: true,
     },
     ResourceView {
@@ -1964,7 +1976,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 80.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::IngressClasses),
         creatable: true,
     },
     ResourceView {
@@ -1999,7 +2011,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 180.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::NetworkPolicies),
         creatable: true,
     },
     ResourceView {
@@ -2044,7 +2056,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 110.0,
             },
         ],
-        statuses: &["Bound", "Pending", "Lost"],
+        statuses: resource_status::filters(ResourceKind::PersistentVolumeClaims),
         creatable: true,
     },
     ResourceView {
@@ -2084,7 +2096,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 120.0,
             },
         ],
-        statuses: &["Available", "Bound", "Released", "Failed"],
+        statuses: resource_status::filters(ResourceKind::PersistentVolumes),
         creatable: true,
     },
     ResourceView {
@@ -2124,7 +2136,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 150.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::StorageClasses),
         creatable: true,
     },
     ResourceView {
@@ -2174,7 +2186,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 110.0,
             },
         ],
-        statuses: &["Normal", "Warning"],
+        statuses: resource_status::filters(ResourceKind::Events),
         creatable: false,
     },
     ResourceView {
@@ -2204,7 +2216,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 140.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ServiceAccounts),
         creatable: true,
     },
     ResourceView {
@@ -2229,7 +2241,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 140.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ClusterRoles),
         creatable: true,
     },
     ResourceView {
@@ -2259,7 +2271,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 140.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::Roles),
         creatable: true,
     },
     ResourceView {
@@ -2289,7 +2301,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 180.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::ClusterRoleBindings),
         creatable: true,
     },
     ResourceView {
@@ -2324,7 +2336,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 160.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::RoleBindings),
         creatable: true,
     },
     ResourceView {
@@ -2354,7 +2366,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 90.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::PodSecurityPolicies),
         creatable: true,
     },
     ResourceView {
@@ -2394,7 +2406,7 @@ pub const RESOURCE_VIEWS: &[ResourceView] = &[
                 width: 150.0,
             },
         ],
-        statuses: &[],
+        statuses: resource_status::filters(ResourceKind::CustomResourceDefinitions),
         creatable: true,
     },
 ];

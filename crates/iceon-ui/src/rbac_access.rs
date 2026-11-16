@@ -388,7 +388,18 @@ impl IceonApp {
             ]
             .into_iter()
             .all(|k| self.can_list(k)),
-            _ if crate::cluster_view::parse_custom_resource_target(section).is_some() => false, // arbitrary GVR is not covered by ResourceKind reviews
+            // This gate permits opening a discovered route, not reading an arbitrary
+            // GVR. Core reviews exact definition-get and instance-list access.
+            _ if crate::cluster_view::parse_custom_resource_target(section).is_some() => {
+                self.cluster_session.as_ref().is_some_and(|session| {
+                    crate::custom_resource_navigation::discovered_route(
+                        self.custom_definitions_page.as_ref(),
+                        &session.cluster_id,
+                        &session.session_id,
+                        section,
+                    )
+                })
+            }
             _ => section_to_resource_kind(section).is_some_and(|k| self.can_list(k)),
         }
     }

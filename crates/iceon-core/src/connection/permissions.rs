@@ -567,6 +567,22 @@ async fn review_check(
         reason: None,
     }
 }
+/// Exact, uncached preflight for callers that already hold an engine worker.
+/// Reuses the global review budget and cancellation/deadline handling.
+pub(super) async fn require_attribute(
+    client: &Client,
+    attributes: Value,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    match review_attribute(client, attributes, cancel).await {
+        Ok(PermissionDecision::Allowed) => Ok(()),
+        Ok(PermissionDecision::Denied) => Err(ConnectionError::PermissionDenied),
+        Ok(PermissionDecision::Unknown) | Err(_) => {
+            Err(ConnectionError::PermissionReviewUnavailable)
+        }
+    }
+}
+
 async fn review_attribute(
     client: &Client,
     attributes: Value,

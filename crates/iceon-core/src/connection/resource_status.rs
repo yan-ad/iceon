@@ -57,7 +57,7 @@ pub fn presentation(kind: ResourceKind) -> StatusPresentation {
     }
 }
 
-pub fn filters(kind: ResourceKind) -> &'static [&'static str] {
+pub const fn filters(kind: ResourceKind) -> &'static [&'static str] {
     use ResourceKind::*;
     match kind {
         Nodes => &["Ready", "Not ready", "Unknown", "Not reported"],
