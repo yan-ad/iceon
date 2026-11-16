@@ -1,0 +1,15 @@
+name: Linux native prerequisites
+description: Install GPUI, keyring, and Debian packaging build dependencies
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y \
+          build-essential clang cmake pkg-config libdbus-1-dev libssl-dev \
+          libfontconfig1-dev libfreetype-dev libxcb1-dev libxkbcommon-dev \
+          libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
+          libxcb-randr0-dev libxcb-render0-dev libxcb-shape0-dev \
+          libxcb-xfixes0-dev libxcb-xkb-dev libegl1-mesa-dev libvulkan-dev \
+          dpkg-dev desktop-file-utils

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Iceon
+Comment=Native Kubernetes workspace
+Exec=iceon
+Icon=ad.yan.iceon
+Terminal=false
+Categories=Development;System;
+Keywords=Kubernetes;Containers;Clusters;
+StartupNotify=true

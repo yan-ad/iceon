@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>ad.yan.iceon</id>
+  <name>Iceon</name>
+  <summary>Native Kubernetes workspace</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Iceon is a native Kubernetes workspace for exploring clusters and resources.</p>
+    <p>The experimental sandboxed package has limited host integration. Host credential helpers and host local terminals are not supported.</p>
+  </description>
+  <launchable type="desktop-id">ad.yan.iceon.desktop</launchable>
+  <url type="homepage">https://github.com/yan-ad/iceon</url>
+  <url type="bugtracker">https://github.com/yan-ad/iceon/issues</url>
+  <provides><binary>iceon</binary></provides>
+  <content_rating type="oars-1.1"/>
+</component>

@@ -109,6 +109,13 @@ These requirements **MUST** be preserved by every implementation, refactor, fixt
 
 ## 6. Validation and Completion
 
+### Additional distribution preparation
+
+- `.github/workflows/distribution.yml` is manual, build-only preparation for Linux x86-64/ARM64, Windows x86/ARM64, and macOS ARM64/Intel, with optional experimental Flatpak bundles. It does not publish releases or update the Homebrew tap.
+- The immutable stable-release workflow and asset contract remain separate. Expanded artifacts require a future reviewed release version; do not replace published assets or move existing tags.
+- `packaging/flatpak` has restricted host access and is not full feature parity: host credential helpers and host local terminals are unsupported. Do not add blanket host access to mask those limitations.
+- Homebrew export requires real per-architecture checksums and published matching URLs before tap publication. AUR and Developer ID signing/notarization are not part of this preparation. See `docs/distributions.md`.
+
 For code changes, run relevant focused tests during development. Before completion, run the following checks when the environment permits:
 
 ```sh

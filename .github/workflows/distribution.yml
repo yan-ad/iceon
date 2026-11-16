@@ -1,0 +1,170 @@
+name: Distribution preparation
+
+# Deliberately separate from the immutable stable-release publisher.
+# Produces Actions artifacts only: no releases, tags, tap pushes, or signing secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      build_flatpak:
+        description: Build experimental sandboxed Flatpak bundles on both Linux architectures
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-preparation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  native:
+    name: Prepare ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: i686-pc-windows-msvc
+            msvc: x86
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            msvc: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/linux-build-deps
+        if: runner.os == 'Linux'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: ./.github/actions/msvc-x86-linker
+        if: matrix.msvc == 'x86'
+      - name: Pin native ARM64 MSVC linker
+        if: matrix.msvc == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:VSCMD_ARG_TGT_ARCH -ne 'arm64') { throw 'Expected ARM64 compiler environment' }
+          $linker = Join-Path $env:VCToolsInstallDir "bin/Host$($env:VSCMD_ARG_HOST_ARCH)/arm64/link.exe"
+          if (!(Test-Path -LiteralPath $linker -PathType Leaf)) { throw 'ARM64 linker missing' }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" >> $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: distribution-${{ matrix.target }}
+      - name: Test package tooling
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Check target
+        run: cargo check --locked --workspace --all-targets --all-features --target ${{ matrix.target }}
+      - name: Test native libraries
+        run: cargo test --locked --workspace --lib --target ${{ matrix.target }}
+      - name: Build native binary
+        run: python .github/scripts/distribution.py build --target ${{ matrix.target }}
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis --version=3.13 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          "MAKENSIS=${env:ProgramFiles(x86)}\NSIS\makensis.exe" >> $env:GITHUB_ENV
+      - name: Package and verify architecture
+        shell: bash
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python .github/scripts/distribution.py package --target '${{ matrix.target }}' --version "$version" --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distribution-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  homebrew:
+    name: Export Homebrew tap files (no publication)
+    needs: native
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: distribution-*-apple-darwin
+          path: mac-artifacts
+          merge-multiple: true
+      - name: Generate cask from real artifact checksums
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python3 .github/scripts/channel_distribution.py homebrew --version "$version" --artifacts mac-artifacts --output tap-export
+          ruby -c tap-export/Casks/iceon.rb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-tap-export-NOT-PUBLISHED
+          path: tap-export/
+          if-no-files-found: error
+
+  flatpak:
+    name: Experimental Flatpak (${{ matrix.arch }})
+    if: inputs.build_flatpak
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install sandbox build tools and SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive --arch=${{ matrix.arch }} flathub org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 org.freedesktop.Sdk.Extension.rust-stable//25.08
+      - name: Prepare reviewed sources with locked vendored crates
+        run: python3 .github/scripts/channel_distribution.py flatpak --allow-network --output "$RUNNER_TEMP/flatpak-stage"
+      - name: Build sandboxed bundle (no host integration claims)
+        run: |
+          cd "$RUNNER_TEMP/flatpak-stage"
+          flatpak-builder --user --force-clean --repo=repo build ad.yan.iceon.json
+          flatpak build-bundle --arch=${{ matrix.arch }} repo "$RUNNER_TEMP/Iceon_${{ matrix.arch }}.flatpak" ad.yan.iceon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: experimental-flatpak-${{ matrix.arch }}
+          path: ${{ runner.temp }}/Iceon_*.flatpak
+          if-no-files-found: error
