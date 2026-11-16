@@ -2275,8 +2275,7 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
-        let sidebar_open =
-            cluster_route && !self.sidebar_collapsed && !self.cluster_sidebar_collapsed;
+        let sidebar_open = self.cluster_sidebar_open();
         if self.console_tab_order().is_empty() {
             self.pod_dock_open = false;
         }
@@ -2408,16 +2407,7 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
-        if cluster_route
-            && !self
-                .cluster_session
-                .as_ref()
-                .is_some_and(|session| session.status == "connected")
-        {
-            return self.render_connection_guide(cx);
-        }
-        if cluster_route && self.initial_access_loading() {
+        if self.connection_guide_visible() {
             return self.render_connection_guide(cx);
         }
         let section = self.active_cluster_section.clone();

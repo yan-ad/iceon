@@ -10,7 +10,10 @@ use gpui_kit::*;
 use iceon_core::connection::{
     ConnectionEngine, ConnectionError, SessionRequest, diagnostics::ConnectionSetupDiagnostic,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crate::{
     IceonApp,
@@ -75,6 +78,7 @@ pub(crate) struct ConnectionGuide {
     pub connect_task: Option<Task<()>>,
     pub recovery_task: Option<Task<()>>,
     pub lease: Option<ConnectingLease>,
+    pub(crate) retry_deadline: Option<Instant>,
     step: usize,
     copied: bool,
 }
@@ -111,6 +115,25 @@ pub(crate) fn retryable_connection_error(error: ConnectionError) -> bool {
             | ConnectionError::ConnectionFailed
             | ConnectionError::Busy
     )
+}
+
+/// Monotonic, rounded-up time remaining; delayed frames never invent extra time.
+pub(crate) fn retry_seconds_remaining(deadline: Instant, now: Instant) -> u64 {
+    let remaining = deadline.saturating_duration_since(now);
+    remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0)
+}
+
+fn guide_visible(cluster_route: bool, connected: bool, access_blocked: bool) -> bool {
+    cluster_route && (!connected || access_blocked)
+}
+
+fn sidebar_visible(
+    cluster_route: bool,
+    guide: bool,
+    collapsed: bool,
+    cluster_collapsed: bool,
+) -> bool {
+    cluster_route && !guide && !collapsed && !cluster_collapsed
 }
 
 fn diagnostic_summary(
@@ -279,6 +302,24 @@ const STEPS: [(&str, &str, IconName); 4] = [
 ];
 
 impl IceonApp {
+    pub(crate) fn connection_guide_visible(&self) -> bool {
+        let cluster_route = matches!(self.history.current(), Route::Cluster { .. });
+        let connected = self.cluster_session.as_ref().is_some_and(|session| {
+            session.status == "connected"
+                && matches!(self.history.current(), Route::Cluster { cluster_id, .. } if cluster_id == &session.cluster_id)
+        });
+        guide_visible(cluster_route, connected, self.access_guide_blocked())
+    }
+
+    pub(crate) fn cluster_sidebar_open(&self) -> bool {
+        sidebar_visible(
+            matches!(self.history.current(), Route::Cluster { .. }),
+            self.connection_guide_visible(),
+            self.sidebar_collapsed,
+            self.cluster_sidebar_collapsed,
+        )
+    }
+
     pub(crate) fn record_connection_failure(
         &mut self,
         error: ConnectionError,
@@ -291,6 +332,7 @@ impl IceonApp {
         self.connection_guide.phase = ConnectionPhase::failure(error);
         self.connection_guide.diagnostic = None;
         self.connection_guide.recovery_task = None;
+        self.connection_guide.retry_deadline = None;
 
         let connection = self.connection.clone();
         let generation = self.cluster_connect_generation;
@@ -313,15 +355,36 @@ impl IceonApp {
             };
             // The pinned GPUI ForegroundExecutor has no timer method. Its native
             // background timer is awaited by this owned foreground/window task.
+            let session_identity = self
+                .cluster_session
+                .as_ref()
+                .map(|session| (session.cluster_id.clone(), session.session_id.clone()));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            self.connection_guide.retry_deadline = Some(deadline);
             self.connection_guide.recovery_task = Some(cx.spawn_in(window, async move |owner, cx| {
-                cx.background_executor().timer(Duration::from_secs(5)).await;
-                let _ = owner.update_in(cx, |app, window, cx| {
-                    if app.connection_guide.can_auto_retry(&cluster_id, generation, app.cluster_connect_generation)
-                        && matches!(app.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id)
-                    {
-                        app.retry_cluster_connection(window, cx);
-                    }
-                });
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    cx.background_executor().timer(remaining.min(Duration::from_secs(1))).await;
+                    let keep_waiting = owner.update_in(cx, |app, window, cx| {
+                        if !app.connection_guide.can_auto_retry(&cluster_id, generation, app.cluster_connect_generation)
+                            || app.connection_guide.retry_deadline != Some(deadline)
+                            || app.cluster_session.as_ref().map(|session| (session.cluster_id.clone(), session.session_id.clone())) != session_identity
+                            || app.cluster_session.as_ref().is_some_and(|session| session.status == "connected")
+                            || !matches!(app.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id)
+                        {
+                            app.connection_guide.retry_deadline = None;
+                            return false;
+                        }
+                        cx.notify();
+                        if Instant::now() >= deadline {
+                            app.connection_guide.retry_deadline = None;
+                            app.retry_cluster_connection(window, cx);
+                            return false;
+                        }
+                        true
+                    }).unwrap_or(false);
+                    if !keep_waiting { break; }
+                }
             }));
         }
     }
@@ -338,14 +401,18 @@ impl IceonApp {
 
     pub(crate) fn render_connection_guide(&self, cx: &mut Context<Self>) -> AnyElement {
         let connecting = self.connection_guide.phase.connecting();
-        let reviewing = matches!(self.history.current(), Route::Cluster { .. })
+        let access_blocked = self.access_guide_blocked()
             && self
                 .cluster_session
                 .as_ref()
-                .is_some_and(|session| session.status == "connected")
-            && self.initial_access_loading();
+                .is_some_and(|session| session.status == "connected");
+        let reviewing = access_blocked && self.access_review_running();
         let busy = connecting || reviewing;
-        let error = self.connection_guide.phase.error();
+        let error = if access_blocked {
+            None
+        } else {
+            self.connection_guide.phase.error()
+        };
         let issue = error.map(recovery);
         let helper = self
             .connection_guide
@@ -357,7 +424,7 @@ impl IceonApp {
             Stage::Authentication => 2,
             Stage::Network => 3,
         });
-        let selected_step = blocked_step.unwrap_or(if busy {
+        let selected_step = blocked_step.unwrap_or(if busy || access_blocked {
             3
         } else {
             self.connection_guide.step.min(3)
@@ -374,8 +441,12 @@ impl IceonApp {
         let mut warning_tint = warning;
         warning_tint.a = 0.10;
         let title = issue.as_ref().map_or(
-            if reviewing {
-                "Checking cluster access"
+            if access_blocked {
+                if reviewing {
+                    "Checking cluster access"
+                } else {
+                    "Cluster access needs a review"
+                }
             } else if connecting {
                 "Connecting to your cluster"
             } else {
@@ -385,6 +456,8 @@ impl IceonApp {
         );
         let detail = issue.as_ref().map_or(if reviewing {
             "Connection established. Reviewing resource and namespace permissions before preparing available navigation and actions."
+        } else if access_blocked {
+            "Resource access is unavailable or not yet reviewed for this scope. Retry the access check or choose another cluster. No unavailable resources are shown."
         } else if connecting {
             "A connection attempt is in progress. Provider helpers may run if required by your selected context."
         } else {
@@ -408,22 +481,27 @@ impl IceonApp {
                     .primary()
                     .disabled(busy)
                     .icon(
-                        if issue
-                            .as_ref()
-                            .is_some_and(|i| i.action == "Retry connection")
+                        if access_blocked
+                            || issue
+                                .as_ref()
+                                .is_some_and(|i| i.action == "Retry connection")
                         {
                             IconName::RefreshCw
                         } else {
                             IconName::FolderOpen
                         },
                     )
-                    .label(
+                    .label(if access_blocked {
+                        "Retry access check"
+                    } else {
                         issue
                             .as_ref()
-                            .map_or("Import kubeconfig", |issue| issue.action),
-                    )
+                            .map_or("Import kubeconfig", |issue| issue.action)
+                    })
                     .on_click(cx.listener(move |app, _, window, cx| {
-                        if retry {
+                        if access_blocked {
+                            app.refresh_access(window, cx);
+                        } else if retry {
                             app.retry_cluster_connection(window, cx);
                         } else if import {
                             app.open_add_config(window, cx);
@@ -477,10 +555,10 @@ impl IceonApp {
                 .when(busy, |view| view.child(h_flex().items_center().gap_2()
                     .child(gpui_kit::component::spinner::Spinner::new().small())
                     .child(div().text_sm().child(if reviewing { "Reviewing cluster permissions…" } else if self.connection_guide.phase == ConnectionPhase::Opening { "Opening the selected context…" } else { "Contacting the Kubernetes API…" }))))
-                .when(matches!(self.connection_guide.phase, ConnectionPhase::Waiting(_)), |view| view.child(
-                    div().text_sm().text_color(muted).child("Retrying automatically every 5 seconds")))
+                .when_some(self.connection_guide.retry_deadline.filter(|_| !access_blocked), |view, deadline| view.child(
+                    div().text_sm().text_color(muted).child(format!("Retry to connect in {}s", retry_seconds_remaining(deadline, Instant::now())))))
                 .child(guide_actions)
-                .when(!busy && error.is_none() && !self.catalog_snapshot.clusters.is_empty(), |view| view.child(
+                .when(!access_blocked && !busy && error.is_none() && !self.catalog_snapshot.clusters.is_empty(), |view| view.child(
                     v_flex().gap_2()
                         .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Choose an available context"))
                         .child(h_flex().flex_wrap().gap_2().children(self.catalog_snapshot.clusters.iter().map(|cluster| {
@@ -518,7 +596,7 @@ impl IceonApp {
                         else { "The context is open. Waiting for the Kubernetes API connection result." }
                     } else if error.is_some() {
                         "Resolve the highlighted stage, then retry. Your imported contexts stay available in the cluster selector."
-                    } else { STEPS[selected_step].1 }))
+                    } else if access_blocked { self.access_message() } else { STEPS[selected_step].1 }))
                     .when_some(helper.map(str::to_owned).filter(|_| blocked_step == Some(2)), |view, helper| view.child(
                         h_flex().flex_wrap().items_center().gap_2().p_3().rounded(px(8.)).bg(secondary)
                             .child(div().text_sm().text_color(muted).child("Configured sign-in helper"))
@@ -529,7 +607,7 @@ impl IceonApp {
                         .child(Button::new("guide-docs").outline().small().icon(IconName::ExternalLink)
                             .label(provider.map_or("Read setup instructions", |(label, _)| label))
                             .on_click(move |_, _, cx| cx.open_url(docs)))
-                        .when(error.is_none() && !busy && selected_step < 3, |row| row.child(Button::new("guide-next").ghost().small().label("Next step")
+                        .when(!access_blocked && error.is_none() && !busy && selected_step < 3, |row| row.child(Button::new("guide-next").ghost().small().label("Next step")
                             .on_click(cx.listener(|app, _, _, cx| { app.connection_guide.step = (app.connection_guide.step + 1).min(3); cx.notify(); }))))
                         .when_some(error, |row, error| row.child(Button::new("guide-copy-diagnostic").ghost().small()
                             .label(if self.connection_guide.copied { "Summary copied" } else { "Copy safe summary" })
@@ -554,6 +632,46 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn countdown_uses_monotonic_deadline_and_ceiling() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(5);
+        for (elapsed_ms, expected) in [
+            (0, 5),
+            (1, 5),
+            (1000, 4),
+            (4000, 1),
+            (4999, 1),
+            (5000, 0),
+            (9000, 0),
+        ] {
+            assert_eq!(
+                retry_seconds_remaining(deadline, start + Duration::from_millis(elapsed_ms)),
+                expected
+            );
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn guide_and_sidebar_visibility_are_transient_not_saved_preferences() {
+        assert!(!guide_visible(false, false, true));
+        assert!(guide_visible(true, false, false));
+        assert!(guide_visible(true, true, true));
+        assert!(!guide_visible(true, true, false));
+        for collapsed in [false, true] {
+            for cluster_collapsed in [false, true] {
+                let saved = (collapsed, cluster_collapsed);
+                assert!(!sidebar_visible(true, true, collapsed, cluster_collapsed));
+                assert_eq!(
+                    sidebar_visible(true, false, collapsed, cluster_collapsed),
+                    !collapsed && !cluster_collapsed
+                );
+                assert_eq!(saved, (collapsed, cluster_collapsed));
+            }
+        }
+        assert!(!sidebar_visible(false, false, false, false));
+    }
 
     #[::core::prelude::v1::test]
     fn recovery_lifecycle_guards_overlap_stale_routes_and_manual_retry() {

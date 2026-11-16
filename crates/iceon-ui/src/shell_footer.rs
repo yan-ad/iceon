@@ -53,11 +53,7 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let sidebar_open = matches!(
-            self.history.current(),
-            crate::navigation::Route::Cluster { .. }
-        ) && !self.sidebar_collapsed
-            && !self.cluster_sidebar_collapsed;
+        let sidebar_open = self.cluster_sidebar_open();
         footer_frame(crate::shell_theme::chrome_border(cx.theme()))
             .text_color(cx.theme().sidebar_foreground)
             .child(

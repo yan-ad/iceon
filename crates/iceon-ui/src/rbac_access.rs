@@ -93,6 +93,10 @@ fn resource_route_visible(
 ) -> bool {
     namespaced_kind(kind) || cluster_decision == Some(PermissionDecision::Allowed)
 }
+fn access_blocks_guide(initial: bool, ready: bool, allowed: bool, visible: bool) -> bool {
+    initial || !ready || (!allowed && !visible)
+}
+
 fn needs_initial_access_page(
     completed: Option<&(String, String)>,
     cluster: &str,
@@ -329,6 +333,29 @@ impl IceonApp {
                 &session.session_id,
                 self.access.running,
             )
+    }
+
+    /// Full-page blocking states share the guide; a usable same-scope refresh
+    /// keeps navigation available, as does a namespace-selectable denial.
+    pub(crate) fn access_guide_blocked(&self) -> bool {
+        access_blocks_guide(
+            self.initial_access_loading(),
+            self.access_ready(),
+            self.route_allowed(&self.active_cluster_section),
+            self.route_visible(&self.active_cluster_section),
+        )
+    }
+
+    pub(crate) fn access_review_running(&self) -> bool {
+        self.access.running
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn fixture_guide_access_review(&mut self, running: bool) {
+        self.access = AccessState {
+            running,
+            ..Default::default()
+        };
     }
 
     pub fn access_ready(&self) -> bool {
@@ -1036,6 +1063,16 @@ mod tests {
             PermissionDecision::Allowed
         );
     }
+    #[::core::prelude::v1::test]
+    fn guide_access_gate_preserves_usable_refresh_and_namespace_denial() {
+        assert!(super::access_blocks_guide(true, false, false, true));
+        assert!(super::access_blocks_guide(false, false, false, true));
+        assert!(super::access_blocks_guide(false, false, false, false));
+        assert!(super::access_blocks_guide(false, true, false, false));
+        assert!(!super::access_blocks_guide(false, true, true, true));
+        assert!(!super::access_blocks_guide(false, true, false, true));
+    }
+
     #[test]
     fn full_page_loading_is_only_for_initial_session_review() {
         let completed = ("cluster".into(), "lease".into());

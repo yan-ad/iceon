@@ -22,6 +22,7 @@ impl Drop for Fixture {
 struct Preview {
     owner: Entity<IceonApp>,
     _fixture: Arc<Fixture>,
+    _subscription: Subscription,
 }
 impl Render for Preview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -38,6 +39,8 @@ pub fn run() {
     let fixture = Arc::new(Fixture(path));
     let missing = std::env::args().any(|arg| arg == "--missing-helper");
     let connecting = std::env::args().any(|arg| arg == "--connecting");
+    let reviewing = std::env::args().any(|arg| arg == "--reviewing");
+    let unavailable = std::env::args().any(|arg| arg == "--access-unavailable");
     let waiting = std::env::args().any(|arg| arg == "--waiting");
     let compact = std::env::args().any(|arg| arg == "--compact");
     let light = std::env::args().any(|arg| arg == "--light");
@@ -103,9 +106,56 @@ pub fn run() {
                             });
                         });
                     }
-                    cx.new(|_| Preview {
-                        owner,
-                        _fixture: fixture,
+                    if reviewing || unavailable {
+                        owner.update(cx, |app, _| {
+                            app.history.push(crate::navigation::Route::Cluster {
+                                cluster_id: "offline-guide".into(),
+                                section: "overview".into(),
+                            });
+                            app.cluster_session =
+                                Some(iceon_core::connection::ConnectionSnapshot {
+                                    cluster_id: "offline-guide".into(),
+                                    session_id: "offline-lease".into(),
+                                    context_name: "offline".into(),
+                                    status: "connected",
+                                    api_version: None,
+                                    error: None,
+                                });
+                            app.connection_guide.phase =
+                                crate::connection_guide::ConnectionPhase::Connected;
+                            app.fixture_guide_access_review(reviewing);
+                            let saved = (app.sidebar_collapsed, app.cluster_sidebar_collapsed);
+                            assert!(app.connection_guide_visible());
+                            assert!(!app.cluster_sidebar_open());
+                            assert_eq!(
+                                saved,
+                                (app.sidebar_collapsed, app.cluster_sidebar_collapsed)
+                            );
+                        });
+                    }
+                    if waiting {
+                        // Only invalidate the isolated preview; never schedule a connection.
+                        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                        owner.update(cx, |app, cx| {
+                            app.connection_guide.retry_deadline = Some(deadline);
+                            app.connection_guide.recovery_task =
+                                Some(cx.spawn(async move |owner, cx| {
+                                    for _ in 0..6 {
+                                        cx.background_executor()
+                                            .timer(Duration::from_secs(1))
+                                            .await;
+                                        let _ = owner.update(cx, |_, cx| cx.notify());
+                                    }
+                                }));
+                        });
+                    }
+                    cx.new(|cx| {
+                        let subscription = cx.observe(&owner, |_, _, cx| cx.notify());
+                        Preview {
+                            owner,
+                            _fixture: fixture,
+                            _subscription: subscription,
+                        }
                     })
                 },
             )
