@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.5
+
+- Add guided cluster setup, connection diagnostics and recovery, and multi-namespace
+  selection with improved namespace navigation.
+- Add redacted pod inspection plus Deployment and DaemonSet inspectors and guarded
+  workload actions; enforce custom-resource access reviews and add an RBAC users table.
+- Improve Quick Jump across catalog clusters, add Kubernetes API brand icons,
+  and support multi-status resource filtering.
+- Consolidate console session controls and tab navigation; add a device-terminal
+  shortcut and refine Overview, compact badges, borders, and native window blur.
+- Register native macOS `iceon://create-cluster` and `iceon://settings` actions for
+  kubeconfig import and settings. Core Spotlight indexing is not implemented.
+
 ## 0.1.4
 
 - Refresh the native shell with compact header controls, a sidebar footer, and

@@ -412,15 +412,14 @@ impl IceonApp {
                 if matches!(
                     reference.kind,
                     ResourceKind::Deployments | ResourceKind::DaemonSets
-                ) {
-                    if let Some(namespace) = &reference.namespace {
-                        collection_references.push(ResourceReference {
-                            kind: ResourceKind::Namespaces,
-                            name: namespace.clone(),
-                            namespace: None,
-                            uid: None,
-                        });
-                    }
+                ) && let Some(namespace) = &reference.namespace
+                {
+                    collection_references.push(ResourceReference {
+                        kind: ResourceKind::Namespaces,
+                        name: namespace.clone(),
+                        namespace: None,
+                        uid: None,
+                    });
                 }
                 for reference in collection_references.into_iter().take(64) {
                     this.review_resource_access(

@@ -270,15 +270,14 @@ impl IceonApp {
                             {
                                 return;
                             }
-                            if let Some(lease) = &entry.lease {
-                                if !app.cluster_session.as_ref().is_some_and(|session| {
+                            if let Some(lease) = &entry.lease
+                                && (!app.cluster_session.as_ref().is_some_and(|session| {
                                     &session.cluster_id == cluster_id
                                         && &session.session_id == lease
                                         && session.status == "connected"
-                                }) || !app.route_allowed(section)
-                                {
-                                    return;
-                                }
+                                }) || !app.route_allowed(section))
+                            {
+                                return;
                             }
                         }
                         app.close_command_palette(window, cx);

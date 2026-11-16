@@ -170,9 +170,11 @@ pub(crate) fn create_namespace_select(
             let SelectEvent::Confirm(Some(namespace)) = event else {
                 return;
             };
-            this.selected_namespaces = (namespace != "All Namespaces")
-                .then(|| vec![namespace.clone()])
-                .unwrap_or_default();
+            this.selected_namespaces = if namespace != "All Namespaces" {
+                vec![namespace.clone()]
+            } else {
+                Vec::new()
+            };
             this.selected_namespace = this.selected_namespaces.first().cloned();
             this.current_continue_token = None;
             this.continue_token_history.clear();
@@ -2549,7 +2551,7 @@ impl IceonApp {
                 )
                 .child({
                     let selected = self.selected_status_filter.clone();
-                    let trigger = Button::new("breadcrumb-status")
+                    Button::new("breadcrumb-status")
                         .ghost()
                         .xsmall()
                         .text_color(cx.theme().sidebar_foreground)
@@ -2612,8 +2614,7 @@ impl IceonApp {
                                 );
                             }
                             menu
-                        });
-                    trigger
+                        })
                 })
             })
     }

@@ -167,10 +167,10 @@ impl IceonApp {
                         let focus = window.focused(cx);
                         cx.stop_propagation();
                         app.select_console_tab(next, window, cx);
-                        if !matches!(key, "enter" | "space") {
-                            if let Some(focus) = focus {
-                                window.focus(&focus, cx);
-                            }
+                        if !matches!(key, "enter" | "space")
+                            && let Some(focus) = focus
+                        {
+                            window.focus(&focus, cx);
                         }
                     }
                 });

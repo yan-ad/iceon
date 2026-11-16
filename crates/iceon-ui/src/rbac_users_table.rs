@@ -519,6 +519,187 @@ impl Render for RbacUsersTable {
     }
 }
 
+/// Offline native audit of the production Users view. No catalog, kubeconfig,
+/// connection engine or host shell is constructed.
+#[cfg(debug_assertions)]
+pub fn run_probe() -> anyhow::Result<()> {
+    use gpui_kit::component::ThemeMode;
+    use std::{cell::RefCell, time::Duration};
+    type Outcome = Rc<RefCell<Option<Result<(), String>>>>;
+    let outcome: Outcome = Rc::default();
+    let result = outcome.clone();
+    gpui_kit::application()
+        .with_assets(crate::app_assets::AppAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            crate::console_font::init(cx);
+            crate::shell_theme::apply(ThemeMode::Dark, None, cx);
+            let opened = crate::shell_theme::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None, size(px(1120.), px(640.)), cx,
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    window.set_window_title("Iceon Users — offline native probe");
+                    cx.new(|cx| {
+                        let mut table = RbacUsersTable::new(window, cx);
+                        table.sync(Some(probe_fixture()), false, None, cx);
+                        table
+                    })
+                },
+            );
+            let (handle, table) = match opened {
+                Ok(opened) => opened,
+                Err(error) => {
+                    *result.borrow_mut() = Some(Err(error.to_string()));
+                    cx.quit();
+                    return;
+                }
+            };
+            let watchdog = result.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(Duration::from_secs(15)).await;
+                cx.update(|cx| {
+                    if watchdog.borrow().is_none() {
+                        *watchdog.borrow_mut() = Some(Err("native watchdog expired".into()));
+                    }
+                    cx.quit();
+                });
+            }).detach();
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() { cx.quit(); }
+            }).detach();
+            cx.spawn(async move |cx| {
+                // Each mutation is followed by a later native draw: search is
+                // driven through InputState so its real observer must fire.
+                let mut previous_renders = 0;
+                let mut previous_rows = 0;
+                for stage in 0..10 {
+                    cx.background_executor().timer(Duration::from_millis(220)).await;
+                    let checked = handle.update(cx, |_, window, cx| -> anyhow::Result<()> {
+                        window.draw(cx).clear(cx);
+                        table.update(cx, |this, cx| -> anyhow::Result<()> {
+                            let (renders, row_renders) = this.probe_renders.get();
+                            anyhow::ensure!(renders > previous_renders, "stage {stage}: view did not render");
+                            previous_renders = renders;
+                            let expected = match stage { 4 => 24, 5 | 8 | 9 => 0, _ => 72 };
+                            anyhow::ensure!(this.rows.len() == expected, "stage {stage}: expected {expected} rows, got {}", this.rows.len());
+                            anyhow::ensure!(this.row_sizes.len() == expected, "row sizes out of sync");
+                            if expected > 0 {
+                                anyhow::ensure!(row_renders > previous_rows, "stage {stage}: virtual list callback rendered no rows");
+                            }
+                            previous_rows = row_renders;
+                            if stage < 8 {
+                                anyhow::ensure!(response_notices(this.response.as_ref()).len() == 3, "incomplete coverage notices lost");
+                            }
+                            match stage {
+                                0 => this.sort_by(UsersSortKey::Name, cx),
+                                1 => {
+                                    anyhow::ensure!(this.rows[0].source_index == 71, "ascending sort failed");
+                                    this.sort_by(UsersSortKey::Name, cx);
+                                }
+                                2 => {
+                                    anyhow::ensure!(this.rows[0].source_index == 0, "descending sort failed");
+                                    this.sort_by(UsersSortKey::Name, cx);
+                                }
+                                3 => {
+                                    anyhow::ensure!(this.sort.is_none(), "third sort did not reset");
+                                    this.search.update(cx, |input, cx| input.set_value("ServiceAccount", window, cx));
+                                }
+                                4 => {
+                                    anyhow::ensure!(this.rows.iter().all(|r| this.response.as_ref().unwrap().items[r.source_index].kind == "ServiceAccount"), "type filter failed");
+                                    this.search.update(cx, |input, cx| input.set_value("no-such-offline-subject", window, cx));
+                                }
+                                5 => { this.search.update(cx, |input, cx| input.set_value("team-fixture", window, cx)); }
+                                6 => { this.search.update(cx, |input, cx| input.set_value("", window, cx)); }
+                                7 => this.sync(None, true, None, cx),
+                                8 => {
+                                    anyhow::ensure!(this.loading, "loading state missing");
+                                    this.sync(None, false, Some("Offline fixture error".into()), cx);
+                                }
+                                9 => {
+                                    anyhow::ensure!(!this.loading && this.error.is_some(), "error state missing");
+                                }
+                                _ => unreachable!(),
+                            }
+                            Ok(())
+                        })
+                    });
+                    let error = match checked {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(error.to_string()),
+                        Err(error) => Some(error.to_string()),
+                    };
+                    if let Some(error) = error {
+                        cx.update(|cx| {
+                            *result.borrow_mut() = Some(Err(format!("stage {stage}: {error}")));
+                            cx.quit();
+                        });
+                        return;
+                    }
+                }
+                cx.update(|cx| {
+                    println!("RBAC_USERS_PROBE_OK: actual native Users view and virtual rows rendered; 72 synthetic subjects; sort cycle, InputState search, namespaced bindings, truncation, loading and error verified; no connections or credentials");
+                    *result.borrow_mut() = Some(Ok(()));
+                    cx.quit();
+                });
+            }).detach();
+            cx.activate(true);
+        });
+    let result = outcome.borrow_mut().take();
+    match result {
+        Some(Ok(())) => Ok(()),
+        Some(Err(error)) => anyhow::bail!("RBAC Users probe: {error}"),
+        None => anyhow::bail!("RBAC Users probe closed before verification"),
+    }
+}
+
+#[cfg(debug_assertions)]
+fn probe_fixture() -> RbacUsersResponse {
+    use iceon_core::connection::rbac::{Coverage, SubjectRoleRef};
+    RbacUsersResponse {
+        cluster_id: "offline-fixture".into(),
+        session_id: "offline-session".into(),
+        read_id: 1,
+        namespace: None,
+        fetched_at: 0,
+        truncated: true,
+        coverage: vec![
+            Coverage {
+                resource: "RoleBindings",
+                state: "complete",
+            },
+            Coverage {
+                resource: "ClusterRoleBindings",
+                state: "forbidden",
+            },
+        ],
+        items: (0..72)
+            .map(|index| SubjectRecord {
+                id: format!("fixture-{index}"),
+                kind: ["User", "Group", "ServiceAccount"][index % 3],
+                name: format!("subject-{:03}", 71 - index),
+                namespace: (index % 3 == 2).then(|| "workloads-fixture".into()),
+                bindings_truncated: index == 0,
+                bindings: vec![SubjectBinding {
+                    kind: "RoleBinding",
+                    name: format!("grant-{index:03}"),
+                    namespace: Some("team-fixture".into()),
+                    uid: format!("fixture-binding-{index}"),
+                    resource_version: "1".into(),
+                    role_ref: SubjectRoleRef {
+                        kind: "Role",
+                        name: "fixture-reader".into(),
+                    },
+                }],
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,186 +895,5 @@ mod tests {
             indexes(sorted_rows(&items, "", Some((UsersSortKey::Name, false)))),
             vec![2, 0, 1]
         );
-    }
-}
-
-/// Offline native audit of the production Users view. No catalog, kubeconfig,
-/// connection engine or host shell is constructed.
-#[cfg(debug_assertions)]
-pub fn run_probe() -> anyhow::Result<()> {
-    use gpui_kit::component::ThemeMode;
-    use std::{cell::RefCell, time::Duration};
-    type Outcome = Rc<RefCell<Option<Result<(), String>>>>;
-    let outcome: Outcome = Rc::default();
-    let result = outcome.clone();
-    gpui_kit::application()
-        .with_assets(crate::app_assets::AppAssets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            crate::console_font::init(cx);
-            crate::shell_theme::apply(ThemeMode::Dark, None, cx);
-            let opened = crate::shell_theme::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                        None, size(px(1120.), px(640.)), cx,
-                    ))),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| {
-                    window.set_window_title("Iceon Users — offline native probe");
-                    cx.new(|cx| {
-                        let mut table = RbacUsersTable::new(window, cx);
-                        table.sync(Some(probe_fixture()), false, None, cx);
-                        table
-                    })
-                },
-            );
-            let (handle, table) = match opened {
-                Ok(opened) => opened,
-                Err(error) => {
-                    *result.borrow_mut() = Some(Err(error.to_string()));
-                    cx.quit();
-                    return;
-                }
-            };
-            let watchdog = result.clone();
-            cx.spawn(async move |cx| {
-                cx.background_executor().timer(Duration::from_secs(15)).await;
-                cx.update(|cx| {
-                    if watchdog.borrow().is_none() {
-                        *watchdog.borrow_mut() = Some(Err("native watchdog expired".into()));
-                    }
-                    cx.quit();
-                });
-            }).detach();
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() { cx.quit(); }
-            }).detach();
-            cx.spawn(async move |cx| {
-                // Each mutation is followed by a later native draw: search is
-                // driven through InputState so its real observer must fire.
-                let mut previous_renders = 0;
-                let mut previous_rows = 0;
-                for stage in 0..10 {
-                    cx.background_executor().timer(Duration::from_millis(220)).await;
-                    let checked = handle.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                        window.draw(cx).clear(cx);
-                        table.update(cx, |this, cx| -> anyhow::Result<()> {
-                            let (renders, row_renders) = this.probe_renders.get();
-                            anyhow::ensure!(renders > previous_renders, "stage {stage}: view did not render");
-                            previous_renders = renders;
-                            let expected = match stage { 4 => 24, 5 | 8 | 9 => 0, _ => 72 };
-                            anyhow::ensure!(this.rows.len() == expected, "stage {stage}: expected {expected} rows, got {}", this.rows.len());
-                            anyhow::ensure!(this.row_sizes.len() == expected, "row sizes out of sync");
-                            if expected > 0 {
-                                anyhow::ensure!(row_renders > previous_rows, "stage {stage}: virtual list callback rendered no rows");
-                            }
-                            previous_rows = row_renders;
-                            if stage < 8 {
-                                anyhow::ensure!(response_notices(this.response.as_ref()).len() == 3, "incomplete coverage notices lost");
-                            }
-                            match stage {
-                                0 => this.sort_by(UsersSortKey::Name, cx),
-                                1 => {
-                                    anyhow::ensure!(this.rows[0].source_index == 71, "ascending sort failed");
-                                    this.sort_by(UsersSortKey::Name, cx);
-                                }
-                                2 => {
-                                    anyhow::ensure!(this.rows[0].source_index == 0, "descending sort failed");
-                                    this.sort_by(UsersSortKey::Name, cx);
-                                }
-                                3 => {
-                                    anyhow::ensure!(this.sort.is_none(), "third sort did not reset");
-                                    this.search.update(cx, |input, cx| input.set_value("ServiceAccount", window, cx));
-                                }
-                                4 => {
-                                    anyhow::ensure!(this.rows.iter().all(|r| this.response.as_ref().unwrap().items[r.source_index].kind == "ServiceAccount"), "type filter failed");
-                                    this.search.update(cx, |input, cx| input.set_value("no-such-offline-subject", window, cx));
-                                }
-                                5 => { this.search.update(cx, |input, cx| input.set_value("team-fixture", window, cx)); }
-                                6 => { this.search.update(cx, |input, cx| input.set_value("", window, cx)); }
-                                7 => this.sync(None, true, None, cx),
-                                8 => {
-                                    anyhow::ensure!(this.loading, "loading state missing");
-                                    this.sync(None, false, Some("Offline fixture error".into()), cx);
-                                }
-                                9 => {
-                                    anyhow::ensure!(!this.loading && this.error.is_some(), "error state missing");
-                                }
-                                _ => unreachable!(),
-                            }
-                            Ok(())
-                        })
-                    });
-                    let error = match checked {
-                        Ok(Ok(())) => None,
-                        Ok(Err(error)) => Some(error.to_string()),
-                        Err(error) => Some(error.to_string()),
-                    };
-                    if let Some(error) = error {
-                        cx.update(|cx| {
-                            *result.borrow_mut() = Some(Err(format!("stage {stage}: {error}")));
-                            cx.quit();
-                        });
-                        return;
-                    }
-                }
-                cx.update(|cx| {
-                    println!("RBAC_USERS_PROBE_OK: actual native Users view and virtual rows rendered; 72 synthetic subjects; sort cycle, InputState search, namespaced bindings, truncation, loading and error verified; no connections or credentials");
-                    *result.borrow_mut() = Some(Ok(()));
-                    cx.quit();
-                });
-            }).detach();
-            cx.activate(true);
-        });
-    let result = outcome.borrow_mut().take();
-    match result {
-        Some(Ok(())) => Ok(()),
-        Some(Err(error)) => anyhow::bail!("RBAC Users probe: {error}"),
-        None => anyhow::bail!("RBAC Users probe closed before verification"),
-    }
-}
-
-#[cfg(debug_assertions)]
-fn probe_fixture() -> RbacUsersResponse {
-    use iceon_core::connection::rbac::{Coverage, SubjectRoleRef};
-    RbacUsersResponse {
-        cluster_id: "offline-fixture".into(),
-        session_id: "offline-session".into(),
-        read_id: 1,
-        namespace: None,
-        fetched_at: 0,
-        truncated: true,
-        coverage: vec![
-            Coverage {
-                resource: "RoleBindings",
-                state: "complete",
-            },
-            Coverage {
-                resource: "ClusterRoleBindings",
-                state: "forbidden",
-            },
-        ],
-        items: (0..72)
-            .map(|index| SubjectRecord {
-                id: format!("fixture-{index}"),
-                kind: ["User", "Group", "ServiceAccount"][index % 3],
-                name: format!("subject-{:03}", 71 - index),
-                namespace: (index % 3 == 2).then(|| "workloads-fixture".into()),
-                bindings_truncated: index == 0,
-                bindings: vec![SubjectBinding {
-                    kind: "RoleBinding",
-                    name: format!("grant-{index:03}"),
-                    namespace: Some("team-fixture".into()),
-                    uid: format!("fixture-binding-{index}"),
-                    resource_version: "1".into(),
-                    role_ref: SubjectRoleRef {
-                        kind: "Role",
-                        name: "fixture-reader".into(),
-                    },
-                }],
-            })
-            .collect(),
     }
 }

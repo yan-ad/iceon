@@ -92,7 +92,7 @@ mod activation {
                 // event. Defer the update instead of reentering its App borrow.
                 executor
                     .spawn(async move {
-                        let _ = context.update(|cx| dispatch_pending(&state, cx));
+                        context.update(|cx| dispatch_pending(&state, cx));
                     })
                     .detach();
             });

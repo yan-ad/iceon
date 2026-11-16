@@ -123,9 +123,8 @@ mod tests {
                 },
                 "{prefixed}"
             );
-            for unrelated in [format!("{domain}.example.org")] {
-                assert_eq!(api_group_path(&unrelated), KUBERNETES_PATH, "{unrelated}");
-            }
+            let unrelated = format!("{domain}.example.org");
+            assert_eq!(api_group_path(&unrelated), KUBERNETES_PATH, "{unrelated}");
         }
     }
 

@@ -55,14 +55,14 @@ Results vary by workload and machine.
 | Platform | Current target | Next |
 | --- | --- | --- |
 | macOS · Apple Silicon | CI + DMG/app archive packaging | Packaged smoke tests, Developer ID signing/notarization |
-| Windows · x86 | Compile CI + 0.1.3 setup EXE pipeline | Native smoke tests, signing and installer experience |
+| Windows · x86 | Compile CI + setup EXE pipeline | Native smoke tests, signing and installer experience |
 | Windows · x64/ARM64 | No release target yet | Dedicated builds and validation |
 | macOS · Intel | No release target yet | Build and hardware validation |
 | Linux | Rust source; CI/builds currently deferred | Restore platform CI, desktop validation and packages |
 
 Download from [Releases](https://github.com/yan-ad/iceon/releases).
 macOS packages are ad-hoc signed, **not notarized**; Windows packages lack Authenticode signing.
-The `0.1.3` setup/feed pipeline targets older updater-enabled clients; `0.1.2`
+The `0.1.5` setup/feed pipeline targets older updater-enabled clients; `0.1.2`
 retains its ZIP assets. The native app cannot yet update itself. See [installation details](docs/releases.md).
 
 ## Feature roadmap
