@@ -217,7 +217,7 @@ async fn synthetic_install_cancel_timeout_and_output_limit() {
                 0 => ConnectionError::StaleSession,
                 1 => ConnectionError::Timeout,
                 2 => ConnectionError::LimitExceeded,
-                _ => ConnectionError::Conflict,
+                _ => ConnectionError::HelmCommandFailed,
             })
         );
         assert!(!path.exists());

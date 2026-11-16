@@ -2681,7 +2681,10 @@ pub fn connection_error_message(error: ConnectionError) -> &'static str {
         ConnectionError::InvalidResponse => "Cluster returned an unexpected API payload.",
         ConnectionError::StoreUnavailable => "Local session state is unavailable.",
         ConnectionError::HelmUnavailable => "Helm CLI (v3.17+ / v4) was not found in PATH.",
-        ConnectionError::Conflict => "Resource version conflict or Helm command error (HTTP 409).",
+        ConnectionError::HelmCommandFailed => {
+            "Helm command failed. Check Helm compatibility and configuration."
+        }
+        ConnectionError::Conflict => "Resource version conflict (HTTP 409).",
     }
 }
 

@@ -864,7 +864,19 @@ fn arguments(view: HelmView, namespace: Option<&str>) -> Vec<OsString> {
             .map(OsString::from)
             .to_vec(),
         HelmView::Releases => {
-            let mut args = vec![OsString::from("list"), OsString::from("--all")];
+            // Helm 4 removed --all and changed the default status mask. Explicit
+            // shared filters preserve Helm 3's ListAll mask on both major versions.
+            let mut args = [
+                "list",
+                "--deployed",
+                "--failed",
+                "--pending",
+                "--uninstalled",
+                "--uninstalling",
+                "--superseded",
+            ]
+            .map(OsString::from)
+            .to_vec();
             match namespace {
                 Some(namespace) => {
                     args.push("--namespace".into());
@@ -1081,10 +1093,10 @@ async fn supervise_configured(
         biased;
         _ = cancel.cancelled() => Err(ConnectionError::StaleSession),
         result = tokio::time::timeout(deadline, async {
-            let (status, output, _) = tokio::try_join!(
+            let (status, output, diagnostic) = tokio::try_join!(
                 async { child.wait().await.map_err(|_| ConnectionError::ConnectionFailed) },
-                read_output(stdout, retain), read_output(stderr, false))?;
-            if !status.success() { return Err(ConnectionError::Conflict); }
+                read_output(stdout, retain), read_output(stderr, true))?;
+            if !status.success() { return Err(command_failure(&diagnostic)); }
             Ok(output)
         }) => result.unwrap_or(Err(ConnectionError::Timeout)),
     };
@@ -1094,6 +1106,45 @@ async fn supervise_configured(
     drop(directory);
     result
 }
+
+/// CLI diagnostics are untrusted and may contain credentials. Inspect only the
+/// bounded in-memory stderr and return fixed categories, never diagnostic text.
+fn command_failure(stderr: &[u8]) -> ConnectionError {
+    let diagnostic = String::from_utf8_lossy(stderr);
+    for line in diagnostic.lines() {
+        let Some(error) = line.strip_prefix("Error: ") else {
+            continue;
+        };
+        if error.starts_with("unknown flag:") || error.starts_with("unknown shorthand flag:") {
+            return ConnectionError::HelmCommandFailed;
+        }
+        if error.starts_with("Kubernetes cluster unreachable:") {
+            if error.contains("x509:") || error.contains("tls: failed to verify certificate") {
+                return ConnectionError::TlsFailed;
+            }
+            if error.contains("the server has asked for the client to provide credentials")
+                || error.contains("Unauthorized")
+            {
+                return ConnectionError::AuthFailed;
+            }
+            if error.contains("context deadline exceeded") || error.contains("i/o timeout") {
+                return ConnectionError::Timeout;
+            }
+            return ConnectionError::ConnectionFailed;
+        }
+        if error.starts_with("Error from server (Forbidden):") {
+            return ConnectionError::PermissionDenied;
+        }
+        if error.starts_with("Error from server (Unauthorized):") {
+            return ConnectionError::AuthFailed;
+        }
+        if error.starts_with("Error from server (Conflict):") {
+            return ConnectionError::Conflict;
+        }
+    }
+    ConnectionError::HelmCommandFailed
+}
+
 async fn read_output(mut reader: impl AsyncRead + Unpin, retain: bool) -> Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut total = 0;

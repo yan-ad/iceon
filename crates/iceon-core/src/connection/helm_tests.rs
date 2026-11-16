@@ -240,11 +240,36 @@ fn command_arguments_are_allowlisted() {
     );
     assert_eq!(
         arguments(HelmView::Releases, None),
-        ["list", "--all", "--all-namespaces", "--output", "json"].map(OsString::from)
+        [
+            "list",
+            "--deployed",
+            "--failed",
+            "--pending",
+            "--uninstalled",
+            "--uninstalling",
+            "--superseded",
+            "--all-namespaces",
+            "--output",
+            "json",
+        ]
+        .map(OsString::from)
     );
     assert_eq!(
         arguments(HelmView::Releases, Some("dev")),
-        ["list", "--all", "--namespace", "dev", "--output", "json"].map(OsString::from)
+        [
+            "list",
+            "--deployed",
+            "--failed",
+            "--pending",
+            "--uninstalled",
+            "--uninstalling",
+            "--superseded",
+            "--namespace",
+            "dev",
+            "--output",
+            "json",
+        ]
+        .map(OsString::from)
     );
 }
 
@@ -404,5 +429,235 @@ fn persistent_preferences_are_converted_without_losing_runtime_options() {
             ..Default::default()
         }),
         Err(ConnectionError::InvalidInput)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn helm3_and_helm4_release_fixtures_accept_shared_exact_arguments() {
+    use std::os::unix::fs::PermissionsExt;
+    for major in [3, 4] {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join(format!("helm{major}"));
+        let calls = directory.path().join("calls");
+        let argv = directory.path().join("argv");
+        let fixture = directory.path().join("releases.json");
+        let statuses = [
+            "deployed",
+            "failed",
+            "pending-install",
+            "pending-upgrade",
+            "pending-rollback",
+            "uninstalled",
+            "uninstalling",
+            "superseded",
+        ];
+        let rows: Vec<_> = statuses
+            .iter()
+            .enumerate()
+            .map(|(index, status)| {
+                json!({
+                    "name": format!("release-{index}"), "namespace": "dev", "revision": "2",
+                    "updated": "2026-11-16 10:00:00 +0000 UTC", "status": status,
+                    "chart": "example-1.2.3", "app_version": "4.5.6"
+                })
+            })
+            .collect();
+        std::fs::write(&fixture, serde_json::to_vec(&rows).unwrap()).unwrap();
+        std::fs::write(
+            &binary,
+            format!(
+                r#"#!/bin/sh
+printf 'call\n' >> '{}'
+printf '%s\n' "$@" > '{}'
+for arg do
+    if [ "$arg" = '--all' ] && [ "{major}" = 4 ]; then
+        printf 'Error: unknown flag: --all\n' >&2
+        exit 1
+    fi
+done
+/bin/cat '{}'
+"#,
+                calls.display(),
+                argv.display(),
+                fixture.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for namespace in [None, Some("dev")] {
+            let config = tempfile::NamedTempFile::new().unwrap();
+            let config_path = config.path().to_owned();
+            let output = supervise(
+                binary.clone(),
+                arguments(HelmView::Releases, namespace),
+                config,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert!(!config_path.exists());
+            let scope = namespace.map_or("--all-namespaces\n".to_owned(), |ns| {
+                format!("--namespace\n{ns}\n")
+            });
+            assert_eq!(
+                std::fs::read_to_string(&argv).unwrap(),
+                format!(
+                    "list\n--deployed\n--failed\n--pending\n--uninstalled\n--uninstalling\n--superseded\n{scope}--output\njson\n"
+                )
+            );
+            let mut request = request(HelmView::Releases);
+            request.namespace = namespace.map(str::to_owned);
+            let page = project(&request, &output).unwrap();
+            assert_eq!(page.items.len(), statuses.len());
+            for (item, status) in page.items.iter().zip(statuses) {
+                assert_eq!(item.namespace.as_deref(), Some("dev"));
+                assert_eq!(item.version, "example-1.2.3");
+                assert_eq!(item.app_version, "4.5.6");
+                assert_eq!(item.revision, Some(2));
+                assert_eq!(item.status.as_deref(), Some(status));
+                assert_eq!(
+                    item.updated.as_deref(),
+                    Some("2026-11-16 10:00:00 +0000 UTC")
+                );
+            }
+        }
+        // Helm 4's legacy-flag failure is sanitized and is never retried.
+        if major == 4 {
+            assert_eq!(
+                supervise(
+                    binary,
+                    vec!["list".into(), "--all".into()],
+                    tempfile::NamedTempFile::new().unwrap(),
+                    CancellationToken::new()
+                )
+                .await,
+                Err(ConnectionError::HelmCommandFailed)
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(calls).unwrap().lines().count(),
+            if major == 4 { 3 } else { 2 }
+        );
+    }
+}
+
+#[test]
+fn release_json_contract_requires_an_array_including_empty_results() {
+    let request = request(HelmView::Releases);
+    assert!(project(&request, b"[]").unwrap().items.is_empty());
+    for invalid in [b"{}".as_slice(), b"null", b"", b"{\"releases\":[]}"] {
+        assert_eq!(
+            project(&request, invalid),
+            Err(ConnectionError::InvalidResponse)
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn nonzero_cli_diagnostics_are_classified_without_exposing_text() {
+    for (diagnostic, expected) in [
+        (
+            "Error: unknown flag: --all",
+            ConnectionError::HelmCommandFailed,
+        ),
+        (
+            "Error: unknown shorthand flag: 'a' in -a",
+            ConnectionError::HelmCommandFailed,
+        ),
+        (
+            "Error: arbitrary command failure",
+            ConnectionError::HelmCommandFailed,
+        ),
+        ("", ConnectionError::HelmCommandFailed),
+        (
+            "Error: Kubernetes cluster unreachable: x509: certificate signed by unknown authority",
+            ConnectionError::TlsFailed,
+        ),
+        (
+            "Error: Kubernetes cluster unreachable: the server has asked for the client to provide credentials",
+            ConnectionError::AuthFailed,
+        ),
+        (
+            "Error: Kubernetes cluster unreachable: context deadline exceeded",
+            ConnectionError::Timeout,
+        ),
+        (
+            "Error: Kubernetes cluster unreachable: connection refused",
+            ConnectionError::ConnectionFailed,
+        ),
+        (
+            "Error: Error from server (Forbidden): access denied",
+            ConnectionError::PermissionDenied,
+        ),
+        (
+            "Error: Error from server (Unauthorized): access denied",
+            ConnectionError::AuthFailed,
+        ),
+        (
+            "Error: Error from server (Conflict): object modified",
+            ConnectionError::Conflict,
+        ),
+        (
+            "warning containing conflict Forbidden Unauthorized x509:",
+            ConnectionError::HelmCommandFailed,
+        ),
+    ] {
+        // stderr is passed as a positional argument, not interpolated as shell code.
+        let result = supervise(
+            "/bin/sh".into(),
+            vec![
+                "-c".into(),
+                "printf '%s\\n' \"$1\" >&2; exit 1".into(),
+                "fixture".into(),
+                diagnostic.into(),
+            ],
+            tempfile::NamedTempFile::new().unwrap(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(result, Err(expected));
+        assert_eq!(
+            serde_json::to_value(expected).unwrap().as_str().unwrap(),
+            match expected {
+                ConnectionError::HelmCommandFailed => "helmCommandFailed",
+                ConnectionError::TlsFailed => "tlsFailed",
+                ConnectionError::AuthFailed => "authFailed",
+                ConnectionError::Timeout => "timeout",
+                ConnectionError::ConnectionFailed => "connectionFailed",
+                ConnectionError::PermissionDenied => "permissionDenied",
+                ConnectionError::Conflict => "conflict",
+                _ => unreachable!(),
+            }
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stderr_is_bounded_even_on_failure_and_never_replaces_success_output() {
+    assert_eq!(
+        supervise(
+            "/bin/sh".into(),
+            vec![
+                "-c".into(),
+                "printf 'Error: unknown flag: --all\\n' >&2; printf '[]'".into()
+            ],
+            tempfile::NamedTempFile::new().unwrap(),
+            CancellationToken::new(),
+        )
+        .await,
+        Ok(b"[]".to_vec())
+    );
+    assert_eq!(
+        supervise(
+            "/bin/sh".into(),
+            vec!["-c".into(), "exec /usr/bin/yes diagnostic >&2".into()],
+            tempfile::NamedTempFile::new().unwrap(),
+            CancellationToken::new(),
+        )
+        .await,
+        Err(ConnectionError::LimitExceeded)
     );
 }

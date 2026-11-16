@@ -95,6 +95,7 @@ pub enum ConnectionError {
     InvalidResponse,
     StoreUnavailable,
     HelmUnavailable,
+    HelmCommandFailed,
     Conflict,
 }
 #[cfg(test)]
