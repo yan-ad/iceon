@@ -50,7 +50,7 @@ pub(crate) fn section_asset_icon(section: &str) -> AssetIconName {
         "persistent-volume-claims" => HardDriveDownload,
         "persistent-volumes" => HardDrive,
         "storage-classes" => Archive,
-        "namespaces" => Folder,
+        "namespaces" => Layers2,
         "events" => Bell,
         "helm-charts" => Package,
         "helm-releases" => PackageCheck,

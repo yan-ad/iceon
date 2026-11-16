@@ -264,19 +264,18 @@ fn connection_indicator(status: &str, cx: &App) -> Icon {
 }
 
 fn breadcrumb_choices(section: &str, group_level: bool) -> Vec<(String, String)> {
-    if group_level {
+    let group = crate::navigation::CLUSTER_SECTIONS.iter().find(|group| {
+        group.id == section
+            || group.default_child == section
+            || group.children.iter().any(|child| child.id == section)
+    });
+    if group_level || group.is_some_and(|group| group.children.is_empty()) {
         return crate::navigation::ordered_cluster_sections()
             .into_iter()
             .map(|group| (group.label.into(), group.default_child.into()))
             .collect();
     }
-    crate::navigation::CLUSTER_SECTIONS
-        .iter()
-        .find(|group| {
-            group.id == section
-                || group.default_child == section
-                || group.children.iter().any(|child| child.id == section)
-        })
+    group
         .map(|group| {
             group
                 .children
@@ -289,6 +288,10 @@ fn breadcrumb_choices(section: &str, group_level: bool) -> Vec<(String, String)>
 
 /// GKE's generated context is `gke_<project>_<location>_<cluster>`.
 /// Only shorten the display label; routing and dropdown identity stay unchanged.
+fn show_namespace_filter(section: &str) -> bool {
+    crate::cluster_view::section_to_resource_kind(section) != Some(ResourceKind::Namespaces)
+}
+
 fn header_controls_width(sidebar: f32, open: bool, macos: bool) -> f32 {
     let inset = if macos { 80.0 } else { 12.0 };
     if open {
@@ -400,6 +403,7 @@ impl IceonApp {
         let focus = command_state.focus_handle(cx);
         let reset_state = command_state.clone();
         Popover::new((id, 0usize))
+            .appearance(false)
             .track_focus(&focus)
             .on_open_change(move |open, window, cx| {
                 if *open {
@@ -413,7 +417,7 @@ impl IceonApp {
                     .flex_shrink_0()
                     .text_color(cx.theme().sidebar_foreground)
                     .label(label)
-                    .icon(IconName::ChevronsUpDown)
+                    .icon(Icon::new(gpui_kit_assets::IconName::Layers2))
                     .accessibility_label("Choose namespace"),
             )
             .content(move |_, _, cx| {
@@ -431,6 +435,7 @@ impl IceonApp {
                     .map(|namespace| {
                         CommandItem::new()
                             .label(namespace.clone().unwrap_or_else(|| "All Namespaces".into()))
+                            .icon(Icon::new(gpui_kit_assets::IconName::Layers2))
                             .checked(match namespace {
                                 None => app.selected_namespaces.is_empty(),
                                 Some(name) => app.selected_namespaces.contains(name),
@@ -734,10 +739,11 @@ impl IceonApp {
                                                                 }
                                                             }))
                                                 }))
-                                                .child(breadcrumb_separator(cx))
+                                                .when(show_namespace_filter(&self.active_cluster_section), |bar| bar
+                                                 .child(breadcrumb_separator(cx))
                                                  .child(
                                                      self.namespace_dropdown("titlebar-namespace-select", current_namespace.clone(), cx),
-                                                 )
+                                                 ))
                                                  .child(self.render_status_breadcrumb(cx)),
                                         )
                                     })
@@ -831,6 +837,27 @@ mod tests {
         assert!(pages.iter().any(|(_, section)| section == "pods"));
         assert!(pages.iter().any(|(_, section)| section == "deployments"));
         assert!(!pages.iter().any(|(_, section)| section == "nodes"));
+    }
+
+    #[test]
+    fn standalone_breadcrumbs_offer_all_top_level_menu_choices() {
+        let expected = super::breadcrumb_choices("pods", true);
+        for group in crate::navigation::CLUSTER_SECTIONS
+            .iter()
+            .filter(|group| group.children.is_empty())
+        {
+            let choices = super::breadcrumb_choices(group.default_child, false);
+            assert_eq!(choices, expected, "{}", group.id);
+            assert!(choices.iter().any(|(_, section)| section == "events"));
+            assert!(choices.iter().any(|(_, section)| section == "namespaces"));
+        }
+    }
+
+    #[test]
+    fn namespace_inventory_does_not_filter_itself_by_namespace() {
+        assert!(!super::show_namespace_filter("namespaces"));
+        assert!(super::show_namespace_filter("pods"));
+        assert!(super::show_namespace_filter("events"));
     }
 
     use gpui_kit::component::select::SelectItem as _;

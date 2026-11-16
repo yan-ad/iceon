@@ -30,6 +30,7 @@ gpui_kit_assets::icon_assets!(
         HardDriveDownload,
         KeyRound,
         Layers,
+        Layers2,
         LayoutDashboard,
         Link,
         Link2,
@@ -154,6 +155,7 @@ mod tests {
             IconName::RefreshCw,
             IconName::Check,
             IconName::Download,
+            IconName::Layers2,
         ] {
             let path = icon.path();
             let bytes = AppAssets.load(&path).unwrap().expect("embedded SVG");
