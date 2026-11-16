@@ -588,6 +588,7 @@ impl IceonApp {
             .child(crate::shell_theme::chrome_background(sidebar_open.then_some(sidebar_width), cx))
             .child(TitleBar::new()
             .relative()
+            .border_color(crate::shell_theme::chrome_border(cx.theme()))
             .bg(gpui_kit::transparent_black())
             .text_color(cx.theme().sidebar_foreground)
             .child(

@@ -58,7 +58,7 @@ impl IceonApp {
             crate::navigation::Route::Cluster { .. }
         ) && !self.sidebar_collapsed
             && !self.cluster_sidebar_collapsed;
-        footer_frame(cx.theme().sidebar_border)
+        footer_frame(crate::shell_theme::chrome_border(cx.theme()))
             .text_color(cx.theme().sidebar_foreground)
             .child(
                 crate::shell_theme::chrome_background(

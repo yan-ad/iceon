@@ -184,15 +184,24 @@ impl RenderOnce for Badge {
             .items_center()
             .gap_1()
             .px(if self.small { px(6.0) } else { px(8.0) })
-            .py(if self.small { px(1.5) } else { px(2.5) })
-            .rounded(px(5.0))
+            .py(if self.small { px(0.5) } else { px(2.5) })
+            .rounded(px(if self.small { 3.0 } else { 5.0 }))
             .border_1()
             .border_color(border)
             .bg(bg)
             .text_xs()
+            .when(self.small, |el| {
+                el.text_size(px(11.0)).line_height(px(14.0))
+            })
             .text_color(fg)
             .when(self.show_dot, |el| {
-                el.child(div().size(px(5.0)).rounded_full().bg(dot))
+                el.child(
+                    div()
+                        .size(px(if self.small { 4.0 } else { 5.0 }))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(dot),
+                )
             })
             .child(self.label)
     }
@@ -201,6 +210,15 @@ impl RenderOnce for Badge {
 #[cfg(test)]
 mod tests {
     use super::{Badge, BadgeVariant};
+
+    #[test]
+    fn resource_status_badges_use_the_compact_size_without_changing_labels() {
+        for label in ["Active", "Terminating", "Not reported", "Unknown"] {
+            let badge = Badge::for_resource_status(label);
+            assert!(badge.small);
+            assert_eq!(badge.label.as_ref(), label);
+        }
+    }
 
     #[test]
     fn known_positive_statuses_match_complete_normalized_labels() {

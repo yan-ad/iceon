@@ -30,6 +30,12 @@ pub(crate) fn open_window<V: Render>(
     Ok((handle, view))
 }
 
+/// Horizontal shell chrome separators share the native title-bar border role.
+/// Sidebar dividers intentionally retain their separate sidebar-border role.
+pub(crate) fn chrome_border(theme: &Theme) -> Hsla {
+    theme.title_bar_border
+}
+
 fn root_style() -> StyleRefinement {
     StyleRefinement::default().bg(gpui_kit::transparent_black())
 }
@@ -755,6 +761,14 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shell_header_and_footer_share_title_bar_border_not_sidebar_divider() {
+        let mut theme = super::Theme::default();
+        theme.colors.title_bar_border = super::rgb(0x334455).into();
+        theme.colors.sidebar_border = super::rgb(0x998877).into();
+        assert_eq!(super::chrome_border(&theme), theme.title_bar_border);
+        assert_ne!(super::chrome_border(&theme), theme.sidebar_border);
+    }
     #[test]
     fn header_and_footer_regions_keep_sidebar_width_and_unblended_theme_fills() {
         for alpha in [0.38, 0.48, 1.0] {
