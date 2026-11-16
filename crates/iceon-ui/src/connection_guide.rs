@@ -473,6 +473,30 @@ impl IceonApp {
         let retry = issue
             .as_ref()
             .is_some_and(|issue| issue.action == "Retry connection");
+        let retry_countdown = self
+            .connection_guide
+            .retry_deadline
+            .filter(|_| !access_blocked)
+            .map(|deadline| retry_seconds_remaining(deadline, Instant::now()));
+        let primary_label = if busy {
+            if reviewing {
+                "Reviewing access…".to_owned()
+            } else if self.connection_guide.phase == ConnectionPhase::Opening {
+                "Opening context…".to_owned()
+            } else {
+                "Connecting…".to_owned()
+            }
+        } else if access_blocked {
+            "Retry access check".to_owned()
+        } else if let Some(seconds) = retry_countdown {
+            format!("Retry to connect in {seconds}s")
+        } else {
+            issue
+                .as_ref()
+                .map_or("Import kubeconfig".to_owned(), |issue| {
+                    issue.action.to_owned()
+                })
+        };
         let guide_actions = h_flex()
             .flex_wrap()
             .gap_2()
@@ -480,24 +504,19 @@ impl IceonApp {
                 Button::new("guide-primary")
                     .primary()
                     .disabled(busy)
-                    .icon(
-                        if access_blocked
-                            || issue
-                                .as_ref()
-                                .is_some_and(|i| i.action == "Retry connection")
-                        {
-                            IconName::RefreshCw
-                        } else {
-                            IconName::FolderOpen
-                        },
-                    )
-                    .label(if access_blocked {
-                        "Retry access check"
-                    } else {
-                        issue
+                    .loading(busy)
+                    .icon(if busy {
+                        IconName::Loader
+                    } else if access_blocked
+                        || issue
                             .as_ref()
-                            .map_or("Import kubeconfig", |issue| issue.action)
+                            .is_some_and(|i| i.action == "Retry connection")
+                    {
+                        IconName::RefreshCw
+                    } else {
+                        IconName::FolderOpen
                     })
+                    .label(primary_label)
                     .on_click(cx.listener(move |app, _, window, cx| {
                         if access_blocked {
                             app.refresh_access(window, cx);
@@ -541,8 +560,8 @@ impl IceonApp {
             });
 
         v_flex().id("connection-guide").size_full().min_w_0().min_h_0()
-            .overflow_y_scroll().bg(theme.tokens.sidebar).text_color(foreground).p_6()
-            .child(v_flex().w_full().max_w(px(920.)).mx_auto().gap_6()
+            .overflow_y_scroll().items_center().bg(theme.tokens.sidebar).text_color(foreground).p_6()
+            .child(v_flex().w_full().max_w(px(920.)).mx_auto().my_auto().flex_shrink_0().gap_6()
                 .child(h_flex().items_center().gap_3()
                     .child(div().size(px(48.)).rounded(px(16.)).bg(tint).flex().items_center().justify_center()
                         .child(Icon::new(if error.is_some() { IconName::CircleAlert } else { IconName::Network }).size(px(24.)).text_color(primary)))
@@ -552,11 +571,6 @@ impl IceonApp {
                 .child(v_flex().max_w(px(760.)).gap_3()
                     .child(div().text_size(px(32.)).font_weight(FontWeight::BOLD).child(title))
                     .child(div().text_sm().text_color(muted).child(detail)))
-                .when(busy, |view| view.child(h_flex().items_center().gap_2()
-                    .child(gpui_kit::component::spinner::Spinner::new().small())
-                    .child(div().text_sm().child(if reviewing { "Reviewing cluster permissions…" } else if self.connection_guide.phase == ConnectionPhase::Opening { "Opening the selected context…" } else { "Contacting the Kubernetes API…" }))))
-                .when_some(self.connection_guide.retry_deadline.filter(|_| !access_blocked), |view, deadline| view.child(
-                    div().text_sm().text_color(muted).child(format!("Retry to connect in {}s", retry_seconds_remaining(deadline, Instant::now())))))
                 .child(guide_actions)
                 .when(!access_blocked && !busy && error.is_none() && !self.catalog_snapshot.clusters.is_empty(), |view| view.child(
                     v_flex().gap_2()

@@ -2547,20 +2547,23 @@ impl IceonApp {
                         .xsmall()
                         .text_color(cx.theme().muted_foreground),
                 )
-                .children(
-                    self.selected_status_filter
-                        .iter()
-                        .map(|status| crate::badge::Badge::for_resource_status(status)),
-                )
-                .child(
-                    Button::new("breadcrumb-status")
+                .child({
+                    let selected = self.selected_status_filter.clone();
+                    let trigger = Button::new("breadcrumb-status")
                         .ghost()
                         .xsmall()
                         .text_color(cx.theme().sidebar_foreground)
-                        .label(if self.selected_status_filter.is_empty() {
-                            "All Status"
-                        } else {
-                            "Status"
+                        .dropdown_caret(true)
+                        .when(selected.is_empty(), |button| button.label("All Status"))
+                        .when(!selected.is_empty(), |button| {
+                            button.child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .children(selected.iter().map(|status| {
+                                        crate::badge::Badge::for_resource_status(status)
+                                    })),
+                            )
                         })
                         .accessibility_label("Filter resource status")
                         .dropdown_menu(move |mut menu, _, cx| {
@@ -2609,8 +2612,9 @@ impl IceonApp {
                                 );
                             }
                             menu
-                        }),
-                )
+                        });
+                    trigger
+                })
             })
     }
 

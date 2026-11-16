@@ -7,8 +7,9 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        ActiveTheme as _, IconName, Sizable as _,
+        ActiveTheme as _, Icon, IconName, Sizable as _,
         button::{Button, ButtonVariants as _},
+        chart::PieChart,
         h_flex,
         scroll::ScrollableElement as _,
         skeleton::Skeleton,
@@ -19,7 +20,7 @@ use gpui_kit::{
     *,
 };
 use iceon_core::connection::{
-    ResourceItem, ResourceKind, ResourcePage, details::ResourceReference,
+    MetricState, ResourceItem, ResourceKind, ResourcePage, Usage, details::ResourceReference,
     permissions::PermissionAction,
 };
 
@@ -127,14 +128,30 @@ fn stat(label: &str, value: String, note: &str, loading: bool, cx: &App) -> AnyE
         )
         .into_any_element()
 }
-fn loading_card(label: &str, cx: &App) -> AnyElement {
+/// One surface contract for loaded, loading, summary, and capacity cards.
+pub(crate) fn card_surface(cx: &App) -> Div {
+    card_surface_colors(cx.theme().background, cx.theme().border)
+}
+
+fn card_surface_colors(background: Hsla, border: Hsla) -> Div {
     v_flex()
+        .border_1()
+        .border_color(border)
+        .bg(background)
+        .rounded(px(12.))
+}
+
+fn workload_icon(section: &str) -> Icon {
+    Icon::new(crate::sidebar_view::section_asset_icon(section))
+}
+
+fn loading_card(label: &str, cx: &App) -> AnyElement {
+    card_surface(cx)
         .w_full()
         .min_w_0()
         .p_4()
         .gap_3()
         .rounded(px(12.))
-        .bg(cx.theme().secondary)
         .child(
             div()
                 .text_sm()
@@ -169,6 +186,210 @@ fn overview_error(error: &str) -> Option<String> {
     (!messages.is_empty()).then(|| messages.join("; "))
 }
 
+/// A complete, finite node observation. Missing coverage is never an empty
+/// (zero-used) cluster. Values above allocatable remain visible in the label;
+/// only the geometry is clamped to the ring's finite domain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CapacityReading {
+    used: f64,
+    allocatable: f64,
+}
+impl CapacityReading {
+    fn aggregate(values: impl IntoIterator<Item = Usage>) -> Option<Self> {
+        let mut count = 0;
+        let mut reading = Self {
+            used: 0.,
+            allocatable: 0.,
+        };
+        for usage in values {
+            let (used, allocatable) = (usage.used?, usage.allocatable?);
+            if !used.is_finite() || !allocatable.is_finite() || used < 0. || allocatable <= 0. {
+                return None;
+            }
+            reading.used += used;
+            reading.allocatable += allocatable;
+            count += 1;
+        }
+        (count > 0
+            && reading.used.is_finite()
+            && reading.allocatable.is_finite()
+            && reading.percent().is_finite())
+        .then_some(reading)
+    }
+    fn percent(self) -> f64 {
+        self.used / self.allocatable * 100.
+    }
+    fn fraction(self) -> f32 {
+        (self.used / self.allocatable).clamp(0., 1.) as f32
+    }
+    fn over_capacity(self) -> bool {
+        self.used > self.allocatable
+    }
+}
+
+fn capacity_reading(
+    page: Option<&ResourcePage>,
+    memory: bool,
+) -> Result<CapacityReading, &'static str> {
+    let page = page.ok_or("Node metrics unavailable")?;
+    if page.truncated || page.continue_token.is_some() || page.metrics == Some(MetricState::Partial)
+    {
+        return Err("Partial coverage · cluster usage unavailable");
+    }
+    match page.metrics {
+        Some(MetricState::Available) => {}
+        Some(MetricState::Stale) => return Err("Stale metrics · refresh to retry"),
+        Some(MetricState::Denied) => return Err("Metrics access unavailable"),
+        _ => return Err("Node metrics unavailable"),
+    }
+    let usages: Option<Vec<_>> = page
+        .items
+        .iter()
+        .map(|item| {
+            let node = item.node.as_ref()?;
+            Some(if memory {
+                node.memory.clone()
+            } else {
+                node.cpu.clone()
+            })
+        })
+        .collect();
+    CapacityReading::aggregate(usages.ok_or("Incomplete node data")?)
+        .ok_or("Usage or positive allocatable unavailable")
+}
+
+const CAPACITY_KEYS: [&str; 2] = ["overview-cpu-capacity", "overview-memory-capacity"];
+const CAPACITY_COLUMN: usize = 1;
+
+pub(crate) fn capacity_pair(cpu: AnyElement, memory: AnyElement) -> AnyElement {
+    h_flex()
+        .id("overview-capacity-pair")
+        .w_full()
+        .gap_4()
+        .items_start()
+        .flex_wrap()
+        .child(cpu)
+        .child(memory)
+        .into_any_element()
+}
+
+pub(crate) fn workload_grid(columns: [Vec<AnyElement>; 2]) -> AnyElement {
+    h_flex()
+        .gap_4()
+        .items_start()
+        .min_w_0()
+        .flex_wrap()
+        .children(
+            columns
+                .into_iter()
+                .filter(|column| !column.is_empty())
+                .map(|cards| v_flex().flex_1().min_w(px(330.)).gap_4().children(cards)),
+        )
+        .into_any_element()
+}
+
+pub(crate) fn capacity_card(
+    page: Option<&ResourcePage>,
+    memory: bool,
+    loading: bool,
+    cx: &App,
+) -> AnyElement {
+    let label = if memory { "Memory" } else { "CPU" };
+    let key = CAPACITY_KEYS[usize::from(memory)];
+    let reading = capacity_reading(page, memory);
+    let used_color = if reading.is_ok_and(CapacityReading::over_capacity) {
+        cx.theme().danger
+    } else {
+        cx.theme().primary
+    };
+    // A neutral remainder is not a claim of schedulable/available capacity.
+    // An unavailable observation paints only a neutral ring, never success.
+    let track = cx.theme().muted_foreground.opacity(0.2);
+    let fraction = reading.map_or(0., CapacityReading::fraction);
+    let slices = if reading.is_ok() {
+        vec![(fraction, used_color), (1. - fraction, track)]
+    } else {
+        vec![(1., track)]
+    };
+    let value = reading
+        .map(|value| format!("{:.0}%", value.percent()))
+        .unwrap_or_else(|_| "—".into());
+    let detail = reading
+        .map(|value| {
+            if memory {
+                format!(
+                    "{:.1} / {:.1} GiB",
+                    value.used / 1073741824.,
+                    value.allocatable / 1073741824.
+                )
+            } else {
+                format!("{:.2} / {:.2} cores", value.used, value.allocatable)
+            }
+        })
+        .unwrap_or_else(|reason| {
+            if loading && page.is_none() {
+                "Loading node metrics…".into()
+            } else {
+                reason.into()
+            }
+        });
+    card_surface(cx)
+        .id(key)
+        .flex_1()
+        .min_w(px(145.))
+        .p_3()
+        .gap_2()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(label),
+        )
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(116.))
+                .child(
+                    PieChart::new(slices)
+                        .id(key)
+                        .value(|slice| slice.0)
+                        .color(|slice| slice.1)
+                        .inner_radius(38.)
+                        .outer_radius(50.)
+                        .interactive(false)
+                        .appear(false),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(value),
+                ),
+        )
+        .child(div().text_xs().child(detail))
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Observed usage / allocatable"),
+        )
+        .when(reading.is_ok_and(CapacityReading::over_capacity), |card| {
+            card.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child("Exceeds allocatable"),
+            )
+        })
+        .into_any_element()
+}
+
 impl IceonApp {
     fn overview_workload_card(
         &self,
@@ -193,13 +414,12 @@ impl IceonApp {
             .map(|session| session.cluster_id.clone())
             .unwrap_or_default();
         let section = section.to_owned();
-        v_flex()
+        card_surface(cx)
             .w_full()
             .min_w_0()
             .p_4()
             .gap_3()
             .rounded(px(12.))
-            .bg(cx.theme().secondary)
             .child(
                 h_flex()
                     .items_center()
@@ -208,7 +428,7 @@ impl IceonApp {
                         Button::new(SharedString::from(format!("overview-card-{section}")))
                             .ghost()
                             .small()
-                            .icon(IconName::GalleryVerticalEnd)
+                            .icon(workload_icon(&section))
                             .label(label.to_owned())
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.navigate(
@@ -339,92 +559,12 @@ impl IceonApp {
             .into_any_element()
     }
     fn overview_capacity(&self, memory: bool, cx: &App) -> AnyElement {
-        let page = self.overview_snapshot.nodes.as_ref();
-        if page.is_none() && self.cluster_loading {
-            return div()
-                .flex_1()
-                .min_w_0()
-                .child(loading_card(if memory { "Memory" } else { "CPU" }, cx))
-                .into_any_element();
-        }
-        let complete = page.is_some_and(|page| {
-            !page.items.is_empty() && !page.truncated && page.continue_token.is_none()
-        });
-        let values: Option<Vec<(f64, f64)>> = page.and_then(|page| {
-            page.items
-                .iter()
-                .map(|item| {
-                    let node = item.node.as_ref()?;
-                    let usage = if memory { &node.memory } else { &node.cpu };
-                    Some((usage.used?, usage.allocatable?))
-                })
-                .collect()
-        });
-        let values = values.filter(|_| complete);
-        let sums = values.map(|values| {
-            values
-                .into_iter()
-                .fold((0., 0.), |sum, value| (sum.0 + value.0, sum.1 + value.1))
-        });
-        let percent = sums
-            .filter(|(_, total)| *total > 0.)
-            .map(|(used, total)| used / total * 100.);
-        let label = if memory { "Memory" } else { "CPU" };
-        let text = sums
-            .map(|(used, total)| {
-                if memory {
-                    format!(
-                        "{:.1} / {:.1} GiB used",
-                        used / 1073741824.,
-                        total / 1073741824.
-                    )
-                } else {
-                    format!("{used:.2} / {total:.2} cores used")
-                }
-            })
-            .unwrap_or_else(|| "Metrics or complete node capacity unavailable".into());
-        v_flex()
-            .flex_1()
-            .min_w_0()
-            .p_4()
-            .gap_3()
-            .rounded(px(12.))
-            .bg(cx.theme().secondary)
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(label),
-            )
-            .child(h_flex().gap_1().flex_wrap().children((0..100).map(|index| {
-                div().size(px(8.)).rounded(px(2.)).bg(
-                    if percent.is_some_and(|p| f64::from(index) < p.min(100.)) {
-                        cx.theme().primary
-                    } else {
-                        cx.theme().muted_foreground.opacity(0.2)
-                    },
-                )
-            })))
-            .child(
-                div().text_lg().child(
-                    percent
-                        .map(|p| format!("{p:.0}%"))
-                        .unwrap_or_else(|| "—".into()),
-                ),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Observed node usage / allocatable · requests not collected"),
-            )
-            .into_any_element()
+        capacity_card(
+            self.overview_snapshot.nodes.as_deref(),
+            memory,
+            self.cluster_loading,
+            cx,
+        )
     }
     pub(crate) fn render_overview_dashboard(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if !self.access_ready() {
@@ -635,6 +775,14 @@ impl IceonApp {
                 cx,
             ));
         }
+        // The final right-hand cell follows DaemonSets, opposite Jobs. Keep it
+        // inside the workload layout even when only node access is granted.
+        if self.can_list(ResourceKind::Nodes) {
+            columns[CAPACITY_COLUMN].push(capacity_pair(
+                self.overview_capacity(false, cx),
+                self.overview_capacity(true, cx),
+            ));
+        }
         if workloads.is_empty()
             && !self.can_list(ResourceKind::Nodes)
             && !self.can_list(ResourceKind::Events)
@@ -645,14 +793,11 @@ impl IceonApp {
         v_flex()
             .size_full().min_h_0().p_4().gap_4().overflow_y_scrollbar()
             .when_some(self.cluster_error.as_deref().and_then(overview_error), |el, error| el.child(crate::empty_state::error_state(error)))
-            .when(!stats.is_empty(), |el| el.child(h_flex().w_full().flex_wrap().rounded(px(12.)).bg(cx.theme().secondary).children(stats)))
-            .when(!workloads.is_empty(), |el| el
+            .when(!stats.is_empty(), |el| el.child(card_surface(cx).flex_row().w_full().flex_wrap().children(stats)))
+            .when(!workloads.is_empty() || self.can_list(ResourceKind::Nodes), |el| el
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Workloads"))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("Hover for details · permitted resources can be inspected · + means partial inventory"))
-                .child(h_flex().gap_4().items_start().min_w_0().children(columns.into_iter().filter(|column| !column.is_empty()).map(|cards| v_flex().flex_1().min_w_0().gap_4().children(cards)))))
-            .when(self.can_list(ResourceKind::Nodes), |el| el
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Capacity"))
-                .child(h_flex().gap_4().child(self.overview_capacity(false, cx)).child(self.overview_capacity(true, cx))))
+                .child(workload_grid(columns)))
             .when(self.can_list(ResourceKind::Events), |el| el
                 .child(h_flex().justify_between().items_center()
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Events"))
@@ -663,15 +808,16 @@ impl IceonApp {
                                     app.navigate(Route::Cluster { cluster_id: session.cluster_id.clone(), section: "events".into() }, true, window, cx);
                                 }
                         }))))
-                .child(events))
+                .child(card_surface(cx).overflow_hidden().child(events)))
 
             .into_any_element()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Health, count, health};
+#[cfg(any(test, debug_assertions))]
+#[allow(dead_code, unused_imports)]
+pub(crate) mod tests {
+    use super::{CapacityReading, Health, capacity_reading, count, health};
     #[test]
     fn authorization_failures_are_not_dashboard_errors() {
         assert_eq!(super::overview_error("Pods: Forbidden"), None);
@@ -684,7 +830,205 @@ mod tests {
             Some("Nodes: timed out".into())
         );
     }
-    use iceon_core::connection::{ResourceItem, ResourceKind};
+    use iceon_core::connection::{
+        MetricState, NodeInfo, ResourceItem, ResourceKind, ResourcePage, Usage,
+    };
+
+    pub(crate) fn usage(used: Option<f64>, allocatable: Option<f64>) -> Usage {
+        Usage {
+            used,
+            allocatable,
+            capacity: None,
+        }
+    }
+
+    pub(crate) fn node_page(metrics: Option<MetricState>, usages: Vec<Usage>) -> ResourcePage {
+        ResourcePage {
+            cluster_id: "fixture".into(),
+            session_id: "fixture".into(),
+            kind: ResourceKind::Nodes,
+            read_id: 1,
+            items: usages
+                .into_iter()
+                .enumerate()
+                .map(|(index, node_usage)| ResourceItem {
+                    name: format!("node-{index}"),
+                    namespace: None,
+                    uid: None,
+                    resource_version: None,
+                    status: "Ready".into(),
+                    created_at: None,
+                    node: Some(NodeInfo {
+                        roles: Vec::new(),
+                        taints: 0,
+                        version: None,
+                        internal_ips: Vec::new(),
+                        schedulable: true,
+                        conditions: Vec::new(),
+                        disk_allocatable: None,
+                        cpu: node_usage.clone(),
+                        memory: usage(
+                            node_usage.used.map(|v| v * 2.),
+                            node_usage.allocatable.map(|v| v * 2.),
+                        ),
+                        metrics_timestamp: None,
+                    }),
+                    containers: Vec::new(),
+                    columns: Default::default(),
+                })
+                .collect(),
+            truncated: false,
+            fetched_at: 1,
+            namespace: None,
+            continue_token: None,
+            metrics,
+        }
+    }
+
+    #[test]
+    fn capacity_aggregates_finite_usage_and_clamps_only_chart_geometry() {
+        let reading =
+            CapacityReading::aggregate([usage(Some(2.), Some(4.)), usage(Some(1.), Some(2.))])
+                .unwrap();
+        assert_eq!(
+            reading,
+            CapacityReading {
+                used: 3.,
+                allocatable: 6.
+            }
+        );
+        assert_eq!(reading.percent(), 50.);
+        assert_eq!(reading.fraction(), 0.5);
+
+        let over = CapacityReading::aggregate([usage(Some(8.), Some(4.))]).unwrap();
+        assert!(over.over_capacity());
+        assert_eq!(over.percent(), 200.);
+        assert_eq!(over.fraction(), 1.);
+    }
+
+    #[test]
+    fn capacity_rejects_nonfinite_negative_empty_and_overflowing_values() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.] {
+            assert!(CapacityReading::aggregate([usage(Some(bad), Some(4.))]).is_none());
+            assert!(CapacityReading::aggregate([usage(Some(1.), Some(bad))]).is_none());
+        }
+        assert!(CapacityReading::aggregate([]).is_none());
+        assert!(CapacityReading::aggregate([usage(Some(f64::MAX), Some(1.))]).is_none());
+        assert!(
+            CapacityReading::aggregate([
+                usage(Some(1.), Some(f64::MAX)),
+                usage(Some(1.), Some(f64::MAX))
+            ])
+            .is_none()
+        );
+        let zero = CapacityReading::aggregate([usage(Some(0.), Some(4.))]).unwrap();
+        assert_eq!(zero.percent(), 0.);
+        assert!(!zero.over_capacity());
+    }
+
+    #[test]
+    fn capacity_requires_complete_current_node_observations() {
+        let mut page = node_page(
+            Some(MetricState::Available),
+            vec![usage(Some(1.), Some(4.))],
+        );
+        assert_eq!(capacity_reading(Some(&page), false).unwrap().percent(), 25.);
+        assert_eq!(capacity_reading(Some(&page), true).unwrap().used, 2.);
+        for state in [
+            None,
+            Some(MetricState::Stale),
+            Some(MetricState::Error),
+            Some(MetricState::Denied),
+            Some(MetricState::Unavailable),
+            Some(MetricState::Partial),
+        ] {
+            page.metrics = state;
+            assert!(capacity_reading(Some(&page), false).is_err());
+        }
+        page.metrics = Some(MetricState::Available);
+        page.truncated = true;
+        assert!(capacity_reading(Some(&page), false).is_err());
+        page.truncated = false;
+        page.continue_token = Some("more".into());
+        assert!(capacity_reading(Some(&page), false).is_err());
+        page.continue_token = None;
+        page.items[0].node = None;
+        assert!(capacity_reading(Some(&page), false).is_err());
+    }
+
+    #[test]
+    fn capacity_keys_are_distinct_and_placement_is_the_daemonsets_column() {
+        assert_ne!(super::CAPACITY_KEYS[0], super::CAPACITY_KEYS[1]);
+        // Alternating workload insertion places DaemonSets at index five,
+        // Jobs at six, and the capacity pair in the final right-hand cell.
+        assert_eq!(super::CAPACITY_COLUMN, 5 % 2);
+        assert_ne!(super::CAPACITY_COLUMN, 6 % 2);
+    }
+
+    #[test]
+    fn cards_use_one_pixel_border_and_exact_background_surface() {
+        use gpui_kit::{Styled as _, px, rgb};
+        let background = rgb(0x123456).into();
+        let border = rgb(0x654321).into();
+        let mut surface = super::card_surface_colors(background, border);
+        assert_eq!(surface.style().background, Some(background.into()));
+        assert_eq!(surface.style().border_color, Some(border));
+        for width in [
+            surface.style().border_widths.top,
+            surface.style().border_widths.bottom,
+            surface.style().border_widths.left,
+            surface.style().border_widths.right,
+        ] {
+            assert_eq!(width, Some(px(1.).into()));
+        }
+    }
+
+    #[test]
+    fn overview_icons_resolve_through_sidebar_assets() {
+        use gpui_kit_assets::IconName::*;
+        for (section, expected) in [
+            ("pods", Box),
+            ("deployments", Layers),
+            ("cron-jobs", CalendarClock),
+            ("stateful-sets", Database),
+            ("replica-sets", Copy),
+            ("daemon-sets", Network),
+            ("jobs", ListChecks),
+        ] {
+            assert_eq!(crate::sidebar_view::section_asset_icon(section), expected);
+            let _ = super::workload_icon(section);
+        }
+    }
+
+    #[test]
+    fn capacity_rejects_zero_missing_and_partial_metrics_without_fake_success() {
+        assert!(CapacityReading::aggregate([usage(Some(0.), Some(0.))]).is_none());
+        assert!(CapacityReading::aggregate([usage(None, Some(1.))]).is_none());
+        assert_eq!(
+            capacity_reading(None, false),
+            Err("Node metrics unavailable")
+        );
+        assert_eq!(
+            capacity_reading(
+                Some(&node_page(
+                    Some(MetricState::Partial),
+                    vec![usage(Some(1.), Some(2.))]
+                )),
+                false
+            ),
+            Err("Partial coverage · cluster usage unavailable")
+        );
+        assert_eq!(
+            capacity_reading(
+                Some(&node_page(
+                    Some(MetricState::Available),
+                    vec![usage(Some(1.), None)]
+                )),
+                false,
+            ),
+            Err("Usage or positive allocatable unavailable")
+        );
+    }
     fn item(status: &str, columns: &[(&str, &str)]) -> ResourceItem {
         ResourceItem {
             name: "fixture".into(),

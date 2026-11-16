@@ -35,7 +35,11 @@ mod native_menu;
 mod native_spotlight;
 pub mod navigation;
 mod overview_cache;
+#[cfg(debug_assertions)]
+mod overview_probe;
 mod overview_view;
+#[cfg(debug_assertions)]
+pub use overview_probe::run as run_overview_probe;
 mod pod_columns;
 pub mod pod_dock_view;
 mod preference_runtime;

@@ -1,6 +1,8 @@
 //! Compact workspace navigation. The component owns search, focus, keyboard navigation,
 //! popup dismissal and accessibility; the application remains the authority for routing.
 
+use std::{path::Path, sync::OnceLock};
+
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
@@ -9,6 +11,7 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     popover::Popover,
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::*;
@@ -233,8 +236,42 @@ fn cluster_source_label(labels: &[String]) -> String {
         .iter()
         .filter_map(|label| label.strip_prefix("file="))
         .find(|path| !path.trim().is_empty())
-        .map(|path| format!("Source: {path}"))
+        .map(str::to_owned)
         .unwrap_or_else(|| "Source unavailable".into())
+}
+
+/// Abbreviate only the current user's home, at a complete path-component boundary.
+/// This is lexical: no filesystem access, expansion, or kubeconfig reads.
+fn compact_cluster_source(source: &str, home: Option<&Path>) -> String {
+    let path = Path::new(source);
+    let Some(home) = home.filter(|home| home.is_absolute() && home.parent().is_some()) else {
+        return source.to_owned();
+    };
+    if path
+        .components()
+        .chain(home.components())
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return source.to_owned();
+    }
+    match path.strip_prefix(home) {
+        Ok(relative) if relative.as_os_str().is_empty() => "~".into(),
+        Ok(relative) => format!("~/{}", relative.display()),
+        Err(_) => source.to_owned(),
+    }
+}
+
+fn cluster_menu_label(name: &str, version: &str, source: &str, selected: bool) -> String {
+    format!(
+        "{name}, Version {version}, {source}{}",
+        if selected { ", selected" } else { "" }
+    )
+}
+
+// runtime::home_dir reads environment metadata only. Cache it, never probe the filesystem.
+fn cluster_menu_home() -> Option<&'static Path> {
+    static HOME: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    HOME.get_or_init(iceon_core::runtime::home_dir).as_deref()
 }
 
 fn cluster_choices(snapshot: &CatalogSnapshot) -> Vec<ClusterChoice> {
@@ -719,17 +756,27 @@ impl IceonApp {
                                                                         let owner = owner.clone();
                                                                         let name = item.name.clone();
                                                                         let source_label = cluster_source_label(&item.labels);
+                                                                        let row_id = id.clone();
+                                                                        let compact_source = compact_cluster_source(&source_label, cluster_menu_home());
                                                                         let (status, version) = app.header_cluster_metadata(&item.id, item.status);
                                                                         menu = menu.item(PopupMenuItem::element(move |_, cx| {
-                                                                            v_flex().w(px(360.0)).min_w_0().max_w(px(392.0)).gap_1()
+                                                                            let tooltip = source_label.clone();
+                                                                            v_flex().id(SharedString::from(format!("cluster-menu-row-{row_id}")))
+                                                                                .role(gpui_kit::accesskit::Role::MenuItemRadio)
+                                                                                .aria_toggled(if selected { gpui_kit::accesskit::Toggled::True } else { gpui_kit::accesskit::Toggled::False })
+                                                                                .aria_label(cluster_menu_label(&name, &version, &source_label, selected))
+                                                                                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                                                                                .w(px(360.0)).min_w_0().max_w(px(392.0)).gap_1()
                                                                                 .child(h_flex().items_center().gap_2()
+                                                                                    .child(div().w(px(16.0)).flex_shrink_0().when(selected, |gutter| gutter.child(Icon::new(IconName::Check).small())))
                                                                                     .child(gpui_kit::component::Icon::default().path(crate::brand_icons::CLUSTER_PATH).small())
                                                                                     .child(div().min_w_0().truncate().child(name.clone())))
-                                                                                .child(h_flex().items_center().gap_2().text_xs().text_color(cx.theme().muted_foreground)
+                                                                                .child(h_flex().pl(px(24.0)).items_center().gap_2().min_w_0().text_xs().text_color(cx.theme().muted_foreground)
                                                                                     .child(connection_indicator(&status, cx))
-                                                                                    .child(div().truncate().child(format!("Version {version}"))))
-                                                                                .child(div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(source_label.clone()))
-                                                                        }).checked(selected).on_click(move |_, window, cx| {
+                                                                                    .child(div().flex_shrink_0().child(format!("Version {version}")))
+                                                                                    .child(Icon::new(IconName::File).xsmall().flex_shrink_0())
+                                                                                    .child(div().min_w_0().truncate().child(compact_source.clone())))
+                                                                        }).on_click(move |_, window, cx| {
                                                                             let _ = owner.update(cx, |app, cx| app.navigate(Route::Cluster { cluster_id: id.clone(), section: "overview".into() }, true, window, cx));
                                                                         }));
                                                                     }
@@ -828,14 +875,59 @@ mod tests {
         }
         assert_eq!(
             super::cluster_source_label(&["other=ignored".into(), "file=~/.kube/config".into()]),
-            "Source: ~/.kube/config"
+            "~/.kube/config"
         );
         assert_eq!(
             super::cluster_source_label(&[
                 "file=".into(),
                 "file=/fixtures/team config.yaml".into()
             ]),
-            "Source: /fixtures/team config.yaml"
+            "/fixtures/team config.yaml"
+        );
+    }
+
+    #[test]
+    fn source_compaction_respects_current_home_boundary() {
+        let home = Some(std::path::Path::new("/Users/fixture"));
+        for (source, expected) in [
+            ("/Users/fixture/.kube/config", "~/.kube/config"),
+            ("/Users/fixture/team config.yaml", "~/team config.yaml"),
+            ("/Users/fixture", "~"),
+            ("/Users/fixture/", "~"),
+            ("/Users/fixture-other/config", "/Users/fixture-other/config"),
+            ("/Users/other/.kube/config", "/Users/other/.kube/config"),
+            (
+                "/Users/fixture/../other/config",
+                "/Users/fixture/../other/config",
+            ),
+            ("~/.kube/config", "~/.kube/config"),
+            ("relative/config", "relative/config"),
+            ("Source unavailable", "Source unavailable"),
+        ] {
+            assert_eq!(super::compact_cluster_source(source, home), expected);
+        }
+        for home in [
+            None,
+            Some(std::path::Path::new("/")),
+            Some(std::path::Path::new("relative")),
+        ] {
+            assert_eq!(
+                super::compact_cluster_source("/Users/fixture/config", home),
+                "/Users/fixture/config"
+            );
+        }
+    }
+
+    #[test]
+    fn cluster_menu_accessibility_keeps_full_source_and_selection() {
+        let source = "/Users/fixture/.kube/config";
+        assert_eq!(
+            super::cluster_menu_label("Fixture", "v1.32", source, true),
+            "Fixture, Version v1.32, /Users/fixture/.kube/config, selected"
+        );
+        assert_eq!(
+            super::cluster_menu_label("Fixture", "unavailable", source, false),
+            "Fixture, Version unavailable, /Users/fixture/.kube/config"
         );
     }
 
@@ -850,8 +942,8 @@ mod tests {
         assert_eq!(choices[0].title(), choices[1].title());
         assert_eq!(choices[0].context_name, choices[1].context_name);
         assert_ne!(choices[0].value(), choices[1].value());
-        assert_eq!(choices[0].source_label, "Source: /fixtures/east/config");
-        assert_eq!(choices[1].source_label, "Source: /fixtures/west/config");
+        assert_eq!(choices[0].source_label, "/fixtures/east/config");
+        assert_eq!(choices[1].source_label, "/fixtures/west/config");
         assert!(choices[0].matches("/FIXTURES/EAST/config"));
         assert!(!choices[1].matches("/fixtures/east/config"));
         catalog.clusters[0].labels = vec!["file=/fixtures/replacement/config".into()];
