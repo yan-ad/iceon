@@ -5,6 +5,7 @@ mod age_label;
 mod app_assets;
 mod app_checkbox;
 pub mod badge;
+mod brand_icons;
 mod bulk_delete;
 pub mod catalog_view;
 pub mod cluster_view;

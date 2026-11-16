@@ -88,7 +88,7 @@ pub(crate) fn quick_access_menu() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Show Iceon", ShowMainWindow),
         MenuItem::separator(),
-        MenuItem::action("Preferences…", Preferences),
+        MenuItem::action("Iceon Settings…", Preferences),
         MenuItem::separator(),
         MenuItem::action("Quit Iceon", Quit),
     ]
@@ -593,7 +593,7 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
     let mut app = vec![
         MenuItem::action("About Iceon", About),
         MenuItem::separator(),
-        MenuItem::action("Preferences…", Preferences),
+        MenuItem::action("Iceon Settings…", Preferences),
         MenuItem::action("Extensions…", Extensions),
     ];
     if macos {
@@ -611,7 +611,7 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
     vec![
         Menu::new("Iceon").items(app),
         Menu::new("File").items([
-            MenuItem::action("Add Cluster…", AddCluster),
+            MenuItem::action("Create Cluster…", AddCluster),
             MenuItem::action("New Device Terminal", NewDeviceTerminal),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
@@ -630,7 +630,7 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
         ]),
         Menu::new("View").items([
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
-            MenuItem::action("Command Palette…", CommandPalette),
+            MenuItem::action("Quick Jump…", CommandPalette),
             MenuItem::separator(),
             if caps.back {
                 MenuItem::action("Back", Back)
@@ -711,6 +711,29 @@ mod tests {
                 MenuItem::Action { name, action, disabled, .. }
                 if name.as_ref() == "New Device Terminal" && action.name() == super::NewDeviceTerminal.name() && !disabled
             )));
+        }
+    }
+
+    #[test]
+    fn native_search_actions_use_the_public_names_and_existing_handlers() {
+        let menus = menu_model(true, Capabilities::default());
+        for (title, expected) in [
+            ("Create Cluster…", super::AddCluster.name()),
+            ("Iceon Settings…", super::Preferences.name()),
+            ("Quick Jump…", super::CommandPalette.name()),
+        ] {
+            assert_eq!(
+                menus
+                    .iter()
+                    .flat_map(|menu| &menu.items)
+                    .filter(|item| {
+                        matches!(item, MenuItem::Action { name, action, disabled, .. }
+                    if name.as_ref() == title && action.name() == expected && !disabled)
+                    })
+                    .count(),
+                1,
+                "{title}"
+            );
         }
     }
 

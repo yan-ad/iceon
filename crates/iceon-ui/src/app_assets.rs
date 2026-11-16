@@ -65,6 +65,12 @@ gpui_kit_assets::icon_assets!(
 pub(crate) struct AppAssets;
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
+        if let Some((_, bytes)) = crate::brand_icons::ASSETS
+            .iter()
+            .find(|(name, _)| *name == path)
+        {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
         if path == crate::action_icons::ATTACH_PATH {
             return Ok(Some(Cow::Borrowed(include_bytes!(
                 "../assets/icons/square-arrow-up-left-exit.svg"
@@ -78,6 +84,12 @@ impl AssetSource for AppAssets {
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
         let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(ExtraIcons.list(path)?);
+        paths.extend(
+            crate::brand_icons::ASSETS
+                .iter()
+                .filter(|(name, _)| name.starts_with(path))
+                .map(|(name, _)| SharedString::from(*name)),
+        );
         if crate::action_icons::ATTACH_PATH.starts_with(path) {
             paths.push(crate::action_icons::ATTACH_PATH.into());
         }
@@ -91,6 +103,28 @@ impl AssetSource for AppAssets {
 mod tests {
     use super::AppAssets;
     use gpui_kit::AssetSource;
+    #[test]
+    fn all_custom_brand_svgs_are_embedded_and_listed() {
+        let assets = crate::brand_icons::ASSETS;
+        assert_eq!(assets.len(), 14);
+        let listed = AppAssets.list("icons/custom-brand/").unwrap();
+        assert_eq!(listed.len(), assets.len());
+        for &(path, source) in assets {
+            assert_eq!(AppAssets.load(path).unwrap().unwrap().as_ref(), source);
+            assert!(std::str::from_utf8(source).unwrap().contains("<svg"));
+            for prefix in ["", "icons/", "icons/custom-brand/", path] {
+                assert!(
+                    AppAssets
+                        .list(prefix)
+                        .unwrap()
+                        .iter()
+                        .any(|p| p.as_ref() == path)
+                );
+            }
+        }
+        assert!(AppAssets.load("icons/custom-brand/unknown.svg").is_err());
+        assert!(AppAssets.list("not-icons/").unwrap().is_empty());
+    }
     #[test]
     fn every_sidebar_destination_icon_has_an_embedded_svg() {
         for group in crate::navigation::CLUSTER_SECTIONS {

@@ -2,7 +2,7 @@
 use crate::{IceonApp, navigation::Route};
 use gpui_kit::{
     component::{
-        ActiveTheme as _,
+        ActiveTheme as _, Icon,
         command::{Command, CommandGroup, CommandItem},
         h_flex,
     },
@@ -17,10 +17,25 @@ enum JumpAction {
     Navigate(Route),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JumpIcon {
+    Asset(gpui_kit_assets::IconName),
+    Brand(&'static str),
+}
+
+impl JumpIcon {
+    fn icon(self) -> Icon {
+        match self {
+            Self::Asset(name) => Icon::new(name),
+            Self::Brand(path) => Icon::default().path(path),
+        }
+    }
+}
+
 struct JumpEntry {
     title: String,
     keywords: Vec<String>,
-    icon: gpui_kit_assets::IconName,
+    icon: JumpIcon,
     action: JumpAction,
     // Dynamic destinations must not outlive their discovery lease.
     lease: Option<String>,
@@ -68,7 +83,7 @@ fn destinations(
         .map(|(title, keywords, icon, action)| JumpEntry {
             title: title.into(),
             keywords: vec![keywords.into()],
-            icon,
+            icon: JumpIcon::Asset(icon),
             action,
             lease: None,
         })
@@ -86,38 +101,38 @@ fn destinations(
             cluster.name.clone()
         };
         let mut entries = Vec::new();
-        let mut push = |section: &str, title: String, lease: Option<String>| {
-            if !allowed(&cluster.id, section) {
-                return;
-            }
-            let mut keywords = vec![
-                section.to_owned(),
-                cluster.name.clone(),
-                cluster.context_name.clone(),
-            ];
-            // Command's filter is a substring search within each individual keyword.
-            // Keep combined terms so e.g. "prod pods" can cross the cluster/title boundary.
-            let leaf = title.rsplit(" · ").next().unwrap_or(&title);
-            for prefix in [&cluster.name, &cluster.context_name] {
-                keywords.push(format!("{prefix} {leaf}"));
-                keywords.push(format!("{prefix} {title}"));
-                keywords.push(format!("{prefix} {section}"));
-            }
-            entries.push(JumpEntry {
-                title,
-                keywords,
-                icon: crate::sidebar_view::section_asset_icon(if lease.is_some() {
-                    "custom-resources"
-                } else {
-                    section
-                }),
-                action: JumpAction::Navigate(Route::Cluster {
-                    cluster_id: cluster.id.clone(),
-                    section: section.into(),
-                }),
-                lease,
-            });
-        };
+        let mut push =
+            |section: &str, title: String, lease: Option<String>, api_group: Option<&str>| {
+                if !allowed(&cluster.id, section) {
+                    return;
+                }
+                let mut keywords = vec![
+                    section.to_owned(),
+                    cluster.name.clone(),
+                    cluster.context_name.clone(),
+                ];
+                // Command's filter is a substring search within each individual keyword.
+                // Keep combined terms so e.g. "prod pods" can cross the cluster/title boundary.
+                let leaf = title.rsplit(" · ").next().unwrap_or(&title);
+                for prefix in [&cluster.name, &cluster.context_name] {
+                    keywords.push(format!("{prefix} {leaf}"));
+                    keywords.push(format!("{prefix} {title}"));
+                    keywords.push(format!("{prefix} {section}"));
+                }
+                entries.push(JumpEntry {
+                    title,
+                    keywords,
+                    icon: api_group.map_or_else(
+                        || JumpIcon::Asset(crate::sidebar_view::section_asset_icon(section)),
+                        |group| JumpIcon::Brand(crate::brand_icons::api_group_path(group)),
+                    ),
+                    action: JumpAction::Navigate(Route::Cluster {
+                        cluster_id: cluster.id.clone(),
+                        section: section.into(),
+                    }),
+                    lease,
+                });
+            };
         for group in crate::navigation::ordered_cluster_sections() {
             if group.children.is_empty() {
                 push(
@@ -128,10 +143,16 @@ fn destinations(
                         group.label.into()
                     },
                     None,
+                    None,
                 );
             } else {
                 for child in group.children {
-                    push(child.id, format!("{} · {}", group.label, child.label), None);
+                    push(
+                        child.id,
+                        format!("{} · {}", group.label, child.label),
+                        None,
+                        None,
+                    );
                 }
             }
         }
@@ -167,6 +188,7 @@ fn destinations(
                     &section,
                     format!("Custom Resources · {api_group} · {kind}"),
                     Some(page.session_id.clone()),
+                    Some(&api_group),
                 );
             }
         }
@@ -220,7 +242,7 @@ impl IceonApp {
                 group.entries.iter().map(|entry| CommandItem::new()
                     .label(entry.title.clone())
                     .keywords(entry.keywords.clone())
-                    .icon(entry.icon)
+                    .icon(entry.icon.icon())
                     .checked(matches!(&entry.action, JumpAction::Navigate(route) if route == self.history.current())))
             ));
         }
@@ -290,7 +312,7 @@ impl IceonApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{JumpAction, JumpGroup, Route, destinations, entry_at};
+    use super::{JumpAction, JumpGroup, JumpIcon, Route, destinations, entry_at};
     use iceon_core::{
         catalog::ClusterSummary,
         connection::{ResourceItem, ResourceKind, ResourcePage},
@@ -412,9 +434,8 @@ mod tests {
         assert_eq!(denied[0].entries.len(), 3);
     }
 
-    #[test]
-    fn custom_types_require_matching_current_discovery_lease_and_permission() {
-        let page = ResourcePage {
+    fn custom_page() -> ResourcePage {
+        ResourcePage {
             cluster_id: "prod".into(),
             session_id: "lease".into(),
             kind: ResourceKind::CustomResourceDefinitions,
@@ -439,7 +460,42 @@ mod tests {
             namespace: None,
             continue_token: None,
             metrics: None,
-        };
+        }
+    }
+
+    #[test]
+    fn custom_brand_icons_do_not_change_routes_or_original_row_lookup() {
+        let mut page = custom_page();
+        for (api_group, path) in [
+            ("argoproj.io", "icons/custom-brand/argoproj.svg"),
+            ("networking.gke.io", "icons/custom-brand/gke.svg"),
+            ("example.io", crate::brand_icons::KUBERNETES_PATH),
+        ] {
+            page.items[0]
+                .columns
+                .insert("group".into(), api_group.into());
+            let groups = destinations(&clusters(), Some(("prod", "lease")), Some(&page), |_, _| {
+                true
+            });
+            let (row, entry) = groups[1]
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, entry)| entry.lease.is_some())
+                .unwrap();
+            assert_eq!(entry.icon, JumpIcon::Brand(path));
+            assert_eq!(entry_at(&groups, 1, row).unwrap().action, entry.action);
+            assert_eq!(entry.lease.as_deref(), Some("lease"));
+            assert!(
+                matches!(&entry.action, JumpAction::Navigate(Route::Cluster { cluster_id, section }) if cluster_id == "prod" && section == "crd:widgets.example.io")
+            );
+            assert!(groups[2].entries.iter().all(|entry| entry.lease.is_none()));
+        }
+    }
+
+    #[test]
+    fn custom_types_require_matching_current_discovery_lease_and_permission() {
+        let page = custom_page();
         let clusters = clusters();
         let custom = "crd:widgets.example.io";
         let groups = destinations(&clusters, Some(("prod", "lease")), Some(&page), |_, _| true);

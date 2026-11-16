@@ -251,8 +251,8 @@ impl IceonApp {
                         resources.push(
                             menu_item(
                                 format!("crd-group-{api_group}"),
-                                api_group,
-                                None,
+                                api_group.clone(),
+                                Some(crate::brand_icons::api_group_icon(&api_group)),
                                 contains_active,
                                 Some(if expanded {
                                     IconName::ChevronDown
