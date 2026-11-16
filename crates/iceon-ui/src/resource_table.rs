@@ -24,8 +24,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use iceon_core::connection::{
-    ResourceItem, ResourceKind, ResourcePage, details::ResourceReference, node_actions::NodeAction,
-    permissions::PermissionAction, pod_runtime::PodStreamMode, workload_actions::WorkloadAction,
+    ResourceItem, ResourceKind, ResourcePage,
+    details::ResourceReference,
+    node_actions::NodeAction,
+    permissions::PermissionAction,
+    pod_runtime::PodStreamMode,
+    resource_status::{self, StatusPresentation},
+    workload_actions::WorkloadAction,
 };
 use std::{cell::Cell, cmp::Ordering, collections::HashMap, rc::Rc};
 
@@ -102,12 +107,70 @@ fn node_selector_tags(selector: &str) -> impl Iterator<Item = &str> {
         .filter(|value| !value.is_empty() && *value != "—")
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ConditionTone {
+    Success,
+    Info,
+    Danger,
+    Warning,
+    Neutral,
+}
+
+fn condition_tone(condition: &str) -> ConditionTone {
+    let normalized = condition.trim().to_ascii_lowercase();
+    let (name, status) = normalized
+        .split_once(['=', ':'])
+        .map_or((normalized.as_str(), "true"), |(name, status)| {
+            (name.trim(), status.trim())
+        });
+    // An explicitly false/unknown condition never inherits a positive type's tone.
+    match status {
+        "false" => return ConditionTone::Warning,
+        "true" => {}
+        _ => return ConditionTone::Neutral,
+    }
+    match name {
+        "available"
+        | "ready"
+        | "established"
+        | "namesaccepted"
+        | "abletoscale"
+        | "scalingactive"
+        | "disruptionallowed"
+        | "recommendationprovided" => ConditionTone::Success,
+        "progressing" | "fetchinghistory" => ConditionTone::Info,
+        "scalinglimited" | "lowconfidence" | "nopodsmatched" | "terminating" => {
+            ConditionTone::Warning
+        }
+        "replicafailure" | "failed" | "degraded" => ConditionTone::Danger,
+        _ => ConditionTone::Neutral,
+    }
+}
+
 fn deployment_condition_tag(condition: &str) -> Tag {
-    match condition {
-        "Available" => Tag::success(),
-        "Progressing" => Tag::info(),
-        "ReplicaFailure" => Tag::danger(),
-        _ => Tag::secondary(),
+    match condition_tone(condition) {
+        ConditionTone::Success => Tag::success(),
+        ConditionTone::Info => Tag::info(),
+        ConditionTone::Danger => Tag::danger(),
+        ConditionTone::Warning => Tag::warning(),
+        ConditionTone::Neutral => Tag::secondary(),
+    }
+}
+
+fn condition_text(item: &ResourceItem) -> &str {
+    match item.columns.get("conditions").map(String::as_str) {
+        None => "Not reported",
+        Some(value) if value.split(',').all(|token| token.trim().is_empty()) => {
+            "No true conditions"
+        }
+        Some(value) => value,
+    }
+}
+
+fn status_text(item: &ResourceItem) -> &str {
+    match item.status.trim() {
+        "" | "—" | "-" => "Not reported",
+        value => value,
     }
 }
 fn event_text_color(status: &str, cx: &App) -> Hsla {
@@ -212,49 +275,39 @@ impl ColumnLayout {
                 min,
             }
         }));
-        columns.extend([
-            TableColumn {
-                key: "age",
-                label: "Age",
-                width: RESOURCE_AGE_WIDTH,
-                min: 164.0,
-            },
-            TableColumn {
-                key: if kind == ResourceKind::Deployments {
-                    "conditions"
-                } else {
-                    "status"
-                },
-                label: if kind == ResourceKind::Deployments {
-                    "Conditions"
-                } else {
-                    "Status"
-                },
-                width: if kind == ResourceKind::Deployments {
-                    260.0
-                } else {
-                    RESOURCE_STATUS_WIDTH
-                },
+        columns.push(TableColumn {
+            key: "age",
+            label: "Age",
+            width: RESOURCE_AGE_WIDTH,
+            min: 164.0,
+        });
+        let status_column = match resource_status::presentation(kind) {
+            StatusPresentation::Status => Some(("status", "Status", RESOURCE_STATUS_WIDTH)),
+            StatusPresentation::Conditions => Some(("conditions", "Conditions", 260.0)),
+            StatusPresentation::None | StatusPresentation::Severity => None,
+        };
+        if let Some((key, label, width)) = status_column {
+            columns.push(TableColumn {
+                key,
+                label,
+                width,
                 min: 110.0,
-            },
-            TableColumn {
-                key: "actions",
-                label: "Actions",
-                width: if matches!(kind, ResourceKind::Deployments | ResourceKind::DaemonSets) {
-                    64.0
-                } else {
-                    RESOURCE_ACTIONS_WIDTH
-                },
-                min: if matches!(kind, ResourceKind::Deployments | ResourceKind::DaemonSets) {
-                    48.0
-                } else {
-                    124.0
-                },
-            },
-        ]);
-        if kind == ResourceKind::DaemonSets {
-            columns.retain(|column| column.key != "status");
+            });
         }
+        columns.push(TableColumn {
+            key: "actions",
+            label: "Actions",
+            width: if matches!(kind, ResourceKind::Deployments | ResourceKind::DaemonSets) {
+                64.0
+            } else {
+                RESOURCE_ACTIONS_WIDTH
+            },
+            min: if matches!(kind, ResourceKind::Deployments | ResourceKind::DaemonSets) {
+                48.0
+            } else {
+                124.0
+            },
+        });
         Self {
             columns,
             name_resized: false,
@@ -307,7 +360,11 @@ fn sort_value(item: &ResourceItem, key: &str) -> Option<String> {
     } else {
         cell_value(item, key)
     };
-    (!matches!(value.trim(), "" | "—" | "-" | "<none>" | "N/A")).then_some(value)
+    let missing_status = matches!(key, "status" | "conditions")
+        && ["Not reported", "Not applicable"]
+            .iter()
+            .any(|missing| value.trim().eq_ignore_ascii_case(missing));
+    (!missing_status && !matches!(value.trim(), "" | "—" | "-" | "<none>" | "N/A")).then_some(value)
 }
 
 fn quantity(value: &str, key: &str) -> Option<f64> {
@@ -438,19 +495,21 @@ struct TableCache {
 }
 
 pub(crate) fn matches_filter(item: &ResourceItem, query: &str, status: Option<&str>) -> bool {
-    status.is_none_or(|status| item.status.eq_ignore_ascii_case(status))
+    let query = query.trim().to_lowercase();
+    status.is_none_or(|status| resource_status::matches_status(item, status))
         && (query.is_empty()
-            || item.name.to_lowercase().contains(query)
+            || item.name.to_lowercase().contains(&query)
+            || item.status.to_lowercase().contains(&query)
             || item
                 .namespace
                 .as_deref()
                 .unwrap_or_default()
                 .to_lowercase()
-                .contains(query)
+                .contains(&query)
             || item
                 .columns
                 .values()
-                .any(|value| value.to_lowercase().contains(query)))
+                .any(|value| value.to_lowercase().contains(&query)))
 }
 
 impl TableCache {
@@ -474,7 +533,17 @@ impl TableCache {
                     .iter()
                     .enumerate()
                     .filter(|(_, item)| {
-                        matches_filter(item, &data.scope.query, data.scope.status.as_deref())
+                        matches_filter(
+                            item,
+                            &data.scope.query,
+                            if resource_status::presentation(data.scope.kind)
+                                == StatusPresentation::None
+                            {
+                                None
+                            } else {
+                                data.scope.status.as_deref()
+                            },
+                        )
                     })
                     .map(|(index, _)| index)
                     .collect()
@@ -1116,32 +1185,40 @@ impl ResourceTable {
                         &timezone,
                     )),
             )
-            .when(kind != ResourceKind::DaemonSets, |row| {
-                row.child(if kind == ResourceKind::Deployments {
-                    let conditions = cell_value(item, "conditions");
-                    table_cell(layout.width("conditions"), false, true, cx.theme().border)
-                        .items_center()
-                        .gap_1()
-                        .overflow_hidden()
-                        .children(
-                            conditions
-                                .split(',')
-                                .map(str::trim)
-                                .filter(|v| !v.is_empty())
-                                .map(|condition| {
-                                    deployment_condition_tag(condition)
-                                        .small()
-                                        .child(condition.to_owned())
-                                }),
-                        )
-                        .into_any_element()
-                } else {
-                    table_cell(layout.width("status"), false, true, cx.theme().border)
-                        .items_center()
-                        .child(row_status_tag(&item.status))
-                        .into_any_element()
-                })
-            })
+            .when(
+                matches!(
+                    resource_status::presentation(kind),
+                    StatusPresentation::Status | StatusPresentation::Conditions
+                ),
+                |row| {
+                    row.child(
+                        if resource_status::presentation(kind) == StatusPresentation::Conditions {
+                            let conditions = condition_text(item);
+                            table_cell(layout.width("conditions"), false, true, cx.theme().border)
+                                .items_center()
+                                .gap_1()
+                                .overflow_hidden()
+                                .children(
+                                    conditions
+                                        .split(',')
+                                        .map(str::trim)
+                                        .filter(|v| !v.is_empty())
+                                        .map(|condition| {
+                                            deployment_condition_tag(condition)
+                                                .small()
+                                                .child(condition.to_owned())
+                                        }),
+                                )
+                                .into_any_element()
+                        } else {
+                            table_cell(layout.width("status"), false, true, cx.theme().border)
+                                .items_center()
+                                .child(row_status_tag(status_text(item)))
+                                .into_any_element()
+                        },
+                    )
+                },
+            )
             .when(layout.name_resized, |row| row.child(div().flex_1()))
             .child(
                 table_cell(layout.width("actions"), false, false, cx.theme().border)
@@ -2015,6 +2092,193 @@ impl Render for ResourceTable {
 #[cfg(test)]
 mod tests {
     #[::core::prelude::v1::test]
+    fn every_kind_layout_uses_shared_presentation_policy() {
+        use ResourceKind::*;
+        for kind in [
+            Nodes,
+            Namespaces,
+            Pods,
+            Deployments,
+            DaemonSets,
+            StatefulSets,
+            ReplicaSets,
+            ReplicationControllers,
+            Jobs,
+            CronJobs,
+            ConfigMaps,
+            Secrets,
+            ResourceQuotas,
+            LimitRanges,
+            HorizontalPodAutoscalers,
+            VerticalPodAutoscalers,
+            PodDisruptionBudgets,
+            PriorityClasses,
+            RuntimeClasses,
+            Leases,
+            Services,
+            Endpoints,
+            Ingresses,
+            IngressClasses,
+            NetworkPolicies,
+            EndpointSlices,
+            MutatingWebhookConfigurations,
+            ValidatingWebhookConfigurations,
+            ValidatingAdmissionPolicies,
+            ValidatingAdmissionPolicyBindings,
+            PodSecurityPolicies,
+            PersistentVolumes,
+            PersistentVolumeClaims,
+            StorageClasses,
+            Events,
+            ServiceAccounts,
+            Roles,
+            RoleBindings,
+            ClusterRoles,
+            ClusterRoleBindings,
+            CustomResourceDefinitions,
+        ] {
+            let layout = ColumnLayout::new(kind);
+            let keys: Vec<_> = layout.columns.iter().map(|column| column.key).collect();
+            let presentation = resource_status::presentation(kind);
+            assert_eq!(
+                keys.contains(&"status"),
+                presentation == StatusPresentation::Status,
+                "{kind:?}"
+            );
+            assert_eq!(
+                keys.contains(&"conditions"),
+                presentation == StatusPresentation::Conditions,
+                "{kind:?}"
+            );
+            if presentation == StatusPresentation::Severity {
+                assert_eq!(kind, Events);
+                assert!(keys.contains(&"type") && keys.contains(&"message"));
+            }
+            assert!(keys.contains(&"age") && keys.contains(&"actions"));
+            if presentation == StatusPresentation::None {
+                assert!(resource_status::filters(kind).is_empty());
+            }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn conditions_show_observations_without_fabricating_health() {
+        let mut resource = item("controller", "default", "Unknown", "");
+        assert_eq!(condition_text(&resource), "Not reported");
+        resource.columns.insert("conditions".into(), " , ".into());
+        assert_eq!(condition_text(&resource), "No true conditions");
+        resource.columns.insert(
+            "conditions".into(),
+            "Available: False, Progressing: Unknown".into(),
+        );
+        assert_eq!(
+            condition_text(&resource),
+            "Available: False, Progressing: Unknown"
+        );
+        for name in [
+            "Available",
+            "Established",
+            "NamesAccepted",
+            "AbleToScale",
+            "ScalingActive",
+            "RecommendationProvided",
+            "DisruptionAllowed",
+        ] {
+            assert_eq!(condition_tone(name), ConditionTone::Success);
+            assert_eq!(
+                condition_tone(&format!("{name}: False")),
+                ConditionTone::Warning
+            );
+            assert_eq!(
+                condition_tone(&format!("{name}: Unknown")),
+                ConditionTone::Neutral
+            );
+        }
+        for unknown in [
+            "Not reported",
+            "No true conditions",
+            "Unknown",
+            "SomeFutureCondition",
+        ] {
+            assert_eq!(condition_tone(unknown), ConditionTone::Neutral);
+        }
+        assert_eq!(condition_tone("ReplicaFailure"), ConditionTone::Danger);
+        assert_eq!(condition_tone("LowConfidence"), ConditionTone::Warning);
+        assert_eq!(condition_tone("Progressing"), ConditionTone::Info);
+    }
+
+    #[::core::prelude::v1::test]
+    fn filters_match_exact_condition_tokens_and_query_includes_status() {
+        let mut resource = item("controller", "default", "Not reported", "");
+        resource
+            .columns
+            .insert("conditions".into(), "Available, Progressing: False".into());
+        for filter in ["aVaIlAbLe", "PROGRESSING: FALSE", "not REPORTED"] {
+            assert!(matches_filter(&resource, "", Some(filter)));
+        }
+        for filter in ["Avail", "Progressing", "False", "reported"] {
+            assert!(!matches_filter(&resource, "", Some(filter)));
+        }
+        assert!(matches_filter(&resource, "REPORTED", None));
+        assert!(matches_filter(&resource, "available", Some("Available")));
+        assert!(!matches_filter(&resource, "absent", Some("Available")));
+    }
+
+    #[::core::prelude::v1::test]
+    fn stale_status_filter_is_ignored_for_no_status_tables_without_mutating_snapshot() {
+        let mut snapshot = (*page()).clone();
+        snapshot.kind = ResourceKind::Services;
+        let snapshot = Rc::new(snapshot);
+        let mut selected_scope = scope("", Some("stale-filter"));
+        selected_scope.kind = ResourceKind::Services;
+        let mut cache = TableCache::default();
+        cache.update(TableData {
+            page: Some(snapshot.clone()),
+            scope: selected_scope.clone(),
+        });
+        assert_eq!(cache.indices.as_slice(), &[0, 1, 2]);
+        assert_eq!(snapshot.items[0].status, "Running");
+        assert_eq!(
+            cache.data.as_ref().unwrap().scope.status.as_deref(),
+            Some("stale-filter")
+        );
+        let indices = cache.indices.clone();
+        let sizes = cache.row_sizes.clone();
+        assert!(!cache.update(TableData {
+            page: Some(snapshot),
+            scope: selected_scope
+        }));
+        assert!(Rc::ptr_eq(&indices, &cache.indices));
+        assert!(Rc::ptr_eq(&sizes, &cache.row_sizes));
+        assert!(!cache.cycle_sort("status"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn absent_status_sorts_last_in_both_directions() {
+        for key in ["status", "conditions"] {
+            for missing in ["Not reported", "Not applicable", "not REPORTED", ""] {
+                let mut resource = item("one", "default", missing, "");
+                resource.columns.insert("conditions".into(), missing.into());
+                assert_eq!(sort_value(&resource, key), None);
+                for descending in [false, true] {
+                    let sort = TableSort {
+                        key: key.into(),
+                        descending,
+                    };
+                    assert_eq!(
+                        compare_values(
+                            sort_value(&resource, key).as_deref(),
+                            Some("Available"),
+                            &sort
+                        ),
+                        Ordering::Greater
+                    );
+                }
+            }
+        }
+    }
+
+    #[::core::prelude::v1::test]
     fn daemonset_layout_columns_remain_resizable_and_horizontally_scrollable() {
         let mut layout = ColumnLayout::new(ResourceKind::DaemonSets);
         assert_eq!(
@@ -2063,7 +2327,10 @@ mod tests {
             ResourceKind::Services,
         ] {
             let other = ColumnLayout::new(kind);
-            assert!(other.columns.iter().any(|c| c.key == "status"));
+            assert_eq!(
+                other.columns.iter().any(|c| c.key == "status"),
+                resource_status::presentation(kind) == StatusPresentation::Status
+            );
             assert_eq!(other.width("actions"), RESOURCE_ACTIONS_WIDTH);
         }
     }
@@ -2215,7 +2482,7 @@ mod tests {
             Ordering::Less
         );
         assert!(
-            ColumnLayout::new(ResourceKind::StatefulSets)
+            !ColumnLayout::new(ResourceKind::StatefulSets)
                 .columns
                 .iter()
                 .any(|c| c.key == "status")

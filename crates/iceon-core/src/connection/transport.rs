@@ -43,6 +43,7 @@ where
     ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
         self.0.poll_ready(cx).map_err(Into::into)
     }
+
     fn call(&mut self, request: Request<Body>) -> Self::Future {
         let cancel = request
             .extensions()
@@ -95,7 +96,7 @@ pub(super) async fn resources(
         seen_tokens.insert(token.clone());
     }
     let mut metrics = None;
-    let filtered = request.query.is_some() || request.status.is_some() || request.group.is_some();
+    let filtered = has_filters(request);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         if cancel.is_cancelled() {
@@ -285,11 +286,22 @@ async fn fetch_page(
             .as_millis() as u64,
     })
 }
+fn status_filter(request: &ResourceRequest) -> Option<&str> {
+    use super::resource_status::{StatusPresentation, presentation};
+    if presentation(request.kind) == StatusPresentation::None {
+        None
+    } else {
+        request.status.as_deref()
+    }
+}
+
+fn has_filters(request: &ResourceRequest) -> bool {
+    request.query.is_some() || status_filter(request).is_some() || request.group.is_some()
+}
+
 fn matches_filter(request: &ResourceRequest, item: &super::ResourceItem) -> bool {
-    if request
-        .status
-        .as_deref()
-        .is_some_and(|status| status != item.status)
+    if status_filter(request)
+        .is_some_and(|status| !super::resource_status::matches_status(item, status))
     {
         return false;
     }
@@ -568,5 +580,139 @@ impl ResourceTransport for LiveResourceTransport {
             "application/json"
         };
         get_with_accept(client, &path, BODY_LIMIT, cancel, accept).await
+    }
+}
+
+#[cfg(test)]
+mod status_filter_tests {
+    use super::*;
+    use crate::connection::{ResourceItem, resource_status};
+
+    fn request(kind: ResourceKind, status: Option<&str>) -> ResourceRequest {
+        ResourceRequest {
+            cluster_id: "fixture-cluster".into(),
+            session_id: "fixture-session".into(),
+            kind,
+            read_id: 1,
+            namespace: None,
+            continue_token: None,
+            query: None,
+            status: status.map(str::to_owned),
+            group: None,
+        }
+    }
+
+    fn item(status: &str, conditions: Option<&str>) -> ResourceItem {
+        ResourceItem {
+            name: "fixture".into(),
+            uid: None,
+            resource_version: None,
+            status: status.into(),
+            namespace: None,
+            created_at: None,
+            columns: conditions
+                .map(|value| ("conditions".into(), value.into()))
+                .into_iter()
+                .collect(),
+            node: None,
+            containers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn exact_condition_tokens_and_case_match_shared_policy() {
+        let row = item(
+            "Unavailable",
+            Some("Available: False, Progressing: Unknown, ReplicaFailure"),
+        );
+        for (filter, expected) in [
+            ("Available: False", true),
+            ("aVaIlAbLe: fAlSe", true),
+            ("Progressing: Unknown", true),
+            ("progressing: unknown", true),
+            ("replicafailure", true),
+            ("UNAVAILABLE", true),
+            ("Available", false),
+            ("Progressing", false),
+            ("False", false),
+            ("Unknown", false),
+            ("Failure", false),
+            ("avail", false),
+        ] {
+            let req = request(ResourceKind::Deployments, Some(filter));
+            assert_eq!(matches_filter(&req, &row), expected, "{filter}");
+            assert_eq!(
+                matches_filter(&req, &row),
+                resource_status::matches_status(&row, filter),
+                "{filter}"
+            );
+            assert!(has_filters(&req));
+        }
+    }
+
+    #[test]
+    fn native_status_labels_are_exact_and_case_insensitive() {
+        for (kind, label, partial) in [
+            (ResourceKind::Nodes, "Not ready", "Ready"),
+            (ResourceKind::Jobs, "Completed", "Complete"),
+            (ResourceKind::Events, "Warning", "Warn"),
+        ] {
+            let row = item(label, None);
+            for filter in [label.to_owned(), label.to_ascii_lowercase()] {
+                assert!(matches_filter(&request(kind, Some(&filter)), &row));
+            }
+            assert!(!matches_filter(&request(kind, Some(partial)), &row));
+        }
+    }
+
+    #[test]
+    fn stale_status_for_none_policy_neither_hides_rows_nor_triggers_scan() {
+        for kind in [
+            ResourceKind::ConfigMaps,
+            ResourceKind::Secrets,
+            ResourceKind::Services,
+            ResourceKind::DaemonSets,
+            ResourceKind::Roles,
+        ] {
+            let row = item("", None);
+            let mut req = request(kind, Some("Running"));
+            assert!(matches_filter(&req, &row), "{kind:?}");
+            assert!(!has_filters(&req), "{kind:?}");
+            req.query = Some("missing".into());
+            assert!(has_filters(&req));
+            assert!(!matches_filter(&req, &row));
+            req.query = Some("fixture".into());
+            assert!(matches_filter(&req, &row));
+        }
+        assert!(!has_filters(&request(ResourceKind::Pods, None)));
+    }
+
+    #[test]
+    fn text_query_still_searches_status_as_a_case_insensitive_substring() {
+        let row = item("Completed", None);
+        let mut req = request(ResourceKind::Jobs, Some("completed"));
+        req.query = Some("PLET".into());
+        assert!(has_filters(&req));
+        assert!(matches_filter(&req, &row));
+        req.query = Some("missing".into());
+        assert!(!matches_filter(&req, &row));
+    }
+
+    #[test]
+    fn group_remains_required_alongside_condition_and_query_filters() {
+        let mut row = item("Not reported", Some("Established, NamesAccepted"));
+        row.columns.insert("group".into(), "example.test".into());
+        let mut req = request(ResourceKind::CustomResourceDefinitions, Some("established"));
+        req.query = Some("fixture".into());
+        req.group = Some("example.test".into());
+        assert!(matches_filter(&req, &row));
+        req.group = Some("other.test".into());
+        assert!(!matches_filter(&req, &row));
+        req.status = None;
+        req.query = None;
+        assert!(has_filters(&req));
+        assert!(!matches_filter(&req, &row));
+        row.columns.remove("group");
+        assert!(!matches_filter(&req, &row));
     }
 }

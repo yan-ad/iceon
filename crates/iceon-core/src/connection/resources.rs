@@ -330,11 +330,9 @@ fn table_status(kind: ResourceKind, v: &Value, c: &mut BTreeMap<String, String>)
             }
             strings(v, c, "shortNames", "/spec/names/shortNames");
         }
-        _ => return generic_status(v, c),
+        _ => {}
     }
-    v.pointer("/status/phase")
-        .and_then(Value::as_str)
-        .map_or_else(|| "Unknown".into(), bounded)
+    phase(v)
 }
 
 fn rbac_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
@@ -395,12 +393,7 @@ pub(super) fn project(kind: ResourceKind, value: Value) -> Result<ResourceItem, 
         ResourceKind::Nodes => project_node(&value, &mut columns)?,
         ResourceKind::Namespaces => {
             count(&value, &mut columns, "labels", "/metadata/labels");
-            match value.pointer("/status/phase").and_then(Value::as_str) {
-                Some("Active") => "Active",
-                Some("Terminating") => "Terminating",
-                _ => "Unknown",
-            }
-            .into()
+            phase(&value)
         }
         ResourceKind::Pods => pod_status(&value, &mut columns),
         ResourceKind::Deployments
@@ -419,6 +412,21 @@ pub(super) fn project(kind: ResourceKind, value: Value) -> Result<ResourceItem, 
         | ResourceKind::ClusterRoleBindings => rbac_status(&value, &mut columns),
         ResourceKind::Secrets | ResourceKind::ConfigMaps => "Metadata only".into(),
         _ => table_status(kind, &value, &mut columns),
+    };
+    let status = match super::resource_status::presentation(kind) {
+        super::resource_status::StatusPresentation::None => {
+            if matches!(kind, ResourceKind::Secrets | ResourceKind::ConfigMaps) {
+                "Metadata only".into()
+            } else {
+                "Not applicable".into()
+            }
+        }
+        super::resource_status::StatusPresentation::Conditions
+            if kind != ResourceKind::Deployments =>
+        {
+            condition_summary(kind, &value, &mut columns)
+        }
+        _ => status,
     };
     if kind == ResourceKind::Pods
         && let Some(owner) = super::details::controlled_owner(&value, namespace.as_deref())
@@ -472,19 +480,46 @@ fn project_node(
     {
         Some("True") => "Ready",
         Some("False") => "Not ready",
-        _ => "Unknown",
+        Some("Unknown") => "Unknown",
+        _ => "Not reported",
     }
     .into())
 }
 fn node_info(v: &Value) -> Result<NodeInfo, ConnectionError> {
     super::transport::nodes::project(v)
 }
-fn generic_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
-    if let Some(p) = v.pointer("/status/phase").and_then(Value::as_str) {
-        insert(c, "phase", bounded(p));
-        return bounded(p);
+fn phase(v: &Value) -> String {
+    v.pointer("/status/phase")
+        .and_then(Value::as_str)
+        .filter(|phase| !phase.is_empty())
+        .map_or_else(|| "Not reported".into(), bounded)
+}
+
+fn condition<'a>(v: &'a Value, name: &str) -> Option<&'a str> {
+    v.pointer("/status/conditions")
+        .and_then(Value::as_array)
+        .filter(|conditions| conditions.len() <= 32)?
+        .iter()
+        .find(|item| item.get("type").and_then(Value::as_str) == Some(name))?
+        .get("status")?
+        .as_str()
+        .filter(|status| matches!(*status, "True" | "False" | "Unknown"))
+}
+
+fn condition_summary(kind: ResourceKind, v: &Value, c: &mut BTreeMap<String, String>) -> String {
+    let summary = super::resource_status::condition_types(kind)
+        .iter()
+        .filter_map(|name| match condition(v, name)? {
+            "True" => Some((*name).to_owned()),
+            status => Some(format!("{name}: {status}")),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    if !summary.is_empty() {
+        insert(c, "conditions", summary.clone());
+        return summary;
     }
-    "Unknown".into()
+    "Not reported".into()
 }
 fn suspend(v: &Value, c: &mut BTreeMap<String, String>) {
     if let Some(value) = v.pointer("/spec/suspend").and_then(Value::as_bool) {
@@ -511,7 +546,12 @@ fn cron_job_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
     {
         insert(c, "lastSchedule", last_schedule);
     }
-    "Unknown".into()
+    match v.pointer("/spec/suspend").and_then(Value::as_bool) {
+        Some(true) => "Suspended",
+        Some(false) => "Enabled",
+        None => "Not reported",
+    }
+    .into()
 }
 fn pod_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
     pod_health(v, c);
@@ -552,9 +592,7 @@ fn pod_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
     {
         return "Terminating".into();
     }
-    v.pointer("/status/phase")
-        .and_then(Value::as_str)
-        .map_or_else(|| "Unknown".into(), bounded)
+    phase(v)
 }
 // Additive row facts shared by snapshot and LIST/WATCH projection. Warning codes
 // are local classifications, not Event warnings or server messages (which may
@@ -728,16 +766,21 @@ fn workload_status(kind: ResourceKind, v: &Value, c: &mut BTreeMap<String, Strin
     {
         insert(c, "revision", revision.to_string());
     }
-    v.pointer("/status/conditions")
-        .and_then(Value::as_array)
-        .and_then(|a| {
-            a.iter()
-                .find(|x| x.get("type").and_then(Value::as_str) == Some("Available"))
-        })
-        .and_then(|x| x.get("status"))
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown")
-        .into()
+    if kind != ResourceKind::Deployments {
+        return "Not applicable".into();
+    }
+    if v.pointer("/spec/paused").and_then(Value::as_bool) == Some(true) {
+        return "Paused".into();
+    }
+    for name in ["ReplicaFailure", "Available", "Progressing"] {
+        match condition(v, name) {
+            Some("True") => return name.into(),
+            Some("False") if name == "Available" => return "Unavailable".into(),
+            Some("Unknown") => return "Unknown".into(),
+            _ => {}
+        }
+    }
+    "Not reported".into()
 }
 fn daemon_set_node_selector(v: &Value, c: &mut BTreeMap<String, String>) {
     let Some(selector) = v
@@ -788,17 +831,25 @@ fn job_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
         }
     }
     suspend(v, c);
-    if let Some(conditions) = v.pointer("/status/conditions").and_then(Value::as_array) {
-        for (condition, status) in [("Failed", "Failed"), ("Complete", "Completed")] {
-            if conditions.iter().any(|item| {
-                item.get("type").and_then(Value::as_str) == Some(condition)
-                    && item.get("status").and_then(Value::as_str) == Some("True")
-            }) {
-                return status.into();
-            }
+    for (name, label) in [
+        ("Failed", "Failed"),
+        ("Complete", "Completed"),
+        ("Suspended", "Suspended"),
+    ] {
+        if condition(v, name) == Some("True") {
+            return label.into();
         }
     }
-    "Unknown".into()
+    if v.pointer("/status/active")
+        .and_then(Value::as_u64)
+        .is_some_and(|active| active > 0)
+    {
+        return "Running".into();
+    }
+    if v.pointer("/spec/suspend").and_then(Value::as_bool) == Some(true) {
+        return "Suspended".into();
+    }
+    "Not reported".into()
 }
 fn service_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
     scalar(v, c, "externalName", "/spec/externalName");
@@ -851,10 +902,7 @@ fn pvc_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
                 .join(","),
         );
     }
-    v.pointer("/status/phase")
-        .and_then(Value::as_str)
-        .unwrap_or("Unknown")
-        .into()
+    phase(v)
 }
 fn event_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
     for (k, p) in [
@@ -909,7 +957,7 @@ fn event_status(v: &Value, c: &mut BTreeMap<String, String>) -> String {
     }
     v.pointer("/type")
         .and_then(Value::as_str)
-        .unwrap_or("Unknown")
+        .unwrap_or("Not reported")
         .into()
 }
 fn insert(c: &mut BTreeMap<String, String>, k: &str, v: String) {

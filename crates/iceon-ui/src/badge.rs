@@ -70,43 +70,66 @@ impl Badge {
     }
 
     pub fn for_resource_status(status: &str) -> Self {
-        let lower = status.to_ascii_lowercase();
-        let variant = if lower.contains("running")
-            || lower.contains("ready")
-            || lower.contains("active")
-            || lower.contains("bound")
-            || lower.contains("complete")
-            || lower.contains("succeeded")
-            || lower.contains("deployed")
-            || lower.contains("available")
-            || lower.contains("healthy")
-            || lower.contains("abletoscale")
-            || lower.contains("scalingactive")
-            || lower == "normal"
-            || lower == "true"
-        {
-            BadgeVariant::Success
-        } else if lower.contains("pending")
-            || lower.contains("terminating")
-            || lower.contains("warning")
-            || lower.contains("waiting")
-            || lower.contains("progressing")
-            || lower.contains("scaling")
-            || lower.contains("suspended")
-            || lower.contains("schedulingdisabled")
-        {
-            BadgeVariant::Warning
-        } else if lower.contains("fail")
-            || lower.contains("error")
-            || lower.contains("crash")
-            || lower.contains("notready")
-            || lower.contains("lost")
-            || lower.contains("blocked")
-            || lower == "false"
-        {
-            BadgeVariant::Danger
-        } else {
-            BadgeVariant::Secondary
+        let normalized = status
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase();
+        let (label, condition_status) = normalized
+            .split_once([':', '='])
+            .map_or((normalized.as_str(), None), |(label, value)| {
+                (label.trim(), Some(value.trim()))
+            });
+        // Bare condition types represent the API's explicitly true conditions.
+        // A false/unknown (or malformed) value must never inherit that type's tone.
+        let variant = match condition_status {
+            Some("false") => BadgeVariant::Warning,
+            Some(value) if value != "true" => BadgeVariant::Secondary,
+            _ => {
+                // Failure signals win even in compound labels such as Running (Error).
+                // Only failures use substring detection; positive labels are a closed
+                // vocabulary, so negated or unfamiliar observations cannot look healthy.
+                if label.contains("fail")
+                    || label.contains("error")
+                    || label.contains("crash")
+                    || matches!(
+                        label,
+                        "not ready" | "notready" | "lost" | "blocked" | "false" | "degraded"
+                    )
+                {
+                    BadgeVariant::Danger
+                } else {
+                    match label {
+                        // Observed phases and affirmative health/condition labels.
+                        "running"
+                        | "ready"
+                        | "active"
+                        | "bound"
+                        | "complete"
+                        | "completed"
+                        | "succeeded"
+                        | "deployed"
+                        | "available"
+                        | "healthy"
+                        | "normal"
+                        | "true"
+                        | "abletoscale"
+                        | "scalingactive"
+                        | "established"
+                        | "namesaccepted"
+                        | "disruptionallowed"
+                        | "recommendationprovided" => BadgeVariant::Success,
+                        // Transitional, inhibited, or explicitly negative observations.
+                        "pending" | "terminating" | "warning" | "waiting" | "progressing"
+                        | "scaling" | "suspended" | "schedulingdisabled" | "scalinglimited"
+                        | "fetchinghistory" | "lowconfidence" | "nopodsmatched" | "paused"
+                        | "inactive" | "unavailable" | "incomplete" => BadgeVariant::Warning,
+                        // Missing, unknown, non-applicable, and unrecognized labels are
+                        // neutral: absence of a failure is not evidence of health.
+                        _ => BadgeVariant::Secondary,
+                    }
+                }
+            }
         };
         Self::new(variant).small().child(status.to_owned())
     }
@@ -172,5 +195,116 @@ impl RenderOnce for Badge {
                 el.child(div().size(px(5.0)).rounded_full().bg(dot))
             })
             .child(self.label)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Badge, BadgeVariant};
+
+    #[test]
+    fn known_positive_statuses_match_complete_normalized_labels() {
+        for label in [
+            "Running",
+            "Ready",
+            "Active",
+            "Bound",
+            "Complete",
+            "Completed",
+            "Succeeded",
+            "Deployed",
+            "Available",
+            "Healthy",
+            "Normal",
+            "True",
+            "AbleToScale",
+            "ScalingActive",
+            "Established",
+            "NamesAccepted",
+            "DisruptionAllowed",
+            "RecommendationProvided",
+            "  rEaDy  ",
+            " Available : True ",
+        ] {
+            assert_eq!(
+                Badge::for_resource_status(label).variant,
+                BadgeVariant::Success,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn negative_and_transitional_labels_are_not_healthy() {
+        for label in [
+            "Not ready",
+            "NotReady",
+            "  NOT   READY  ",
+            "Failed",
+            "CrashLoopBackOff",
+            "Running (Error)",
+            "Ready but failed",
+            "ReplicaFailure",
+            "Lost",
+            "Blocked",
+            "False",
+        ] {
+            assert_eq!(
+                Badge::for_resource_status(label).variant,
+                BadgeVariant::Danger,
+                "{label}"
+            );
+        }
+        for label in [
+            "Inactive",
+            "Unavailable",
+            "incomplete",
+            "Progressing",
+            "Pending",
+            "Waiting",
+            "Scaling",
+            "Suspended",
+            "Terminating",
+            "SchedulingDisabled",
+            "ScalingLimited",
+            "LowConfidence",
+            "NoPodsMatched",
+            "Ready: False",
+            "Available = false",
+        ] {
+            assert_eq!(
+                Badge::for_resource_status(label).variant,
+                BadgeVariant::Warning,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_unknown_and_arbitrary_labels_are_neutral() {
+        for label in [
+            "",
+            "  ",
+            "Unknown",
+            "Not reported",
+            "Not applicable",
+            "Not   reported",
+            "Ready: Unknown",
+            "Active: Unknown",
+            "Available: ",
+            "Ready: maybe",
+            "not running",
+            "Already",
+            "Unbound",
+            "not healthy",
+            "future active state",
+            "Completed-ish",
+        ] {
+            assert_eq!(
+                Badge::for_resource_status(label).variant,
+                BadgeVariant::Secondary,
+                "{label}"
+            );
+        }
     }
 }

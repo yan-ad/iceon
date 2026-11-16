@@ -49,6 +49,7 @@ pub mod rbac;
 pub mod rbac_management;
 mod renewal;
 pub mod resource_edit;
+pub mod resource_status;
 #[cfg(test)]
 mod resource_tests;
 mod resources;

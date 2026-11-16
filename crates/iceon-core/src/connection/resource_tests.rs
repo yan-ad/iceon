@@ -7,7 +7,7 @@ fn deployment_conditions_only_summarize_known_explicitly_true_types() {
     let base = json!({"metadata":{"name":"app","namespace":"team"}});
     let missing = resources::project(ResourceKind::Deployments, base.clone()).unwrap();
     assert!(!missing.columns.contains_key("conditions"));
-    assert_eq!(missing.status, "Unknown");
+    assert_eq!(missing.status, "Not reported");
     for key in ["desired", "replicas", "ready", "updated", "available"] {
         assert!(!missing.columns.contains_key(key));
     }
@@ -28,7 +28,7 @@ fn deployment_conditions_only_summarize_known_explicitly_true_types() {
         projected.columns["conditions"],
         "Progressing,ReplicaFailure"
     );
-    assert_eq!(projected.status, "False");
+    assert_eq!(projected.status, "ReplicaFailure");
     for key in ["desired", "replicas", "ready", "updated", "available"] {
         assert_eq!(projected.columns[key], "0");
     }
@@ -413,7 +413,14 @@ fn jobs_and_pods_keep_missing_and_zero_facts_honest() {
         )
         .unwrap();
         assert!(missing.columns.is_empty(), "{kind:?}");
-        assert_eq!(missing.status, "Unknown");
+        assert_eq!(
+            missing.status,
+            if kind == ResourceKind::DaemonSets {
+                "Not applicable"
+            } else {
+                "Not reported"
+            }
+        );
     }
     for kind in [
         ResourceKind::Deployments,
@@ -1331,5 +1338,250 @@ fn daemon_set_columns_preserve_zero_missing_and_safe_node_selectors() {
                 .columns
                 .contains_key("nodeSelector")
         );
+    }
+}
+
+#[test]
+fn native_lifecycle_absence_is_not_explicit_unknown() {
+    for kind in [
+        ResourceKind::Nodes,
+        ResourceKind::Namespaces,
+        ResourceKind::Pods,
+        ResourceKind::PersistentVolumes,
+        ResourceKind::PersistentVolumeClaims,
+    ] {
+        let mut value = json!({"metadata":{"name":"item","namespace":"team"}});
+        assert_eq!(
+            resources::project(kind, value.clone()).unwrap().status,
+            "Not reported",
+            "{kind:?}"
+        );
+        value["status"] =
+            json!({"phase":"Unknown", "conditions":[{"type":"Ready","status":"Unknown"}]});
+        assert_eq!(
+            resources::project(kind, value).unwrap().status,
+            "Unknown",
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn condition_summaries_are_allowlisted_bounded_and_exactly_filterable() {
+    use resource_status::{filters, matches_status};
+    for (kind, names) in [
+        (
+            ResourceKind::HorizontalPodAutoscalers,
+            vec!["AbleToScale", "ScalingActive", "ScalingLimited"],
+        ),
+        (
+            ResourceKind::VerticalPodAutoscalers,
+            vec![
+                "RecommendationProvided",
+                "LowConfidence",
+                "NoPodsMatched",
+                "FetchingHistory",
+            ],
+        ),
+        (
+            ResourceKind::PodDisruptionBudgets,
+            vec!["DisruptionAllowed"],
+        ),
+        (
+            ResourceKind::CustomResourceDefinitions,
+            vec!["Established", "NamesAccepted", "Terminating"],
+        ),
+    ] {
+        for name in names {
+            for status in ["True", "False", "Unknown"] {
+                let mut value = json!({"metadata":{"name":"item","namespace":"team"},"status":{"conditions":[
+                    {"type":name,"status":status,"message":"PRIVATE","reason":"PRIVATE"},
+                    {"type":"PRIVATE","status":"True"}, {"type":name}, {"type":name,"status":true}
+                ]}});
+                let row = resources::project(kind, value.clone()).unwrap();
+                let token = if status == "True" {
+                    name.to_owned()
+                } else {
+                    format!("{name}: {status}")
+                };
+                assert_eq!(row.columns["conditions"], token);
+                assert!(matches_status(&row, &token.to_ascii_lowercase()));
+                assert_eq!(matches_status(&row, name), status == "True");
+                assert!(!matches_status(&row, "reported"));
+                assert!(filters(kind).contains(&name));
+                assert!(!serde_json::to_string(&row).unwrap().contains("PRIVATE"));
+                value["status"]["conditions"] =
+                    json!(vec![json!({"type":name,"status":"True"}); 32]);
+                let row = resources::project(kind, value.clone()).unwrap();
+                assert_eq!(row.columns["conditions"], name);
+                value["status"]["conditions"] =
+                    json!(vec![json!({"type":name,"status":"True"}); 33]);
+                let row = resources::project(kind, value).unwrap();
+                assert!(!row.columns.contains_key("conditions"));
+                assert_eq!(row.status, "Not reported");
+            }
+        }
+    }
+}
+
+#[test]
+fn admission_policies_have_no_lifecycle_status_or_filters() {
+    use resource_status::{StatusPresentation, condition_types, filters, presentation};
+    let kind = ResourceKind::ValidatingAdmissionPolicies;
+    assert_eq!(presentation(kind), StatusPresentation::None);
+    assert!(filters(kind).is_empty());
+    assert!(condition_types(kind).is_empty());
+    for status in [
+        json!({}),
+        json!({"phase":"Running","conditions":[{"type":"TypeCheckingReady","status":"True"},{"type":"Accepted","status":"True"}],"typeChecking":{"expressionWarnings":[{"warning":"PRIVATE"}]}}),
+    ] {
+        let row = resources::project(kind, json!({"metadata":{"name":"item"},"spec":{"failurePolicy":"Fail","validations":[{"expression":"PRIVATE"}],"matchConditions":[{"expression":"PRIVATE"}],"paramKind":{"kind":"PolicyParams"}},"status":status})).unwrap();
+        assert_eq!(row.status, "Not applicable");
+        assert!(!row.columns.contains_key("phase"));
+        assert!(!row.columns.contains_key("conditions"));
+        assert_eq!(row.columns["failurePolicy"], "Fail");
+        assert_eq!(row.columns["validations"], "1");
+        assert_eq!(row.columns["matchConditions"], "1");
+        assert_eq!(row.columns["paramKind"], "PolicyParams");
+        assert!(!serde_json::to_string(&row).unwrap().contains("PRIVATE"));
+    }
+}
+
+#[test]
+fn jobs_and_cronjobs_use_observed_lifecycle_with_terminal_precedence() {
+    use resource_status::{filters, matches_status};
+    for (spec, status, expected) in [
+        (json!({}), json!({}), "Not reported"),
+        (
+            json!({}),
+            json!({"active":0,"succeeded":1,"failed":1}),
+            "Not reported",
+        ),
+        (json!({}), json!({"active":1}), "Running"),
+        (json!({"suspend":true}), json!({"active":0}), "Suspended"),
+        (
+            json!({}),
+            json!({"active":1,"conditions":[{"type":"Suspended","status":"True"}]}),
+            "Suspended",
+        ),
+        (
+            json!({"suspend":true}),
+            json!({"active":1,"conditions":[{"type":"Complete","status":"True"}]}),
+            "Completed",
+        ),
+        (
+            json!({}),
+            json!({"conditions":[{"type":"Complete","status":"True"},{"type":"Failed","status":"True"}]}),
+            "Failed",
+        ),
+    ] {
+        let row = resources::project(
+            ResourceKind::Jobs,
+            json!({"metadata":{"name":"job","namespace":"team"},"spec":spec,"status":status}),
+        )
+        .unwrap();
+        assert_eq!(row.status, expected);
+        assert!(filters(ResourceKind::Jobs).contains(&expected));
+        assert!(matches_status(&row, expected));
+    }
+    for (spec, expected) in [
+        (json!({}), "Not reported"),
+        (json!({"suspend":true}), "Suspended"),
+        (json!({"suspend":false}), "Enabled"),
+    ] {
+        let row = resources::project(
+            ResourceKind::CronJobs,
+            json!({"metadata":{"name":"cron","namespace":"team"},"spec":spec}),
+        )
+        .unwrap();
+        assert_eq!(row.status, expected);
+        assert!(filters(ResourceKind::CronJobs).contains(&expected));
+    }
+    let mut row =
+        resources::project(ResourceKind::Nodes, json!({"metadata":{"name":"node"}})).unwrap();
+    row.status = "Not ready".into();
+    row.columns
+        .insert("conditions".into(), "Available,Progressing".into());
+    assert!(!matches_status(&row, "Ready"));
+    assert!(!matches_status(&row, "Progress"));
+    assert!(!matches_status(&row, ""));
+    assert!(matches_status(&row, "available"));
+}
+
+#[test]
+fn deployment_labels_never_leak_raw_booleans() {
+    for (status, expected) in [
+        (json!("True"), "Available"),
+        (json!("False"), "Unavailable"),
+        (json!("Unknown"), "Unknown"),
+        (json!(false), "Not reported"),
+        (json!(null), "Not reported"),
+    ] {
+        let row = resources::project(ResourceKind::Deployments, json!({"metadata":{"name":"app","namespace":"team"},"status":{"conditions":[{"type":"Available","status":status}]}})).unwrap();
+        assert_eq!(row.status, expected);
+    }
+}
+
+#[test]
+fn exhaustive_status_policy_and_neutral_projections() {
+    use resource_status::{StatusPresentation::*, filters, presentation};
+    let matrix = [
+        (ResourceKind::Nodes, Status),
+        (ResourceKind::Namespaces, Status),
+        (ResourceKind::Pods, Status),
+        (ResourceKind::Deployments, Conditions),
+        (ResourceKind::DaemonSets, None),
+        (ResourceKind::StatefulSets, None),
+        (ResourceKind::ReplicaSets, None),
+        (ResourceKind::ReplicationControllers, None),
+        (ResourceKind::Jobs, Status),
+        (ResourceKind::CronJobs, Status),
+        (ResourceKind::ConfigMaps, None),
+        (ResourceKind::Secrets, None),
+        (ResourceKind::ResourceQuotas, None),
+        (ResourceKind::LimitRanges, None),
+        (ResourceKind::HorizontalPodAutoscalers, Conditions),
+        (ResourceKind::VerticalPodAutoscalers, Conditions),
+        (ResourceKind::PodDisruptionBudgets, Conditions),
+        (ResourceKind::PriorityClasses, None),
+        (ResourceKind::RuntimeClasses, None),
+        (ResourceKind::Leases, None),
+        (ResourceKind::Services, None),
+        (ResourceKind::Endpoints, None),
+        (ResourceKind::Ingresses, None),
+        (ResourceKind::IngressClasses, None),
+        (ResourceKind::NetworkPolicies, None),
+        (ResourceKind::EndpointSlices, None),
+        (ResourceKind::MutatingWebhookConfigurations, None),
+        (ResourceKind::ValidatingWebhookConfigurations, None),
+        (ResourceKind::ValidatingAdmissionPolicies, None),
+        (ResourceKind::ValidatingAdmissionPolicyBindings, None),
+        (ResourceKind::PodSecurityPolicies, None),
+        (ResourceKind::PersistentVolumes, Status),
+        (ResourceKind::PersistentVolumeClaims, Status),
+        (ResourceKind::StorageClasses, None),
+        (ResourceKind::Events, Severity),
+        (ResourceKind::ServiceAccounts, None),
+        (ResourceKind::Roles, None),
+        (ResourceKind::RoleBindings, None),
+        (ResourceKind::ClusterRoles, None),
+        (ResourceKind::ClusterRoleBindings, None),
+        (ResourceKind::CustomResourceDefinitions, Conditions),
+    ];
+    assert_eq!(matrix.len(), 41);
+    for (kind, expected) in matrix {
+        assert_eq!(presentation(kind), expected, "{kind:?}");
+        assert_eq!(filters(kind).is_empty(), expected == None, "{kind:?}");
+        if expected == None {
+            let row = resources::project(kind, json!({"metadata":{"name":"item","namespace":"team"},"status":{"phase":"Running","conditions":[{"type":"Available","status":"True"}]}})).unwrap();
+            let expected = if matches!(kind, ResourceKind::Secrets | ResourceKind::ConfigMaps) {
+                "Metadata only"
+            } else {
+                "Not applicable"
+            };
+            assert_eq!(row.status, expected, "{kind:?}");
+            assert!(!row.columns.contains_key("phase"));
+            assert!(!row.columns.contains_key("conditions"));
+        }
     }
 }

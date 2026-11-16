@@ -56,7 +56,8 @@ fn health(kind: ResourceKind, item: &ResourceItem) -> Health {
         },
         ResourceKind::Jobs => match item.status.as_str() {
             "Failed" => Attention,
-            "Complete" => Complete,
+            "Complete" | "Completed" => Complete,
+            "Suspended" => Idle,
             _ if number(item, "active").is_some_and(|n| n > 0) => Running,
             _ => Unknown,
         },
@@ -739,6 +740,43 @@ mod tests {
             Health::Complete
         );
     }
+    #[test]
+    fn jobs_use_observed_completion_suspension_and_active_counts() {
+        for status in ["Complete", "Completed"] {
+            for columns in [vec![], vec![("active", "0")], vec![("active", "1")]] {
+                assert_eq!(
+                    health(ResourceKind::Jobs, &item(status, &columns)),
+                    Health::Complete
+                );
+            }
+        }
+        for status in ["Suspended", "Failed"] {
+            let expected = if status == "Suspended" {
+                Health::Idle
+            } else {
+                Health::Attention
+            };
+            for columns in [vec![], vec![("active", "0")], vec![("active", "1")]] {
+                assert_eq!(
+                    health(ResourceKind::Jobs, &item(status, &columns)),
+                    expected
+                );
+            }
+        }
+        for status in ["Running", "Not reported", "Unknown", ""] {
+            assert_eq!(
+                health(ResourceKind::Jobs, &item(status, &[("active", "1")])),
+                Health::Running
+            );
+            for columns in [vec![], vec![("active", "0")], vec![("active", "invalid")]] {
+                assert_eq!(
+                    health(ResourceKind::Jobs, &item(status, &columns)),
+                    Health::Unknown
+                );
+            }
+        }
+    }
+
     #[test]
     fn cronjobs_use_observed_suspend_field_and_missing_data_is_unknown() {
         assert_eq!(
