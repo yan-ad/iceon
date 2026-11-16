@@ -8,7 +8,7 @@ use gpui_kit::*;
 
 impl IceonApp {
     pub(crate) fn render_cluster_setup(&self, cx: &mut Context<Self>) -> AnyElement {
-        self.render_connection_guide(false, cx)
+        self.render_connection_guide(cx)
     }
 
     pub(crate) fn refresh_catalog(&mut self, cx: &mut Context<Self>) {

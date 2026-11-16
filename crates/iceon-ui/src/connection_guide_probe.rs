@@ -26,7 +26,7 @@ struct Preview {
 impl Render for Preview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.owner
-            .update(cx, |app, cx| app.render_connection_guide(false, cx))
+            .update(cx, |app, cx| app.render_connection_guide(cx))
     }
 }
 
@@ -37,6 +37,8 @@ pub fn run() {
     std::fs::create_dir(&path).expect("fresh fixture directory");
     let fixture = Arc::new(Fixture(path));
     let missing = std::env::args().any(|arg| arg == "--missing-helper");
+    let connecting = std::env::args().any(|arg| arg == "--connecting");
+    let waiting = std::env::args().any(|arg| arg == "--waiting");
     let compact = std::env::args().any(|arg| arg == "--compact");
     let light = std::env::args().any(|arg| arg == "--light");
     gpui_kit::application()
@@ -78,9 +80,23 @@ pub fn run() {
                     let owner = cx.new(|cx| {
                         IceonApp::new(catalog, connection, preferences, secrets, window, cx)
                     });
+                    if connecting || waiting {
+                        owner.update(cx, |app, _| {
+                            app.connection_guide.phase = if connecting {
+                                crate::connection_guide::ConnectionPhase::Connecting
+                            } else {
+                                crate::connection_guide::ConnectionPhase::Waiting(
+                                    ConnectionError::Network,
+                                )
+                            };
+                        });
+                    }
                     if missing {
                         owner.update(cx, |app, _| {
-                            app.connection_guide.error = Some(ConnectionError::AuthHelperMissing);
+                            app.connection_guide.phase =
+                                crate::connection_guide::ConnectionPhase::Failed(
+                                    ConnectionError::AuthHelperMissing,
+                                );
                             app.connection_guide.diagnostic = Some(ConnectionSetupDiagnostic {
                                 context_name: None,
                                 executable_basename: Some("gke-gcloud-auth-plugin".into()),

@@ -7,7 +7,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use iceon_core::connection::{ConnectionError, diagnostics::ConnectionSetupDiagnostic};
+use iceon_core::connection::{
+    ConnectionEngine, ConnectionError, SessionRequest, diagnostics::ConnectionSetupDiagnostic,
+};
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     IceonApp,
@@ -22,12 +25,82 @@ const AWS_DOCS: &str = "https://docs.aws.amazon.com/eks/latest/userguide/create-
 // kubelogin is also the name of unrelated OIDC tools; never infer Azure from that name alone.
 const AZURE_DOCS: &str = "https://learn.microsoft.com/en-us/azure/aks/kubelogin-authentication";
 
+/// Only engine-observed stages: no simulated authentication progress.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ConnectionPhase {
+    #[default]
+    Welcome,
+    Opening,
+    Connecting,
+    Waiting(ConnectionError),
+    Failed(ConnectionError),
+    Connected,
+}
+
+impl ConnectionPhase {
+    pub(crate) fn connecting(self) -> bool {
+        matches!(self, Self::Opening | Self::Connecting)
+    }
+    fn error(self) -> Option<ConnectionError> {
+        match self {
+            Self::Waiting(error) | Self::Failed(error) => Some(error),
+            _ => None,
+        }
+    }
+    fn failure(error: ConnectionError) -> Self {
+        if retryable_connection_error(error) {
+            Self::Waiting(error)
+        } else {
+            Self::Failed(error)
+        }
+    }
+}
+
+/// Releases only this attempt's lease; engine identity checks protect replacements.
+pub(crate) struct ConnectingLease(pub Arc<ConnectionEngine>, pub Option<SessionRequest>);
+impl Drop for ConnectingLease {
+    fn drop(&mut self) {
+        if let Some(scope) = self.1.take() {
+            let _ = self.0.disconnect(scope);
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ConnectionGuide {
-    pub error: Option<ConnectionError>,
+    pub phase: ConnectionPhase,
+    pub cluster_id: Option<String>,
     pub diagnostic: Option<ConnectionSetupDiagnostic>,
+    // Owned tasks cancel on navigation/reset/window destruction, never detached polling.
+    pub connect_task: Option<Task<()>>,
+    pub recovery_task: Option<Task<()>>,
+    pub lease: Option<ConnectingLease>,
     step: usize,
     copied: bool,
+}
+
+impl ConnectionGuide {
+    pub(crate) fn opening(cluster_id: String) -> Self {
+        Self {
+            phase: ConnectionPhase::Opening,
+            cluster_id: Some(cluster_id),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn is_connecting_to(&self, cluster_id: &str) -> bool {
+        self.cluster_id.as_deref() == Some(cluster_id) && self.phase.connecting()
+    }
+    pub(crate) fn can_auto_retry(
+        &self,
+        cluster_id: &str,
+        generation: u64,
+        current_generation: u64,
+    ) -> bool {
+        generation == current_generation
+            && self.cluster_id.as_deref() == Some(cluster_id)
+            && matches!(self.phase, ConnectionPhase::Waiting(error) if retryable_connection_error(error))
+    }
 }
 
 pub(crate) fn retryable_connection_error(error: ConnectionError) -> bool {
@@ -215,16 +288,17 @@ impl IceonApp {
         let Route::Cluster { cluster_id, .. } = self.history.current().clone() else {
             return;
         };
-        self.connection_guide.error = Some(error);
-        self.cluster_error = Some(connection_error_message(error).into());
-        self.cluster_loading = false;
+        self.connection_guide.phase = ConnectionPhase::failure(error);
+        self.connection_guide.diagnostic = None;
+        self.connection_guide.recovery_task = None;
+
         let connection = self.connection.clone();
         let generation = self.cluster_connect_generation;
         cx.spawn_in(window, async move |owner, cx| {
             let diagnostic = connection.connection_setup_diagnostic(cluster_id.clone()).await.ok();
             let _ = owner.update_in(cx, |app, _, cx| {
                 if app.cluster_connect_generation == generation
-                    && app.connection_guide.error == Some(error)
+                    && app.connection_guide.phase.error() == Some(error)
                     && matches!(app.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id)
                 {
                     app.connection_guide.diagnostic = diagnostic;
@@ -232,6 +306,24 @@ impl IceonApp {
                 }
             });
         }).detach();
+        if retryable_connection_error(error) {
+            let cluster_id = match self.history.current() {
+                Route::Cluster { cluster_id, .. } => cluster_id.clone(),
+                _ => return,
+            };
+            // The pinned GPUI ForegroundExecutor has no timer method. Its native
+            // background timer is awaited by this owned foreground/window task.
+            self.connection_guide.recovery_task = Some(cx.spawn_in(window, async move |owner, cx| {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                let _ = owner.update_in(cx, |app, window, cx| {
+                    if app.connection_guide.can_auto_retry(&cluster_id, generation, app.cluster_connect_generation)
+                        && matches!(app.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id)
+                    {
+                        app.retry_cluster_connection(window, cx);
+                    }
+                });
+            }));
+        }
     }
 
     pub(crate) fn retry_cluster_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -244,12 +336,16 @@ impl IceonApp {
         }
     }
 
-    pub(crate) fn render_connection_guide(
-        &self,
-        connecting: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let error = self.connection_guide.error;
+    pub(crate) fn render_connection_guide(&self, cx: &mut Context<Self>) -> AnyElement {
+        let connecting = self.connection_guide.phase.connecting();
+        let reviewing = matches!(self.history.current(), Route::Cluster { .. })
+            && self
+                .cluster_session
+                .as_ref()
+                .is_some_and(|session| session.status == "connected")
+            && self.initial_access_loading();
+        let busy = connecting || reviewing;
+        let error = self.connection_guide.phase.error();
         let issue = error.map(recovery);
         let helper = self
             .connection_guide
@@ -261,7 +357,11 @@ impl IceonApp {
             Stage::Authentication => 2,
             Stage::Network => 3,
         });
-        let selected_step = blocked_step.unwrap_or(self.connection_guide.step.min(3));
+        let selected_step = blocked_step.unwrap_or(if busy {
+            3
+        } else {
+            self.connection_guide.step.min(3)
+        });
         let theme = cx.theme();
         let foreground = theme.foreground;
         let muted = theme.muted_foreground;
@@ -274,15 +374,19 @@ impl IceonApp {
         let mut warning_tint = warning;
         warning_tint.a = 0.10;
         let title = issue.as_ref().map_or(
-            if connecting {
+            if reviewing {
+                "Checking cluster access"
+            } else if connecting {
                 "Connecting to your cluster"
             } else {
                 "Your cluster. A clearer view."
             },
             |issue| issue.title,
         );
-        let detail = issue.as_ref().map_or(if connecting {
-            "Reading your selected context, authenticating, and contacting the Kubernetes API. Provider helpers may run during this connection attempt."
+        let detail = issue.as_ref().map_or(if reviewing {
+            "Connection established. Reviewing resource and namespace permissions before preparing available navigation and actions."
+        } else if connecting {
+            "A connection attempt is in progress. Provider helpers may run if required by your selected context."
         } else {
             "Bring a kubeconfig and we'll take it from there. Iceon connects directly to Kubernetes, with no kubectl installation required."
         }, |issue| issue.detail);
@@ -302,7 +406,7 @@ impl IceonApp {
             .child(
                 Button::new("guide-primary")
                     .primary()
-                    .disabled(connecting)
+                    .disabled(busy)
                     .icon(
                         if issue
                             .as_ref()
@@ -370,11 +474,13 @@ impl IceonApp {
                 .child(v_flex().max_w(px(760.)).gap_3()
                     .child(div().text_size(px(32.)).font_weight(FontWeight::BOLD).child(title))
                     .child(div().text_sm().text_color(muted).child(detail)))
-                .when(connecting, |view| view.child(h_flex().items_center().gap_2()
+                .when(busy, |view| view.child(h_flex().items_center().gap_2()
                     .child(gpui_kit::component::spinner::Spinner::new().small())
-                    .child(div().text_sm().child("Establishing a secure connection…"))))
+                    .child(div().text_sm().child(if reviewing { "Reviewing cluster permissions…" } else if self.connection_guide.phase == ConnectionPhase::Opening { "Opening the selected context…" } else { "Contacting the Kubernetes API…" }))))
+                .when(matches!(self.connection_guide.phase, ConnectionPhase::Waiting(_)), |view| view.child(
+                    div().text_sm().text_color(muted).child("Retrying automatically every 5 seconds")))
                 .child(guide_actions)
-                .when(!connecting && error.is_none() && !self.catalog_snapshot.clusters.is_empty(), |view| view.child(
+                .when(!busy && error.is_none() && !self.catalog_snapshot.clusters.is_empty(), |view| view.child(
                     v_flex().gap_2()
                         .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Choose an available context"))
                         .child(h_flex().flex_wrap().gap_2().children(self.catalog_snapshot.clusters.iter().map(|cluster| {
@@ -394,7 +500,7 @@ impl IceonApp {
                         .child(Button::new(("guide-step", index)).ghost().w_full().justify_start()
                             .icon(icon.clone()).label(format!("{}. {title}", index + 1))
                             .accessibility_label(format!("Setup step {}: {title}", index + 1))
-                            .selected(selected).disabled(error.is_some() || connecting)
+                            .selected(selected).disabled(error.is_some() || busy)
                             .when(selected, |button| button.bg(if blocked { warning_tint } else { tint }))
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.connection_guide.step = index;
@@ -405,8 +511,12 @@ impl IceonApp {
                     .child(h_flex().items_center().gap_2()
                         .child(Icon::new(STEPS[selected_step].2.clone()).text_color(if error.is_some() { warning } else { primary }))
                         .child(div().text_lg().font_weight(FontWeight::SEMIBOLD)
-                            .child(if error.is_some() { "Your next step" } else { STEPS[selected_step].0 })))
-                    .child(div().text_sm().text_color(muted).child(if error.is_some() {
+                            .child(if busy { "Connection progress" } else if error.is_some() { "Your next step" } else { STEPS[selected_step].0 })))
+                    .child(div().text_sm().text_color(muted).child(if busy {
+                        if reviewing { "The API connection succeeded. Permission review is in progress." }
+                        else if self.connection_guide.phase == ConnectionPhase::Opening { "Opening the selected catalog context." }
+                        else { "The context is open. Waiting for the Kubernetes API connection result." }
+                    } else if error.is_some() {
                         "Resolve the highlighted stage, then retry. Your imported contexts stay available in the cluster selector."
                     } else { STEPS[selected_step].1 }))
                     .when_some(helper.map(str::to_owned).filter(|_| blocked_step == Some(2)), |view, helper| view.child(
@@ -419,7 +529,7 @@ impl IceonApp {
                         .child(Button::new("guide-docs").outline().small().icon(IconName::ExternalLink)
                             .label(provider.map_or("Read setup instructions", |(label, _)| label))
                             .on_click(move |_, _, cx| cx.open_url(docs)))
-                        .when(error.is_none() && !connecting && selected_step < 3, |row| row.child(Button::new("guide-next").ghost().small().label("Next step")
+                        .when(error.is_none() && !busy && selected_step < 3, |row| row.child(Button::new("guide-next").ghost().small().label("Next step")
                             .on_click(cx.listener(|app, _, _, cx| { app.connection_guide.step = (app.connection_guide.step + 1).min(3); cx.notify(); }))))
                         .when_some(error, |row, error| row.child(Button::new("guide-copy-diagnostic").ghost().small()
                             .label(if self.connection_guide.copied { "Summary copied" } else { "Copy safe summary" })
@@ -444,6 +554,62 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn recovery_lifecycle_guards_overlap_stale_routes_and_manual_retry() {
+        let mut guide = ConnectionGuide::opening("a".into());
+        assert!(guide.is_connecting_to("a"));
+        assert!(!guide.can_auto_retry("a", 7, 7));
+        guide.phase = ConnectionPhase::Connecting;
+        assert!(guide.is_connecting_to("a"));
+        guide.phase = ConnectionPhase::failure(ConnectionError::Network);
+        assert!(guide.can_auto_retry("a", 7, 7));
+        assert!(!guide.can_auto_retry("b", 7, 7));
+        assert!(!guide.can_auto_retry("a", 7, 8));
+        // Manual retry replaces the waiting state before a timer can fire.
+        guide = ConnectionGuide::opening("a".into());
+        assert!(!guide.can_auto_retry("a", 7, 7));
+        guide.phase = ConnectionPhase::Connected;
+        assert!(!guide.can_auto_retry("a", 7, 7));
+        // Setup/Secrets navigation drops the entire guide and pending tasks.
+        guide = ConnectionGuide::default();
+        assert!(!guide.can_auto_retry("a", 7, 7));
+    }
+
+    #[::core::prelude::v1::test]
+    fn failures_wait_only_for_explicit_transient_categories() {
+        use ConnectionError::*;
+        for error in [Network, Timeout, ConnectionFailed, Busy] {
+            assert_eq!(
+                ConnectionPhase::failure(error),
+                ConnectionPhase::Waiting(error)
+            );
+        }
+        for error in [
+            AuthFailed,
+            AuthExpired,
+            AuthHelperMissing,
+            AuthHelperFailed,
+            AuthHelperInvalidResponse,
+            AuthInteractiveRequired,
+            UnsupportedAuth,
+            TlsFailed,
+            InsecureTransport,
+            KubeconfigInvalid,
+            KubeconfigUnavailable,
+            SourceChanged,
+            PermissionDenied,
+            PermissionReviewUnavailable,
+            StaleSession,
+            InvalidInput,
+            StoreUnavailable,
+        ] {
+            assert_eq!(
+                ConnectionPhase::failure(error),
+                ConnectionPhase::Failed(error)
+            );
+        }
+    }
 
     #[::core::prelude::v1::test]
     fn setup_failures_have_distinct_stages_and_real_recovery_actions() {

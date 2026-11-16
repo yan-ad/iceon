@@ -1018,6 +1018,11 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Repeated navigation/manual retries cannot overlap an in-flight attempt.
+        if self.connection_guide.is_connecting_to(&cluster_id) {
+            self.active_cluster_section = normalize_destination(&section);
+            return;
+        }
         let normalized = normalize_destination(&section);
         if normalized != self.active_cluster_section
             && !self.preferences_draft.app.persistent_search
@@ -1043,14 +1048,15 @@ impl IceonApp {
             return;
         }
 
-        self.connection_guide = Default::default();
+        self.connection_guide =
+            crate::connection_guide::ConnectionGuide::opening(cluster_id.clone());
         self.selected_namespaces.clear();
         self.selected_namespace = None;
         self.sync_namespace_select(window, cx);
         self.stop_active_pod_sync();
         self.access = crate::rbac_access::AccessState::default();
         self.cluster_session = None;
-        self.cluster_loading = true;
+        self.cluster_loading = false;
         self.namespaces.clear();
         self.resource_page = None;
         self.overview_snapshot = OverviewSnapshot::default();
@@ -1071,7 +1077,13 @@ impl IceonApp {
         let connection = self.connection.clone();
         let connect_generation = self.next_operation_id();
         self.cluster_connect_generation = connect_generation;
-        cx.spawn_in(window, async move |this, cx| {
+        self.connection_guide.connect_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let current = this.update_in(cx, |app, _, _| {
+                app.cluster_connect_generation == connect_generation
+                    && app.connection_guide.is_connecting_to(&cluster_id)
+                    && matches!(app.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id)
+            }).unwrap_or(false);
+            if !current { return; }
             let opened = match connection
                 .open(OpenRequest {
                     cluster_id: cluster_id.clone(),
@@ -1097,19 +1109,20 @@ impl IceonApp {
                 cluster_id: opened.cluster_id.clone(),
                 session_id: opened.session_id.clone(),
             };
-            // A workspace owns one lease, but transient kubeconfig/network failures
-            // should not require the user to leave and re-enter the cluster. Retry
-            // only the connect phase; opening a different cluster still replaces
-            // and cancels this lease through ConnectionEngine::open.
-            let mut connected = connection.connect(scope.clone()).await;
-            if connected
-                .as_ref()
-                .err()
-                .is_some_and(|error| crate::connection_guide::retryable_connection_error(*error))
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                connected = connection.connect(scope.clone()).await;
-            }
+            // Check identity BEFORE connecting, not merely when publishing results.
+            let current = this.update_in(cx, |app, _, cx| {
+                if app.cluster_connect_generation != connect_generation
+                    || !matches!(app.history.current(), Route::Cluster { cluster_id: current, .. } if current == &cluster_id) {
+                    let _ = connection.disconnect(scope.clone());
+                    return false;
+                }
+                app.connection_guide.lease = Some(crate::connection_guide::ConnectingLease(connection.clone(), Some(scope.clone())));
+                app.connection_guide.phase = crate::connection_guide::ConnectionPhase::Connecting;
+                cx.notify();
+                true
+            }).unwrap_or(false);
+            if !current { let _ = connection.disconnect(scope); return; }
+            let connected = connection.connect(scope).await;
 
             let _ = this.update_in(cx, |this, window, cx| {
                 if this.cluster_connect_generation != connect_generation
@@ -1130,9 +1143,13 @@ impl IceonApp {
                         this.cluster_session = Some(snap);
                         this.refresh_catalog(cx);
                         if status == "connected" {
+                            // Keep the connected workspace lease, only disarm attempt cleanup.
+                            if let Some(mut lease) = this.connection_guide.lease.take() { lease.1 = None; }
+                            this.connection_guide.phase = crate::connection_guide::ConnectionPhase::Connected;
+                            this.connection_guide.recovery_task = None;
                             this.refresh_access(window, cx);
-                        } else if let Some(e) = err {
-                            this.record_connection_failure(e, window, cx);
+                        } else {
+                            this.record_connection_failure(err.unwrap_or(iceon_core::connection::ConnectionError::ConnectionFailed), window, cx);
                         }
                     }
                     Err(err) => {
@@ -1141,8 +1158,7 @@ impl IceonApp {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 
     pub(crate) fn stop_active_pod_sync(&mut self) {
@@ -2399,69 +2415,10 @@ impl IceonApp {
                 .as_ref()
                 .is_some_and(|session| session.status == "connected")
         {
-            return self.render_connection_guide(
-                self.connection_guide.error.is_none() && self.cluster_loading,
-                cx,
-            );
+            return self.render_connection_guide(cx);
         }
         if cluster_route && self.initial_access_loading() {
-            let cluster_name = self
-                .cluster_session
-                .as_ref()
-                .and_then(|session| {
-                    self.catalog_snapshot
-                        .clusters
-                        .iter()
-                        .find(|cluster| cluster.id == session.cluster_id)
-                })
-                .map(|cluster| cluster.name.clone())
-                .unwrap_or_else(|| "Cluster".into());
-            return v_flex()
-                .size_full()
-                .min_h_0()
-                .min_w_0()
-                .items_center()
-                .justify_center()
-                .bg(cx.theme().tokens.sidebar)
-                .p_6()
-                .child(
-                    v_flex()
-                        .w_full()
-                        .max_w(px(640.))
-                        .items_center()
-                        .gap_4()
-                        .child(
-                            div()
-                                .w_full()
-                                .text_center()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .truncate()
-                                .child(cluster_name),
-                        )
-                        .child(
-                            gpui_kit::component::spinner::Spinner::new()
-                                .large()
-                                .color(cx.theme().primary),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .child("Checking cluster access…"),
-                        )
-                        .child(
-                            v_flex()
-                                .items_center()
-                                .gap_2()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("Connection established")
-                                .child("Reviewing resource and namespace permissions")
-                                .child("Preparing available navigation and actions"),
-                        ),
-                )
-                .into_any_element();
+            return self.render_connection_guide(cx);
         }
         let section = self.active_cluster_section.clone();
         let selected = self

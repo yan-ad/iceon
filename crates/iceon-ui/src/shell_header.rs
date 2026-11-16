@@ -4,8 +4,10 @@
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, TitleBar,
     button::{Button, ButtonVariants as _},
+    command::{Command, CommandItem},
     h_flex,
     menu::{DropdownMenu as _, PopupMenuItem},
+    popover::Popover,
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
     v_flex,
 };
@@ -24,6 +26,22 @@ fn namespace_choices(known: &[String]) -> Vec<Option<String>> {
         }
     }
     choices
+}
+
+// Resolve the original Command model index even while the displayed list is filtered.
+fn namespace_choice_at(choices: &[Option<String>], index: IndexPath) -> Option<&Option<String>> {
+    (index.section == 0)
+        .then(|| choices.get(index.row))
+        .flatten()
+}
+
+fn namespace_choice_is_current(
+    opened: &Option<(String, String)>,
+    current: &Option<(String, String)>,
+    namespace: Option<&str>,
+    known: &[String],
+) -> bool {
+    opened == current && namespace.is_none_or(|name| known.iter().any(|known| known == name))
 }
 
 fn toggle_namespace(selection: &mut Vec<String>, namespace: Option<&str>) {
@@ -68,6 +86,63 @@ mod namespace_scope_tests {
         assert_eq!(selection, vec!["dev"]);
         super::toggle_namespace(&mut selection, None);
         assert!(selection.is_empty());
+    }
+
+    #[test]
+    fn filtered_command_indices_resolve_original_namespace_choices() {
+        // Searching for "team" hides All and dev, but Command confirms original row 2.
+        let choices = super::namespace_choices(&["dev".into(), "team".into()]);
+        assert_eq!(
+            super::namespace_choice_at(&choices, gpui_kit::component::IndexPath::default().row(2)),
+            Some(&Some("team".into()))
+        );
+        assert_eq!(
+            super::namespace_choice_at(&choices, gpui_kit::component::IndexPath::default()),
+            Some(&None)
+        );
+        assert!(
+            super::namespace_choice_at(&choices, gpui_kit::component::IndexPath::default().row(9))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn namespace_choice_rejects_stale_clusters_sessions_and_removed_namespaces() {
+        let opened = Some(("cluster-a".into(), "session-1".into()));
+        let known = vec!["dev".into()];
+        assert!(super::namespace_choice_is_current(
+            &opened,
+            &opened,
+            Some("dev"),
+            &known
+        ));
+        assert!(super::namespace_choice_is_current(
+            &opened,
+            &opened,
+            None,
+            &[]
+        ));
+        for current in [
+            None,
+            Some(("cluster-b".into(), "session-1".into())),
+            Some(("cluster-a".into(), "session-2".into())),
+        ] {
+            assert!(!super::namespace_choice_is_current(
+                &opened,
+                &current,
+                Some("dev"),
+                &known
+            ));
+            assert!(!super::namespace_choice_is_current(
+                &opened, &current, None, &known
+            ));
+        }
+        assert!(!super::namespace_choice_is_current(
+            &opened,
+            &opened,
+            Some("missing"),
+            &known
+        ));
     }
 
     #[test]
@@ -321,58 +396,82 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let owner = cx.entity().downgrade();
-        Button::new(id)
-            .ghost()
-            .xsmall()
-            .flex_shrink_0()
-            .text_color(cx.theme().sidebar_foreground)
-            .label(label)
-            .accessibility_label("Choose namespace")
-            .dropdown_menu(move |mut menu, _, cx| {
-                if let Some(entity) = owner.upgrade() {
-                    let app = entity.read(cx);
-                    let cluster = app
-                        .cluster_session
-                        .as_ref()
-                        .map(|session| (session.cluster_id.clone(), session.session_id.clone()));
-                    for namespace in namespace_choices(&app.namespaces) {
-                        let selected = match namespace.as_deref() {
-                            None => app.selected_namespaces.is_empty(),
-                            Some(namespace) => app
-                                .selected_namespaces
-                                .iter()
-                                .any(|selected| selected == namespace),
-                        };
-                        let owner = owner.clone();
-                        let cluster = cluster.clone();
-                        menu = menu.item(
-                            PopupMenuItem::new(
-                                namespace.clone().unwrap_or_else(|| "All Namespaces".into()),
-                            )
-                            .checked(selected)
-                            .on_click(move |_, window, cx| {
-                                let _ = owner.update(cx, |app, cx| {
-                                    let current = app.cluster_session.as_ref().map(|session| {
-                                        (session.cluster_id.clone(), session.session_id.clone())
-                                    });
-                                    if current != cluster
-                                        || namespace
-                                            .as_ref()
-                                            .is_some_and(|name| !app.namespaces.contains(name))
-                                    {
-                                        return;
-                                    }
-                                    app.toggle_header_namespace(namespace.clone(), window, cx);
-                                });
-                            }),
-                        );
-                    }
-                    if app.namespaces.is_empty() {
-                        menu =
-                            menu.item(PopupMenuItem::new("No namespaces available").disabled(true));
-                    }
+        let command_state = self.namespace_command_state.clone();
+        let focus = command_state.focus_handle(cx);
+        let reset_state = command_state.clone();
+        Popover::new((id, 0usize))
+            .track_focus(&focus)
+            .on_open_change(move |open, window, cx| {
+                if *open {
+                    reset_state.update(cx, |state, cx| state.set_query("", window, cx));
                 }
-                menu
+            })
+            .trigger(
+                Button::new(id)
+                    .ghost()
+                    .xsmall()
+                    .flex_shrink_0()
+                    .text_color(cx.theme().sidebar_foreground)
+                    .label(label)
+                    .icon(IconName::ChevronsUpDown)
+                    .accessibility_label("Choose namespace"),
+            )
+            .content(move |_, _, cx| {
+                let Some(entity) = owner.upgrade() else {
+                    return div().into_any_element();
+                };
+                let app = entity.read(cx);
+                let cluster = app
+                    .cluster_session
+                    .as_ref()
+                    .map(|session| (session.cluster_id.clone(), session.session_id.clone()));
+                let choices = namespace_choices(&app.namespaces);
+                let items = choices
+                    .iter()
+                    .map(|namespace| {
+                        CommandItem::new()
+                            .label(namespace.clone().unwrap_or_else(|| "All Namespaces".into()))
+                            .checked(match namespace {
+                                None => app.selected_namespaces.is_empty(),
+                                Some(name) => app.selected_namespaces.contains(name),
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                let owner = owner.clone();
+                let popup = cx.entity().downgrade();
+                // Command reports original (unfiltered) item indices, not the
+                // visible row number. Keep choices in exactly the same order.
+                Command::new(&command_state)
+                    .w(px(320.))
+                    .h(px(320.))
+                    .max_h(px(272.))
+                    .placeholder("Search namespaces…")
+                    .items(items)
+                    .empty(|_, _, _| div().p_3().child("No namespaces found"))
+                    .on_confirm(move |index, window, cx| {
+                        let Some(namespace) = namespace_choice_at(&choices, index) else {
+                            return;
+                        };
+                        let _ = owner.update(cx, |app, cx| {
+                            let current = app.cluster_session.as_ref().map(|session| {
+                                (session.cluster_id.clone(), session.session_id.clone())
+                            });
+                            if !namespace_choice_is_current(
+                                &cluster,
+                                &current,
+                                namespace.as_deref(),
+                                &app.namespaces,
+                            ) {
+                                return;
+                            }
+                            app.toggle_header_namespace(namespace.clone(), window, cx);
+                            cx.notify();
+                        });
+                    })
+                    .on_cancel(move |window, cx| {
+                        let _ = popup.update(cx, |state, cx| state.dismiss(window, cx));
+                    })
+                    .into_any_element()
             })
     }
 
@@ -569,6 +668,7 @@ impl IceonApp {
                                                         .ghost().xsmall().min_w_0().max_w(px(340.0))
                                                         .text_color(cx.theme().sidebar_foreground)
                                                         .child(h_flex().items_center().gap_2().min_w_0()
+                                                            .child(gpui_kit::component::Icon::default().path(crate::brand_icons::CLUSTER_PATH).small())
                                                             .child(div().min_w_0().max_w(px(180.0)).truncate().child(compact_cluster_name(&cluster.name).to_owned()))
                                                             .child(h_flex().flex_shrink_0().items_center().gap_1()
                                                                 .child(connection_indicator(&status, cx))
@@ -588,7 +688,9 @@ impl IceonApp {
                                                                         let (status, version) = app.header_cluster_metadata(&item.id, item.status);
                                                                         menu = menu.item(PopupMenuItem::element(move |_, cx| {
                                                                             v_flex().w(px(360.0)).min_w_0().max_w(px(392.0)).gap_1()
-                                                                                .child(div().w_full().truncate().child(name.clone()))
+                                                                                .child(h_flex().items_center().gap_2()
+                                                                                    .child(gpui_kit::component::Icon::default().path(crate::brand_icons::CLUSTER_PATH).small())
+                                                                                    .child(div().min_w_0().truncate().child(name.clone())))
                                                                                 .child(h_flex().items_center().gap_2().text_xs().text_color(cx.theme().muted_foreground)
                                                                                     .child(connection_indicator(&status, cx))
                                                                                     .child(div().truncate().child(format!("Version {version}"))))
@@ -613,6 +715,7 @@ impl IceonApp {
                                                         .child(Button::new(("titlebar-breadcrumb", index))
                                                             .ghost()
                                                             .xsmall()
+                                                            .icon(gpui_kit::component::Icon::new(crate::sidebar_view::section_asset_icon(&section)))
                                                             .label(label)
                                                             .text_color(cx.theme().sidebar_foreground)
                                                             .dropdown_menu({
@@ -623,7 +726,7 @@ impl IceonApp {
                                                                         let owner = owner.clone();
                                                                         let cluster_id = cluster_id.clone();
                                                                         let destination = destination.clone();
-                                                                        menu = menu.item(PopupMenuItem::new(label.clone()).checked(destination == section).on_click(move |_, window, cx| {
+                                                                        menu = menu.item(PopupMenuItem::new(label.clone()).icon(gpui_kit::component::Icon::new(crate::sidebar_view::section_asset_icon(&destination))).checked(destination == section).on_click(move |_, window, cx| {
                                                                             let _ = owner.update(cx, |app, cx| { if app.route_visible(&destination) { app.navigate(Route::Cluster { cluster_id: cluster_id.clone(), section: destination.clone() }, true, window, cx); } });
                                                                         }));
                                                                     }

@@ -24,9 +24,11 @@ brand_assets!(
     "external-secrets",
     "calico",
     "metallb",
+    "kubernetes",
 );
 
 pub(crate) const KUBERNETES_PATH: &str = "icons/custom-brand/k8s.svg";
+pub(crate) const CLUSTER_PATH: &str = "icons/custom-brand/kubernetes.svg";
 
 /// A domain is either exact or a dot-delimited suffix, never a brand substring.
 /// More specific Google domains precede their parent domains. Unknown groups use

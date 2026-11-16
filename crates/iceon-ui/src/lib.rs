@@ -198,6 +198,7 @@ pub struct IceonApp {
     // GPUI input & editor entities
     pub(crate) command_state: Entity<gpui_kit::component::command::CommandState>,
     pub(crate) resource_filter_input: Entity<InputState>,
+    pub(crate) namespace_command_state: Entity<gpui_kit::component::command::CommandState>,
     pub(crate) namespace_select: Entity<cluster_view::NamespaceSelectState>,
     pub(crate) namespace_select_items: Vec<cluster_view::NamespaceChoice>,
     pub(crate) scale_replicas_input: Entity<InputState>,
@@ -301,6 +302,8 @@ impl IceonApp {
             cx.notify();
         })
         .detach();
+        let namespace_command_state =
+            cx.new(|cx| gpui_kit::component::command::CommandState::new(window, cx));
         let (namespace_select, namespace_select_items) =
             cluster_view::create_namespace_select(window, cx);
         let scale_replicas_input = cx.new(|cx| InputState::new(window, cx).default_value("1"));
@@ -453,6 +456,7 @@ impl IceonApp {
             secrets_state: SecretsWorkspaceState::default(),
             command_state,
             resource_filter_input,
+            namespace_command_state,
             namespace_select,
             namespace_select_items,
             scale_replicas_input,

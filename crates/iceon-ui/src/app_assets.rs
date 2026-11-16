@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn all_custom_brand_svgs_are_embedded_and_listed() {
         let assets = crate::brand_icons::ASSETS;
-        assert_eq!(assets.len(), 14);
+        assert_eq!(assets.len(), 15);
         let listed = AppAssets.list("icons/custom-brand/").unwrap();
         assert_eq!(listed.len(), assets.len());
         for &(path, source) in assets {
