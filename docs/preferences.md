@@ -43,7 +43,10 @@ and Helm transports; see [Pod console](pod-console.md).
   and application proxy. Server-side apply is a real Helm 4 option; requesting it
   with Helm 3 returns an error instead of silently ignoring it. Server dry runs
   remain server-side independently of the apply preference. The core upgrade API
-  also supports the same apply policy and release preconditions.
+  also supports the same apply policy and release preconditions. Release inventory
+  detects Helm 3/4: Helm 3 uses `list --all`, while Helm 4 lists all statuses by
+  default and no longer accepts `--all`. Install/upgrade requires Helm 3.17+ or
+  Helm 4; inventory can also use older Helm 3 versions.
 - Repository Refresh/Add/Remove invoke the real Helm CLI without requiring a
   cluster session. Only successful command/read-back results are projected into
   the saved repository snapshot. There is no fabricated repository catalog.

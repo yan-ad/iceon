@@ -77,6 +77,8 @@ fn validate_proxy(proxy: Option<&str>) -> Result<()> {
 
 #[path = "helm_install.rs"]
 pub mod install;
+#[path = "helm_release.rs"]
+pub mod release;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
@@ -505,7 +507,11 @@ fn project_detail(request: &HelmDetailRequest, bytes: &[u8]) -> Result<HelmDetai
                 // Description, notes, values, manifests and arbitrary fields never cross IPC.
                 let item = HelmHistory {
                     revision,
-                    updated: field(row, "updated", false)?,
+                    updated: if row.get("updated").is_none() {
+                        String::new()
+                    } else {
+                        field(row, "updated", false)?
+                    },
                     status: field(row, "status", true)?,
                     chart: field(row, "chart", true)?,
                     app_version: field(row, "app_version", false)?,
@@ -777,9 +783,27 @@ impl ConnectionEngine {
                     .map_err(|_| ConnectionError::ConnectionFailed)??;
                 validate_cached_chart(detail, &cached)?;
             }
-            let mut args = detail
-                .map(detail_arguments)
-                .unwrap_or_else(|| arguments(request.view, request.namespace.as_deref()));
+            let mut args = if let Some(detail) = detail {
+                detail_arguments(detail)
+            } else if request.view == HelmView::Releases {
+                let version = self
+                    .auth_tasks
+                    .spawn(supervise_preferences(
+                        executable.clone(),
+                        ["version", "--template", "{{.Version}}"]
+                            .map(Into::into)
+                            .to_vec(),
+                        tempfile::NamedTempFile::new()
+                            .map_err(|_| ConnectionError::KubeconfigUnavailable)?,
+                        cancel.clone(),
+                        preferences.clone(),
+                    ))
+                    .await
+                    .map_err(|_| ConnectionError::ConnectionFailed)??;
+                release_arguments(request.namespace.as_deref(), &version)?
+            } else {
+                arguments(request.view, request.namespace.as_deref())
+            };
             if preferences.allow_untrusted_cas && detail.is_some_and(|d| d.view == HelmView::Charts)
             {
                 args.push("--insecure-skip-tls-verify".into());
@@ -864,7 +888,7 @@ fn arguments(view: HelmView, namespace: Option<&str>) -> Vec<OsString> {
             .map(OsString::from)
             .to_vec(),
         HelmView::Releases => {
-            let mut args = vec![OsString::from("list"), OsString::from("--all")];
+            let mut args = vec![OsString::from("list")];
             match namespace {
                 Some(namespace) => {
                     args.push("--namespace".into());
@@ -877,6 +901,20 @@ fn arguments(view: HelmView, namespace: Option<&str>) -> Vec<OsString> {
         }
     }
 }
+fn release_arguments(namespace: Option<&str>, version: &[u8]) -> Result<Vec<OsString>> {
+    let version = std::str::from_utf8(version).map_err(|_| ConnectionError::HelmUnavailable)?;
+    let version = semver::Version::parse(version.trim().trim_start_matches('v'))
+        .map_err(|_| ConnectionError::HelmUnavailable)?;
+    let mut args = arguments(HelmView::Releases, namespace);
+    match version.major {
+        // Helm 3 defaults to deployed/failed; Helm 4 lists all statuses and removed --all.
+        3 => args.insert(1, "--all".into()),
+        4 => {}
+        _ => return Err(ConnectionError::HelmUnavailable),
+    }
+    Ok(args)
+}
+
 fn executable_with_preferences(preferences: &HelmPreferences) -> Result<PathBuf> {
     validate_proxy(preferences.proxy.as_deref())?;
     if let Some(path) = &preferences.binary_path {
@@ -1266,6 +1304,25 @@ mod detail_tests {
                 .contains("secret-fixture")
         );
     }
+    #[test]
+    fn release_history_accepts_missing_timestamp_but_rejects_invalid_fields() {
+        let request = request(HelmView::Releases);
+        let row = serde_json::json!({
+            "revision": 1, "status": "pending-install", "chart": "demo-1.0.0", "app_version": "1"
+        });
+        let result = project_detail(&request, &serde_json::to_vec(&vec![&row]).unwrap()).unwrap();
+        assert_eq!(result.history[0].updated, "");
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!(12),
+            serde_json::json!("bad\nvalue"),
+        ] {
+            let mut row = row.clone();
+            row["updated"] = invalid;
+            assert!(project_detail(&request, &serde_json::to_vec(&vec![row]).unwrap()).is_err());
+        }
+    }
+
     #[test]
     fn details_and_inventory_have_independent_cancellation() {
         let runtime = HelmRuntime::default();
