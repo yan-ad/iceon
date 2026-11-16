@@ -35,15 +35,19 @@ fn apply_preference_arguments(
     preferences: &HelmPreferences,
     force_conflicts: bool,
 ) -> Result<()> {
-    let version = std::str::from_utf8(version).map_err(|_| ConnectionError::HelmUnavailable)?;
-    let version =
-        semver::Version::parse(version.trim().strip_prefix('v').unwrap_or(version.trim()))
-            .map_err(|_| ConnectionError::HelmUnavailable)?;
+    let version = supported_cli_version(version).ok_or(ConnectionError::HelmUnavailable)?;
     if version.major == 3 {
         if preferences.server_side || force_conflicts {
             return Err(ConnectionError::HelmUnavailable);
         }
     } else if version.major == 4 {
+        // Bare --wait selects Helm 4's new watcher. Keep the existing Helm 3
+        // readiness strategy rather than silently changing mutation behavior.
+        for argument in args.iter_mut() {
+            if argument == "--wait" {
+                *argument = "--wait=legacy".into();
+            }
+        }
         args.push(
             format!(
                 "--server-side={}",
@@ -61,7 +65,7 @@ fn apply_preference_arguments(
 }
 
 // Helm 3.17 install flags: https://github.com/helm/helm/blob/v3.17.0/cmd/helm/install.go
-// Helm 4.3.1: https://helm.sh/docs/helm/helm_install/
+// Helm 4.0.0: https://github.com/helm/helm/blob/v4.0.0/pkg/cmd/install.go
 // Both support server dry-run/hide-secret and --wait; rollback flags differ, so neither is used.
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -256,17 +260,14 @@ fn install_arguments(request: &HelmInstallRequest, values: &std::path::Path) -> 
     args
 }
 fn supported_version(output: &[u8]) -> bool {
-    let Ok(version) = std::str::from_utf8(output) else {
-        return false;
-    };
-    let mut parts = version.trim().strip_prefix('v').unwrap_or("").split('.');
-    matches!(
-        (
-            parts.next().and_then(|p| p.parse::<u32>().ok()),
-            parts.next().and_then(|p| p.parse::<u32>().ok())
-        ),
-        (Some(3), Some(17..)) | (Some(4), Some(_))
-    )
+    supported_cli_version(output).is_some()
+}
+
+fn supported_cli_version(output: &[u8]) -> Option<semver::Version> {
+    let text = std::str::from_utf8(output).ok()?.trim();
+    let version = semver::Version::parse(text.strip_prefix('v').unwrap_or(text)).ok()?;
+    (version.pre.is_empty() && (version.major == 4 || (version.major == 3 && version.minor >= 17)))
+        .then_some(version)
 }
 impl ConnectionEngine {
     pub async fn helm_upgrade(

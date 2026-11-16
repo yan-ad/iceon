@@ -1,4 +1,4 @@
-//! Preserve GPUI's dock behavior without an opaque backing behind our canvas.
+//! Keep outer dock chrome clear; the center owns an opaque content canvas.
 
 use std::{rc::Rc, sync::Arc};
 
@@ -11,6 +11,10 @@ use gpui_kit::*;
 
 pub(super) struct MaterialDock(pub(super) Rc<DockSkin>);
 
+fn content_background<T: Styled>(frame: T, background: Hsla) -> T {
+    frame.bg(background)
+}
+
 fn clear_background<T: Styled>(mut frame: T) -> T {
     frame.style().background = Some(transparent_black().into());
     frame
@@ -22,7 +26,10 @@ impl DockAreaRenderer for MaterialDock {
     }
 
     fn center_frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
-        clear_background(self.0.center_frame(window, cx))
+        content_background(
+            self.0.center_frame(window, cx),
+            gpui_kit::component::theme::Theme::global(cx).background,
+        )
     }
 
     fn split_frame(
@@ -73,7 +80,8 @@ struct MaterialTabs(Rc<dyn TabGroupRenderer>);
 impl TabGroupRenderer for MaterialTabs {
     fn frame(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         // The stock tab-group frame paints theme.background even when its
-        // title bar is hidden. Leave route canvases as the only material fill.
+        // title bar is hidden. The center canvas owns the content backing;
+        // tab wrappers must not cover adjacent native-material chrome.
         clear_background(self.0.frame(group, window, cx))
     }
 
@@ -126,8 +134,26 @@ impl TabGroupRenderer for MaterialTabs {
 
 #[cfg(test)]
 mod tests {
-    use super::clear_background;
+    use super::{clear_background, content_background};
     use gpui_kit::{InteractiveElement as _, Styled as _, div, rgb};
+
+    #[test]
+    fn center_canvas_paints_content_not_chrome_and_preserves_style() {
+        let content = rgb(0x102030).into();
+        let mut frame = content_background(
+            div()
+                .id("center-canvas-test")
+                .border_r_1()
+                .bg(rgb(0x405060)),
+            content,
+        );
+        assert_eq!(
+            frame.style().background.as_ref().unwrap().color(),
+            Some(content.into())
+        );
+        assert_eq!(content.a, 1.0);
+        assert!(frame.style().border_widths.right.is_some());
+    }
 
     #[test]
     fn dock_backing_is_clear_without_losing_frame_style() {

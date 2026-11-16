@@ -1035,6 +1035,15 @@ async fn supervise_configured(
         .collect::<Vec<_>>()
         .join(",");
     let retain = directory.is_none();
+    let empty_repository_diagnostic = match args.as_slice() {
+        [command, subcommand, ..] if command == "search" && subcommand == "repo" => {
+            Some("Error: no repositories configured")
+        }
+        [command, subcommand, ..] if command == "repo" && subcommand == "list" => {
+            Some("Error: no repositories to show")
+        }
+        _ => None,
+    };
     let mut command = CommandWrap::with_new(executable, |command| {
         if let Some(directory) = &directory {
             command.current_dir(directory.path());
@@ -1096,7 +1105,20 @@ async fn supervise_configured(
             let (status, output, diagnostic) = tokio::try_join!(
                 async { child.wait().await.map_err(|_| ConnectionError::ConnectionFailed) },
                 read_output(stdout, retain), read_output(stderr, true))?;
-            if !status.success() { return Err(command_failure(&diagnostic)); }
+            if !status.success() {
+                // Only the exact known empty-inventory diagnostic on its read
+                // command is an empty result. Never hide mutation failures,
+                // additional diagnostics, permission failures or invalid flags.
+                if status.code() == Some(1)
+                    && empty_repository_diagnostic.is_some_and(|expected| {
+                        std::str::from_utf8(&diagnostic)
+                            .is_ok_and(|text| text.trim_end_matches(['\r', '\n']) == expected)
+                    })
+                {
+                    return Ok(b"[]".to_vec());
+                }
+                return Err(command_failure(&diagnostic));
+            }
             Ok(output)
         }) => result.unwrap_or(Err(ConnectionError::Timeout)),
     };

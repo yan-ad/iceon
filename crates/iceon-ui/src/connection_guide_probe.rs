@@ -11,7 +11,7 @@ use iceon_core::{
     preferences::PreferencesEngine,
     secrets,
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 struct Fixture(PathBuf);
 impl Drop for Fixture {
@@ -21,17 +21,20 @@ impl Drop for Fixture {
 }
 struct Preview {
     owner: Entity<IceonApp>,
+    frames: Rc<Cell<usize>>,
     _fixture: Arc<Fixture>,
     _subscription: Subscription,
 }
 impl Render for Preview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.frames.set(self.frames.get() + 1);
         self.owner
             .update(cx, |app, cx| app.render_connection_guide(cx))
     }
 }
 
 pub fn run() {
+    let frames = Rc::new(Cell::new(0));
     let runtime = iceon_core::runtime::handle();
     let _guard = runtime.enter();
     let path = std::env::temp_dir().join(format!("iceon-guide-preview-{}", std::process::id()));
@@ -43,6 +46,7 @@ pub fn run() {
     let unavailable = std::env::args().any(|arg| arg == "--access-unavailable");
     let waiting = std::env::args().any(|arg| arg == "--waiting");
     let compact = std::env::args().any(|arg| arg == "--compact");
+    let transparent_theme = std::env::args().any(|arg| arg == "--transparent-theme");
     let light = std::env::args().any(|arg| arg == "--light");
     gpui_kit::application()
         .with_assets(crate::app_assets::AppAssets)
@@ -59,7 +63,8 @@ pub fn run() {
                 cx,
             );
             let fixture = fixture.clone();
-            gpui_kit::open_window(
+            let rendered = frames.clone();
+            crate::shell_theme::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
@@ -83,6 +88,30 @@ pub fn run() {
                     let owner = cx.new(|cx| {
                         IceonApp::new(catalog, connection, preferences, secrets, window, cx)
                     });
+                    if transparent_theme {
+                        let mut catalog = crate::themes_settings::ThemeCatalog::default();
+                        catalog.extensions.push(iceon_core::zed_themes::InstalledExtension {
+                            id: "fixture".into(), version: "1".into(), name: "Fixture".into(),
+                            description: String::new(), download_count: None,
+                            themes: vec![iceon_core::zed_themes::ZedTheme {
+                                id: "fixture/transparent".into(), extension: "fixture".into(),
+                                name: "Transparent fixture".into(),
+                                appearance: if light { "light" } else { "dark" }.into(),
+                                style: [
+                                    ("background.appearance", "blurred"),
+                                    ("background", if light { "#ffffff00" } else { "#10101000" }),
+                                    ("text", if light { "#18181b" } else { "#ededed" }),
+                                    ("panel.background", "#20304000"),
+                                    ("title_bar.background", "#30405000"),
+                                    ("status_bar.background", "#40506000"),
+                                ].into_iter().map(|(key, value)| (key.into(), value.into())).collect(),
+                            }],
+                        });
+                        cx.set_global(catalog);
+                        cx.global_mut::<crate::preferences_view::GlobalPreferencesState>()
+                            .preferences.app.zed_theme = Some("fixture/transparent".into());
+                        crate::shell_theme::apply(if light { ThemeMode::Light } else { ThemeMode::Dark }, Some(window), cx);
+                    }
                     if connecting || waiting {
                         owner.update(cx, |app, _| {
                             app.connection_guide.phase = if connecting {
@@ -153,6 +182,7 @@ pub fn run() {
                         let subscription = cx.observe(&owner, |_, _, cx| cx.notify());
                         Preview {
                             owner,
+                            frames: rendered,
                             _fixture: fixture,
                             _subscription: subscription,
                         }
@@ -165,7 +195,15 @@ pub fn run() {
                     .timer(Duration::from_secs(12))
                     .await;
                 cx.update(|cx| {
-                    println!("PASS connection guide native render completed");
+                    assert!(frames.get() > 0, "guide fixture must actually render");
+                    let theme = Theme::global(cx);
+                    assert_eq!(theme.background.a, 1.0);
+                    assert_eq!(theme.tokens.background.color, theme.background);
+                    for token in [theme.tokens.sidebar, theme.tokens.title_bar, theme.tokens.status_bar] {
+                        assert!(token.color.a >= 0.85);
+                        assert_eq!(token.background, token.color.into());
+                    }
+                    println!("PASS connection guide native render completed: opaque content, readable resolved chrome tokens");
                     cx.quit();
                 });
             })

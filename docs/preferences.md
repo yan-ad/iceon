@@ -124,5 +124,9 @@ Install and uninstall use icon actions with accessible labels and tooltips.
 
 Zed `background.appearance` controls native shell opacity/transparency. Blurred themes
 use native macOS blur; other platforms use compositor transparency where available.
-Header, footer and sidebar expose the material while content keeps its own background.
+Header, footer and sidebar use at least 85% opacity, including imported and custom
+palettes. Imported lower alpha is deliberately clamped without changing RGB. The
+window root stays clear; normal content uses an opaque theme background (even if
+the imported background is transparent). Explicit editor and terminal palettes
+remain separate. Adjacent chrome regions are painted once, without stacked fills.
 Theme names containing “blur” are not interpreted as configuration.

@@ -2762,15 +2762,6 @@ impl IceonApp {
             || section == "helm/charts"
             || section == "helm/releases"
         {
-            if let Some(error) = self.cluster_error.clone() {
-                return div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(crate::empty_state::error_state(error))
-                    .into_any_element();
-            }
             return self.render_helm_body(window, cx).into_any_element();
         }
         if section == "users" || section == "access-control/users" {
@@ -3009,16 +3000,24 @@ impl IceonApp {
     }
 
     fn render_helm_body(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let items = self
-            .helm_page
-            .as_ref()
-            .map(|p| p.items.clone())
-            .unwrap_or_default();
-        let view = self
-            .helm_page
-            .as_ref()
-            .map(|p| p.view)
-            .unwrap_or(HelmView::Charts);
+        let view = if matches!(
+            self.active_cluster_section.as_str(),
+            "helm-releases" | "helm/releases"
+        ) {
+            HelmView::Releases
+        } else {
+            HelmView::Charts
+        };
+        self.helm_table.update(cx, |table, cx| {
+            table.sync(
+                self.helm_page.clone(),
+                view,
+                self.cluster_loading,
+                self.cluster_error.clone(),
+                self.preferences_draft.app.timezone.clone(),
+                cx,
+            )
+        });
 
         v_flex()
             .flex_1()
@@ -3027,7 +3026,7 @@ impl IceonApp {
             .min_h_0()
             .p_4()
             .gap_3()
-            .overflow_y_scrollbar()
+            .overflow_hidden()
             .when_some(self.helm_install_chart.clone(), |el, chart| {
                 el.child(
                     v_flex()
@@ -3113,110 +3112,7 @@ impl IceonApp {
                         ),
                 )
             })
-            .when(
-                self.helm_page.is_some()
-                    && items.is_empty()
-                    && !self.cluster_loading
-                    && self.cluster_error.is_none(),
-                |el| {
-                    el.child(crate::empty_state::empty_state(
-                        IconName::Inbox,
-                        "No Helm items found",
-                        "No charts or releases are available in the current scope.",
-                    ))
-                },
-            )
-            .children(items.into_iter().enumerate().map(|(idx, item)| {
-                let name = item.name.clone();
-                let ns = item.namespace.clone();
-                let ver = item.version.clone();
-                let name_install = name.clone();
-                let ver_install = ver.clone();
-
-                h_flex()
-                    .w_full()
-                    .p_3()
-                    .justify_between()
-                    .items_center()
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().secondary)
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_0p5()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .truncate()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(item.name.clone()),
-                                    )
-                                    .child(Tag::secondary().small().child(item.version.clone()))
-                                    .when_some(item.status.clone(), |el, st| {
-                                        el.child(row_status_tag(&st))
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        item.description
-                                            .or(item.namespace)
-                                            .unwrap_or_else(|| "-".into()),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .ml_auto()
-                            .flex_shrink_0()
-                            .justify_end()
-                            .gap_1p5()
-                            .when(view == HelmView::Charts, |el| {
-                                el.child(
-                                    Button::new(SharedString::from(format!("helm-inst-{idx}")))
-                                        .xsmall()
-                                        .ghost()
-                                        .icon(IconName::Plus)
-                                        .tooltip("Install Helm chart")
-                                        .accessibility_label("Install Helm chart")
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.helm_install_chart = Some(name_install.clone());
-                                            this.helm_install_version = Some(ver_install.clone());
-                                            this.helm_install_message = None;
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .child(
-                                Button::new(SharedString::from(format!("helm-detail-{idx}")))
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Eye)
-                                    .tooltip("Inspect Helm details")
-                                    .accessibility_label("Inspect Helm details")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_helm_inspector(
-                                            view,
-                                            name.clone(),
-                                            ns.clone(),
-                                            (view == HelmView::Charts).then(|| ver.clone()),
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            ),
-                    )
-            }))
+            .child(self.helm_table.clone())
     }
 
     fn render_custom_resources_body(&self, cx: &mut Context<Self>) -> impl IntoElement {

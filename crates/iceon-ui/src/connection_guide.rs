@@ -560,7 +560,7 @@ impl IceonApp {
             });
 
         v_flex().id("connection-guide").size_full().min_w_0().min_h_0()
-            .overflow_y_scroll().items_center().bg(theme.tokens.sidebar).text_color(foreground).p_6()
+            .overflow_y_scroll().items_center().bg(theme.tokens.background).text_color(foreground).p_6()
             .child(v_flex().w_full().max_w(px(920.)).mx_auto().my_auto().flex_shrink_0().gap_6()
                 .child(h_flex().items_center().gap_3()
                     .child(div().size(px(48.)).rounded(px(16.)).bg(tint).flex().items_center().justify_center()

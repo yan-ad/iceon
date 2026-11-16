@@ -661,3 +661,139 @@ async fn stderr_is_bounded_even_on_failure_and_never_replaces_success_output() {
         Err(ConnectionError::LimitExceeded)
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn empty_repositories_are_scoped_exact_read_results_not_mutation_success() {
+    use std::os::unix::fs::PermissionsExt;
+    for major in [3, 4] {
+        for (command, subcommand, diagnostic, code, empty) in [
+            (
+                "search",
+                "repo",
+                "Error: no repositories configured\n",
+                1,
+                true,
+            ),
+            ("repo", "list", "Error: no repositories to show\n", 1, true),
+            (
+                "repo",
+                "remove",
+                "Error: no repositories configured\n",
+                1,
+                false,
+            ),
+            (
+                "install",
+                "app",
+                "Error: no repositories configured\n",
+                1,
+                false,
+            ),
+            (
+                "search",
+                "repo",
+                "Error: no repositories configured: private\n",
+                1,
+                false,
+            ),
+            (
+                "search",
+                "repo",
+                "private\nError: no repositories configured\n",
+                1,
+                false,
+            ),
+            (
+                "search",
+                "repo",
+                "Error: no repositories configured\n",
+                2,
+                false,
+            ),
+            ("search", "repo", "Error: unknown flag: --all\n", 1, false),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let binary = directory.path().join(format!("helm-{major}"));
+            std::fs::write(
+                &binary,
+                format!("#!/bin/sh\nprintf '%s' '{diagnostic}' >&2\nexit {code}\n"),
+            )
+            .unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let result = supervise(
+                binary,
+                vec![command.into(), subcommand.into()],
+                tempfile::NamedTempFile::new().unwrap(),
+                CancellationToken::new(),
+            )
+            .await;
+            assert_eq!(
+                result,
+                if empty {
+                    Ok(b"[]".to_vec())
+                } else {
+                    Err(ConnectionError::HelmCommandFailed)
+                }
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn helm3_and_helm4_chart_and_history_command_contracts() {
+    use std::os::unix::fs::PermissionsExt;
+    for major in [3, 4] {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join(format!("helm-{major}"));
+        std::fs::write(
+            &binary,
+            r#"#!/bin/sh
+case "$*" in
+  'search repo -o json') printf '[]';;
+  'show chart stable/nginx --version 1.2.3') printf 'name: nginx\nversion: 1.2.3\n';;
+  'history app --namespace dev --max 100 --output json') printf '[]';;
+  *) printf 'Error: unsupported fixture arguments\n' >&2; exit 1;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let chart = HelmDetailRequest {
+            cluster_id: "one".into(),
+            session_id: "lease-1".into(),
+            read_id: 1,
+            view: HelmView::Charts,
+            name: "stable/nginx".into(),
+            namespace: None,
+            version: Some("1.2.3".into()),
+        };
+        let history = HelmDetailRequest {
+            view: HelmView::Releases,
+            name: "app".into(),
+            namespace: Some("dev".into()),
+            version: None,
+            ..chart.clone()
+        };
+        for (args, detail) in [
+            (arguments(HelmView::Charts, None), None),
+            (detail_arguments(&chart), Some(&chart)),
+            (detail_arguments(&history), Some(&history)),
+        ] {
+            let output = supervise(
+                binary.clone(),
+                args,
+                tempfile::NamedTempFile::new().unwrap(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            if let Some(detail) = detail {
+                project_detail(detail, &output).unwrap();
+            } else {
+                assert_eq!(output, b"[]");
+            }
+        }
+    }
+}

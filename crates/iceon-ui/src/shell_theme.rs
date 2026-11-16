@@ -77,8 +77,6 @@ fn chrome_regions(
         .collect()
 }
 
-const CHROME_ALPHA_LIGHT: f32 = 0.48;
-const CHROME_ALPHA_DARK: f32 = 0.38;
 const DEFAULT_CHROME_ALPHA: f32 = 0.85;
 const SELECTED_ALPHA: f32 = 0.12;
 pub(crate) const PRIMARY_RGB: u32 = 0x1a43bf;
@@ -125,22 +123,21 @@ fn zed_background_appearance(zed: &iceon_core::zed_themes::ZedTheme) -> WindowBa
     }
 }
 
-fn apply_zed_chrome(colors: &mut ThemeColor, zed: &iceon_core::zed_themes::ZedTheme) {
-    if matches!(
-        zed.style
-            .get("background.appearance")
-            .and_then(|v| v.as_str()),
-        Some("blurred" | "transparent")
-    ) {
-        let alpha = if zed.appearance == "dark" {
-            CHROME_ALPHA_DARK
-        } else {
-            CHROME_ALPHA_LIGHT
-        };
-        colors.sidebar = colors.sidebar.alpha(colors.sidebar.a.min(alpha));
-        colors.title_bar = colors.title_bar.alpha(colors.title_bar.a.min(alpha));
-        colors.status_bar = colors.status_bar.alpha(colors.status_bar.a.min(alpha));
-    }
+/// Clamp imported alpha deliberately: shell readability takes precedence over
+/// transparent Zed surfaces. Preserve RGB and any opacity above the minimum.
+fn readable_surfaces(colors: &mut ThemeColor) {
+    colors.background = colors.background.alpha(1.0);
+    colors.list = colors.list.alpha(1.0);
+    colors.table = colors.table.alpha(1.0);
+    colors.sidebar = colors
+        .sidebar
+        .alpha(colors.sidebar.a.max(DEFAULT_CHROME_ALPHA));
+    colors.title_bar = colors
+        .title_bar
+        .alpha(colors.title_bar.a.max(DEFAULT_CHROME_ALPHA));
+    colors.status_bar = colors
+        .status_bar
+        .alpha(colors.status_bar.a.max(DEFAULT_CHROME_ALPHA));
 }
 
 fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
@@ -380,12 +377,7 @@ fn custom_colors(colors: &mut ThemeColor, theme: AppTheme) {
     colors.tab_active_foreground = fg;
     colors.tab_bar = surface;
     colors.tab_bar_segmented = raised;
-    let alpha = if theme.is_dark() == Some(true) {
-        CHROME_ALPHA_DARK
-    } else {
-        CHROME_ALPHA_LIGHT
-    };
-    colors.sidebar = surface.alpha(alpha);
+    colors.sidebar = surface.alpha(DEFAULT_CHROME_ALPHA);
     colors.sidebar_foreground = fg;
     colors.sidebar_border = border.alpha(0.5);
     colors.sidebar_accent = colors.primary.alpha(0.16);
@@ -459,7 +451,7 @@ fn zed_mode(theme: &iceon_core::zed_themes::ZedTheme) -> ThemeMode {
 }
 
 /// Project only supplied, valid tokens; absent/invalid roles retain the fresh
-/// base palette. This is deliberately the LAST layer, including status colors.
+/// base palette. Imported RGB/status roles win; readability clamps surface alpha last.
 fn apply_zed_theme(colors: &mut ThemeColor, theme: &iceon_core::zed_themes::ZedTheme) {
     macro_rules! roles {
         ($key:literal => $($field:ident),+ $(,)?) => {
@@ -738,8 +730,8 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
         if let Some(zed) = &zed {
             apply_zed_theme(&mut theme.colors, zed);
             apply_zed_editor(theme, zed);
-            apply_zed_chrome(&mut theme.colors, zed);
         }
+        readable_surfaces(&mut theme.colors);
     });
     cx.set_global(crate::preference_runtime::ConsoleTheme(console_palette(
         Theme::global(cx),
@@ -772,7 +764,7 @@ mod tests {
     }
     #[test]
     fn header_and_footer_regions_keep_sidebar_width_and_unblended_theme_fills() {
-        for alpha in [0.38, 0.48, 1.0] {
+        for alpha in [0.85, 0.95, 1.0] {
             let sidebar = super::neutral(0x203040, alpha).into();
             let header = super::neutral(0x405060, alpha).into();
             for width in [200.0, 252.0, 420.0] {
@@ -790,9 +782,7 @@ mod tests {
         }
     }
 
-    use super::{
-        CHROME_ALPHA_DARK, DEFAULT_CHROME_ALPHA, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral,
-    };
+    use super::{DEFAULT_CHROME_ALPHA, PRIMARY_RGB, SELECTED_ALPHA, brand_colors, neutral};
     use gpui_kit::component::theme::{ThemeColor, ThemeMode};
 
     #[test]
@@ -841,6 +831,101 @@ mod tests {
     }
 
     #[test]
+    fn every_palette_resolves_readable_content_and_chrome_tokens() {
+        use gpui_kit::component::theme::ThemeTokens;
+
+        for &selected in iceon_core::preferences::AppTheme::ALL {
+            for mode in [ThemeMode::Dark, ThemeMode::Light] {
+                let mut colors = if mode.is_dark() {
+                    *ThemeColor::dark()
+                } else {
+                    *ThemeColor::light()
+                };
+                brand_colors(&mut colors, mode);
+                super::custom_colors(&mut colors, selected);
+                let before = colors;
+                super::readable_surfaces(&mut colors);
+                let tokens = ThemeTokens::from(colors);
+                assert_eq!(tokens.background.color, before.background.alpha(1.0));
+                assert_eq!(tokens.list.color.a, 1.0);
+                assert_eq!(tokens.table.color.a, 1.0);
+                for token in [tokens.sidebar, tokens.title_bar, tokens.status_bar] {
+                    assert!(token.color.a >= DEFAULT_CHROME_ALPHA, "{selected:?}");
+                    assert_eq!(token.background, token.color.into());
+                }
+                assert_eq!(colors.foreground, before.foreground);
+                let bg: gpui_kit::Rgba = colors.background.into();
+                let fg: gpui_kit::Rgba = colors.foreground.into();
+                let rgb = |c: gpui_kit::Rgba| {
+                    ((c.r * 255.0).round() as u32) << 16
+                        | ((c.g * 255.0).round() as u32) << 8
+                        | (c.b * 255.0).round() as u32
+                };
+                let a = super::luminance(rgb(bg));
+                let b = super::luminance(rgb(fg));
+                assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5, "{selected:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn imported_transparent_surfaces_resolve_opaque_content_and_minimum_chrome() {
+        use gpui_kit::component::theme::ThemeTokens;
+
+        for mode in ["dark", "light"] {
+            for appearance in ["blurred", "transparent", "opaque"] {
+                for alpha in ["00", "66", "d9", "ff"] {
+                    let background = format!("#ffffff{alpha}");
+                    let panel = format!("#203040{alpha}");
+                    let title = format!("#304050{alpha}");
+                    let status = format!("#405060{alpha}");
+                    let zed = zed_fixture(
+                        mode,
+                        &[
+                            ("background.appearance", appearance),
+                            ("background", &background),
+                            ("panel.background", &panel),
+                            ("title_bar.background", &title),
+                            ("status_bar.background", &status),
+                            ("editor.background", "#12345600"),
+                            ("terminal.background", "#65432100"),
+                        ],
+                    );
+                    let mut theme = super::Theme::default();
+                    super::apply_zed_theme(&mut theme.colors, &zed);
+                    super::apply_zed_editor(&mut theme, &zed);
+                    let before = theme.colors;
+                    super::readable_surfaces(&mut theme.colors);
+                    theme.tokens = ThemeTokens::from(theme.colors);
+                    assert_eq!(theme.tokens.background.color, neutral(0xffffff, 1.0));
+                    assert_eq!(theme.tokens.list.color.a, 1.0);
+                    assert_eq!(theme.tokens.table.color.a, 1.0);
+                    for (token, original) in [
+                        (theme.tokens.sidebar, before.sidebar),
+                        (theme.tokens.title_bar, before.title_bar),
+                        (theme.tokens.status_bar, before.status_bar),
+                    ] {
+                        assert_eq!(
+                            token.color,
+                            original.alpha(original.a.max(DEFAULT_CHROME_ALPHA))
+                        );
+                        assert_eq!(token.background, token.color.into());
+                    }
+                    assert_eq!(theme.foreground, before.foreground);
+                    assert_eq!(
+                        theme.highlight_theme.style.editor_background,
+                        Some(neutral(0x123456, 0.0))
+                    );
+                    assert_eq!(
+                        super::console_palette(&theme, Some(&zed)).background,
+                        neutral(0x654321, 0.0)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn imported_chrome_exposes_material_without_making_content_translucent() {
         use gpui_kit::{Refineable as _, StyleRefinement, Styled as _};
 
@@ -857,7 +942,7 @@ mod tests {
                 );
                 let mut colors = *ThemeColor::dark();
                 super::apply_zed_theme(&mut colors, &zed);
-                super::apply_zed_chrome(&mut colors, &zed);
+                super::readable_surfaces(&mut colors);
                 let mut surface = StyleRefinement::default().bg(colors.background);
                 surface.refine(&super::root_style());
                 assert!(
@@ -874,8 +959,8 @@ mod tests {
                     assert_eq!(colors.sidebar.a, 1.0);
                     assert_eq!(colors.title_bar.a, 1.0);
                 } else {
-                    assert!(colors.sidebar.a < 1.0);
-                    assert!(colors.title_bar.a < 1.0);
+                    assert!(colors.sidebar.a >= DEFAULT_CHROME_ALPHA);
+                    assert!(colors.title_bar.a >= DEFAULT_CHROME_ALPHA);
                 }
             }
         }
@@ -895,15 +980,15 @@ mod tests {
     }
 
     #[test]
-    fn zed_blur_only_affects_chrome_and_preserves_translucent_tokens() {
+    fn readability_clamps_low_alpha_without_changing_rgb_or_higher_opacity() {
         let mut zed = zed_fixture("dark", &[("background.appearance", "blurred")]);
         let mut colors = *ThemeColor::dark();
         colors.sidebar = neutral(0x102030, 1.0);
         colors.title_bar = neutral(0x304050, 0.3);
         let content = colors.background;
-        super::apply_zed_chrome(&mut colors, &zed);
-        assert_eq!(colors.sidebar.a, CHROME_ALPHA_DARK);
-        assert_eq!(colors.title_bar.a, 0.3);
+        super::readable_surfaces(&mut colors);
+        assert_eq!(colors.sidebar, neutral(0x102030, 1.0));
+        assert_eq!(colors.title_bar, neutral(0x304050, DEFAULT_CHROME_ALPHA));
         assert_eq!(colors.background, content);
         zed.style
             .insert("background.appearance".into(), "opaque".into());
@@ -912,7 +997,7 @@ mod tests {
             gpui_kit::WindowBackgroundAppearance::Opaque
         );
         let before = colors.sidebar;
-        super::apply_zed_chrome(&mut colors, &zed);
+        super::readable_surfaces(&mut colors);
         assert_eq!(colors.sidebar, before);
     }
 

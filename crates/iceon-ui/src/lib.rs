@@ -40,6 +40,11 @@ mod overview_probe;
 mod overview_view;
 #[cfg(debug_assertions)]
 pub use overview_probe::run as run_overview_probe;
+mod helm_table;
+#[cfg(debug_assertions)]
+mod helm_table_probe;
+#[cfg(debug_assertions)]
+pub use helm_table_probe::run as run_helm_table_probe;
 mod pod_columns;
 pub mod pod_dock_view;
 mod preference_runtime;
@@ -83,7 +88,7 @@ use iceon_core::catalog::{CatalogEngine, CatalogSnapshot};
 use iceon_core::connection::{
     ConnectionEngine, ConnectionSnapshot, ResourcePage,
     custom_resources::CustomResourcePage,
-    helm::HelmPage,
+    helm::{HelmPage, HelmView},
     pod_runtime::PodForward,
     rbac::RbacUsersResponse,
     rbac_management::{ManagementSnapshot, UserPlan},
@@ -167,6 +172,7 @@ pub struct IceonApp {
     pub(crate) active_pod_sync_id: Option<String>,
 
     pub(crate) helm_page: Option<HelmPage>,
+    pub(crate) helm_table: Entity<helm_table::HelmTable>,
     pub(crate) helm_install_chart: Option<String>,
     pub(crate) helm_install_version: Option<String>,
     pub(crate) helm_install_message: Option<String>,
@@ -322,6 +328,53 @@ impl IceonApp {
         let rbac_new_user_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("new-service-account"));
         let rbac_users_table = cx.new(|cx| rbac_users_table::RbacUsersTable::new(window, cx));
+        let helm_table = cx.new(|cx| helm_table::HelmTable::new(window, cx));
+        cx.subscribe_in(
+            &helm_table,
+            window,
+            |this, _, event: &helm_table::HelmTableEvent, window, cx| {
+                let (view, item) = match event {
+                    helm_table::HelmTableEvent::Inspect(view, item) => (*view, item),
+                    helm_table::HelmTableEvent::Install(item) => (HelmView::Charts, item),
+                };
+                // Ignore an event from a detached/outdated inventory after navigation.
+                let active_helm_view = match this.active_cluster_section.as_str() {
+                    "helm-charts" | "helm/charts" => Some(HelmView::Charts),
+                    "helm-releases" | "helm/releases" => Some(HelmView::Releases),
+                    _ => None,
+                };
+                if active_helm_view != Some(view)
+                    || this.cluster_loading
+                    || !this.helm_page.as_ref().is_some_and(|page| {
+                        page.view == view
+                            && page.items.contains(item)
+                            && this.cluster_session.as_ref().is_some_and(|session| {
+                                session.session_id == page.session_id
+                                    && session.cluster_id == page.cluster_id
+                            })
+                    })
+                {
+                    return;
+                }
+                match event {
+                    helm_table::HelmTableEvent::Inspect(_, _) => this.open_helm_inspector(
+                        view,
+                        item.name.clone(),
+                        item.namespace.clone(),
+                        (view == HelmView::Charts).then(|| item.version.clone()),
+                        window,
+                        cx,
+                    ),
+                    helm_table::HelmTableEvent::Install(_) => {
+                        this.helm_install_chart = Some(item.name.clone());
+                        this.helm_install_version = Some(item.version.clone());
+                        this.helm_install_message = None;
+                        cx.notify();
+                    }
+                }
+            },
+        )
+        .detach();
 
         let inspector_yaml_editor = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -430,6 +483,7 @@ impl IceonApp {
             continue_token_history: vec![],
             active_pod_sync_id: None,
             helm_page: None,
+            helm_table,
             helm_install_chart: None,
             helm_install_version: None,
             helm_install_message: None,

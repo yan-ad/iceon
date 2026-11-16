@@ -236,28 +236,91 @@ async fn fake_install_and_upgrade_receive_ssa_and_dry_run_flags() {
         binary_path: Some(binary),
         ..Default::default()
     };
+    for version in [b"v3.17.0".as_slice(), b"v4.0.0"] {
+        for command in ["install", "upgrade"] {
+            for dry_run in [true, false] {
+                let mut request = request();
+                request.dry_run = dry_run;
+                let mut args = install_arguments(&request, std::path::Path::new("/private/values"));
+                args[0] = command.into();
+                apply_preference_arguments(&mut args, version, &preferences, version == b"v4.0.0")
+                    .unwrap();
+                let output = supervise_preferences(
+                    executable_with_preferences(&preferences).unwrap(),
+                    args,
+                    tempfile::NamedTempFile::new().unwrap(),
+                    CancellationToken::new(),
+                    preferences.clone(),
+                )
+                .await
+                .unwrap();
+                let text = String::from_utf8(output).unwrap();
+                assert!(text.starts_with(command));
+                assert_eq!(
+                    text.contains("--server-side=true\n--force-conflicts\n"),
+                    version == b"v4.0.0"
+                );
+                assert_eq!(text.contains("--dry-run=server\n--hide-secret"), dry_run);
+                assert_eq!(
+                    text.contains(if version == b"v4.0.0" {
+                        "--wait=legacy\n"
+                    } else {
+                        "--wait\n"
+                    }),
+                    !dry_run
+                );
+                assert!(!text.contains("--atomic"));
+                assert!(!text.contains("--rollback-on-failure"));
+                assert!(!text.contains("password"));
+            }
+        }
+    }
+}
+
+#[test]
+fn stable_version_gate_rejects_malformed_prerelease_and_unsupported_without_changing_args() {
+    for version in [
+        "v2.17.0",
+        "v3.16.9",
+        "v5.0.0",
+        "v4.0.0-rc.1",
+        "v3.17",
+        "v3.17.private",
+        "v4.0.0\nprivate",
+    ] {
+        assert!(!supported_version(version.as_bytes()));
+        let mut args = vec!["install".into(), "--wait".into()];
+        let original = args.clone();
+        assert_eq!(
+            apply_preference_arguments(
+                &mut args,
+                version.as_bytes(),
+                &HelmPreferences::default(),
+                false
+            ),
+            Err(ConnectionError::HelmUnavailable)
+        );
+        assert_eq!(args, original);
+    }
     for command in ["install", "upgrade"] {
-        for dry_run in [true, false] {
-            let mut request = request();
-            request.dry_run = dry_run;
-            let mut args = install_arguments(&request, std::path::Path::new("/private/values"));
-            args[0] = command.into();
-            apply_preference_arguments(&mut args, b"v4.0.0", &preferences, true).unwrap();
-            let output = supervise_preferences(
-                executable_with_preferences(&preferences).unwrap(),
-                args,
-                tempfile::NamedTempFile::new().unwrap(),
-                CancellationToken::new(),
-                preferences.clone(),
+        for version in ["v3.17.0", "v4.0.0"] {
+            let mut args = vec![command.into(), "--wait".into()];
+            apply_preference_arguments(
+                &mut args,
+                version.as_bytes(),
+                &HelmPreferences::default(),
+                false,
             )
-            .await
             .unwrap();
-            let text = String::from_utf8(output).unwrap();
-            assert!(text.starts_with(command));
-            assert!(text.contains("--server-side=true\n--force-conflicts\n"));
-            assert_eq!(text.contains("--dry-run=server\n--hide-secret"), dry_run);
-            assert_eq!(text.contains("--wait\n"), !dry_run);
-            assert!(!text.contains("password"));
+            assert!(args.contains(&if version.starts_with("v4") {
+                "--wait=legacy".into()
+            } else {
+                "--wait".into()
+            }));
+            assert_eq!(
+                args.contains(&"--server-side=false".into()),
+                version.starts_with("v4")
+            );
         }
     }
 }
