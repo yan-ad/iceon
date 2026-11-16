@@ -32,6 +32,24 @@ def pe():
 
 
 class NativeReleaseTests(unittest.TestCase):
+    def test_mac_registers_only_the_public_action_scheme(self):
+        expected = [{"CFBundleURLName": "ad.yan.iceon.actions",
+                     "CFBundleTypeRole": "Viewer", "CFBundleURLSchemes": ["iceon"]}]
+        self.assertEqual(n.mac_url_types(), expected)
+        n.verify_mac_url_types({"CFBundleURLTypes": expected})
+        for value in (None, [], expected + expected,
+                      [{**expected[0], "CFBundleURLSchemes": ["iceon", "https"]}],
+                      [{**expected[0], "CFBundleURLSchemes": ["other"]}]):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                n.verify_mac_url_types({"CFBundleURLTypes": value})
+
+    def test_packaged_tar_rejects_missing_action_registration(self):
+        info = dict(CFBundleIdentifier="ad.yan.iceon", CFBundleExecutable="iceon",
+                    CFBundleVersion=n.VERSION, CFBundleShortVersionString=n.VERSION)
+        self.assets({"Iceon.app/Contents/Info.plist": plistlib.dumps(info)})
+        with self.assertRaisesRegex(ValueError, "URL registration"):
+            n.verify_tar(self.out / n.MAC)
+
     def test_windows_installer_uses_workspace_version(self):
         script = (Path(__file__).parent / "test_windows_installer.ps1").read_text()
         self.assertNotRegex(script, r"\$version\s*=\s*['\"]\d+\.\d+\.\d+")
@@ -63,6 +81,7 @@ class NativeReleaseTests(unittest.TestCase):
 
     def assets(self, extra=None):
         info = dict(CFBundleIdentifier="ad.yan.iceon", CFBundleExecutable="iceon", CFBundleVersion=n.VERSION, CFBundleShortVersionString=n.VERSION)
+        info["CFBundleURLTypes"] = n.mac_url_types()
         entries = {"Iceon.app/Contents/Info.plist": plistlib.dumps(info), "Iceon.app/Contents/MacOS/iceon": mach(), "Iceon.app/Contents/_CodeSignature/CodeResources": b"signature"}
         if extra:
             entries.update(extra)
@@ -188,6 +207,7 @@ class NativeReleaseTests(unittest.TestCase):
         exe.write_bytes(mach())
         exe.chmod(0o755)
         metadata = dict(CFBundleIdentifier="ad.yan.iceon", CFBundleExecutable="iceon", CFBundleVersion=n.VERSION, CFBundleShortVersionString=n.VERSION, CFBundlePackageType="APPL")
+        metadata["CFBundleURLTypes"] = n.mac_url_types()
         info = app / "Contents/Info.plist"
         info.write_bytes(plistlib.dumps(metadata))
         with patch.object(n, "run"), patch.object(n.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stderr="Signature=adhoc\n")):

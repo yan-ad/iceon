@@ -31,6 +31,7 @@ pub mod inspector_view;
 mod kubectl_tools;
 mod local_console;
 mod native_menu;
+mod native_spotlight;
 pub mod navigation;
 mod overview_cache;
 mod overview_view;
@@ -735,7 +736,10 @@ pub fn run() {
     let secrets_engine = secrets::Engine::new(data_dir);
     secrets_engine.start();
 
-    gpui_kit::application()
+    let application = gpui_kit::application();
+    #[cfg(target_os = "macos")]
+    let url_activation = native_spotlight::UrlActivation::install(&application);
+    application
         .with_assets(crate::app_assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
@@ -795,6 +799,8 @@ pub fn run() {
                     app
                 })
                 .expect("failed to open Iceon GPUI window");
+            #[cfg(target_os = "macos")]
+            url_activation.register_main_window(main_window, main_app.downgrade(), cx);
             let tray_result = tray::register_main_window(main_window, cx).and_then(|()| {
                 tray::set_visible(main_app.read(cx).preferences_draft.app.show_tray_icon)
             });

@@ -33,6 +33,17 @@ PLATFORMS = {"darwin-aarch64": MAC, "darwin-aarch64-app": MAC,
              "windows-i686": WIN, "windows-i686-nsis": WIN}
 
 
+def mac_url_types():
+    # Launch Services URL delivery, not Core Spotlight continuation support.
+    return [{"CFBundleURLName": "ad.yan.iceon.actions", "CFBundleTypeRole": "Viewer",
+             "CFBundleURLSchemes": ["iceon"]}]
+
+
+def verify_mac_url_types(info):
+    require(info.get("CFBundleURLTypes") == mac_url_types(),
+            "Missing or incorrect Iceon action URL registration")
+
+
 def require(ok, message):
     if not ok:
         raise ValueError(message)
@@ -133,6 +144,7 @@ def binary(data, platform):
 
 def verify_bundle(app):
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    verify_mac_url_types(info)
     require(info["CFBundleIdentifier"] == "ad.yan.iceon" and info["CFBundleExecutable"] == "iceon" and info["CFBundlePackageType"] == "APPL", "Incorrect bundle identity")
     require(info["CFBundleShortVersionString"] == VERSION and info["CFBundleVersion"] == VERSION, "Incorrect bundle version")
     exe = app / "Contents/MacOS/iceon"
@@ -171,6 +183,7 @@ def package(root, out, platform):
         shutil.copy2(root / "target/aarch64-apple-darwin/release/iceon", app / "Contents/MacOS/iceon")
         (app / "Contents/MacOS/iceon").chmod(0o755)
         info = dict(CFBundleName="Iceon", CFBundleDisplayName="Iceon", CFBundleExecutable="iceon", CFBundleIdentifier="ad.yan.iceon", CFBundlePackageType="APPL", CFBundleShortVersionString=VERSION, CFBundleVersion=VERSION, NSHighResolutionCapable=True)
+        info["CFBundleURLTypes"] = mac_url_types()
         icon = root / "assets/icons/icon.icns"
         if icon.is_file():
             shutil.copy2(icon, app / "Contents/Resources/icon.icns")
@@ -268,6 +281,7 @@ def verify_tar(path):
         for name in ("Iceon.app/Contents/Info.plist", "Iceon.app/Contents/MacOS/iceon", "Iceon.app/Contents/_CodeSignature/CodeResources"):
             require(name in names and archive.getmember(name).isfile(), "Missing bundle member: " + name)
         info = plistlib.loads(archive.extractfile("Iceon.app/Contents/Info.plist").read())
+        verify_mac_url_types(info)
         require(info["CFBundleVersion"] == VERSION and info["CFBundleShortVersionString"] == VERSION and info["CFBundleExecutable"] == "iceon" and info["CFBundleIdentifier"] == "ad.yan.iceon", "Tar bundle metadata mismatch")
         member = archive.getmember("Iceon.app/Contents/MacOS/iceon")
         require(member.mode & 0o111, "Tar executable permission missing")
