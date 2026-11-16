@@ -633,6 +633,10 @@ impl ResourceTable {
         }
     }
 
+    pub(crate) fn visible_row_count(&self) -> usize {
+        self.cache.indices.len()
+    }
+
     pub(crate) fn selected_targets(&self) -> Vec<DeleteTarget> {
         self.selected.clone()
     }

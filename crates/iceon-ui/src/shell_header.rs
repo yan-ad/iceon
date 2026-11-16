@@ -593,6 +593,7 @@ impl IceonApp {
             .find(|item| Some(&item.id) == selected_id.as_ref())
             .cloned();
         let current_namespace = namespace_label(&self.selected_namespaces);
+        let inventory_count = self.header_inventory_count(cx);
         let sidebar_open = self.cluster_sidebar_open();
         let sidebar_width = self.navigation_widths.sidebar_width();
 
@@ -820,6 +821,9 @@ impl IceonApp {
                                                  .child(breadcrumb_separator(cx))
                                                  .child(
                                                      self.namespace_dropdown("titlebar-namespace-select", current_namespace.clone(), cx),
+                                                 ))
+                                                 .when_some(inventory_count.clone(), |bar, count| bar.child(
+                                                     div().text_xs().text_color(cx.theme().muted_foreground).child(count),
                                                  ))
                                                  .child(self.render_status_breadcrumb(cx)),
                                         )

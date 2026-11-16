@@ -48,6 +48,9 @@ mod deployment_inspector;
 #[path = "daemon_set_inspector.rs"]
 mod daemon_set_inspector;
 
+#[path = "helm_inspector.rs"]
+mod helm_inspector;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteTarget {
     pub kind: ResourceKind,
@@ -112,6 +115,7 @@ pub struct InspectorState {
     pub collections: Vec<ResourceCollection>,
     pub edit_load: Option<EditResult>,
     pub helm_detail: Option<HelmDetail>,
+    helm_read: Option<helm_inspector::HelmInspectorRead>,
     pub drain_review: Option<DrainReview>,
     pub drain_result: Option<DrainResult>,
 }
@@ -299,6 +303,7 @@ impl IceonApp {
         if !self.can_reference_action(&reference, PermissionAction::Get) {
             return;
         }
+        self.inspector.helm_read = None;
         self.inspector.pod_expanded.clear();
         self.inspector.target = Some(InspectorTarget::Resource(reference.clone()));
         self.inspector_open = true;
@@ -491,6 +496,7 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.inspector.helm_read = None;
         self.inspector_open = true;
         self.inspector.target = Some(InspectorTarget::Helm {
             view,
@@ -510,9 +516,11 @@ impl IceonApp {
 
         let Some(session) = self.cluster_session.clone() else {
             self.inspector.loading = false;
+            self.inspector.error = Some("No active cluster session.".into());
             return;
         };
         let read_id = self.next_operation_id();
+        self.inspector.read_id = read_id;
         let helm_preferences =
             iceon_core::connection::helm::HelmPreferences::from(&self.preferences_draft);
         let connection = self.connection.clone();
@@ -525,11 +533,25 @@ impl IceonApp {
             namespace,
             version,
         };
+        self.inspector.helm_read = Some(helm_inspector::HelmInspectorRead::new(
+            self.connection.clone(),
+            req.clone(),
+        ));
         cx.spawn_in(window, async move |this, cx| {
             let result = connection
-                .helm_detail_with_preferences(req, helm_preferences)
+                .helm_detail_with_preferences(req.clone(), helm_preferences)
                 .await;
             let _ = this.update_in(cx, |this, _, cx| {
+                if !this.inspector_open
+                    || !helm_inspector::accepts_read(&this.inspector, &req)
+                    || !this.cluster_session.as_ref().is_some_and(|session| {
+                        session.status == "connected"
+                            && session.cluster_id == req.cluster_id
+                            && session.session_id == req.session_id
+                    })
+                {
+                    return;
+                }
                 this.inspector.loading = false;
                 match result {
                     Ok(detail) => this.inspector.helm_detail = Some(detail),
@@ -1430,6 +1452,7 @@ impl IceonApp {
                                     .tooltip("Close inspector")
                                     .accessibility_label("Close inspector")
                                     .on_click(cx.listener(|this, _, _, cx| {
+                                        this.inspector.helm_read = None;
                                         this.inspector.target = None;
                                         this.inspector_open = false;
                                         cx.notify();
@@ -3692,143 +3715,6 @@ impl IceonApp {
                         &self.preferences_draft.editor,
                     )),
             )
-    }
-
-    fn render_helm_inspector(&self, helm: &HelmDetail, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_chart = helm.view == HelmView::Charts;
-        let chart_name = helm.name.clone();
-        let chart_ver = helm.version.clone().unwrap_or_else(|| "latest".into());
-
-        v_flex()
-            .w_full()
-            .gap_3()
-            .when(is_chart, |el| {
-                el.child(
-                    h_flex()
-                        .w_full()
-                        .p_3()
-                        .justify_between()
-                        .items_center()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
-                        .child(
-                            v_flex()
-                                .gap_0p5()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(selectable_text(chart_name.clone())),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(selectable_text(format!("Version: {chart_ver}"))),
-                                ),
-                        )
-                        .child(
-                            Button::new("insp-helm-install-chart-btn")
-                                .xsmall()
-                                .primary()
-                                .label("Configure Install")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.helm_install_chart = Some(chart_name.clone());
-                                    this.helm_install_version = Some(chart_ver.clone());
-                                    this.helm_install_message = None;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-            })
-            .when(!helm.facts.is_empty(), |el| {
-                el.child(
-                    v_flex()
-                        .w_full()
-                        .p_3()
-                        .gap_1p5()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(selectable_text("CHART METADATA")),
-                        )
-                        .children(helm.facts.iter().map(|f| {
-                            h_flex()
-                                .justify_between()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(selectable_text(f.label.clone())),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(selectable_text(f.value.clone())),
-                                )
-                        })),
-                )
-            })
-            .when(!helm.history.is_empty(), |el| {
-                el.child(
-                    v_flex()
-                        .w_full()
-                        .p_3()
-                        .gap_2()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
-                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(
-                            selectable_text(format!(
-                                "RELEASE REVISION HISTORY ({})",
-                                helm.history.len()
-                            )),
-                        ))
-                        .children(helm.history.iter().map(|rev| {
-                            v_flex()
-                                .w_full()
-                                .p_2()
-                                .gap_0p5()
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .child(
-                                    h_flex()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(selectable_text(format!(
-                                                    "Revision #{} · {}",
-                                                    rev.revision, rev.chart
-                                                ))),
-                                        )
-                                        .child(status_tag(&rev.status)),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(selectable_text(format!(
-                                            "App {} · Updated {}",
-                                            rev.app_version, rev.updated
-                                        ))),
-                                )
-                        })),
-                )
-            })
     }
 }
 

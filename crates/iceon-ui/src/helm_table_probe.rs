@@ -73,6 +73,11 @@ pub fn run() -> anyhow::Result<()> {
                         table.update(cx, |this, cx| -> anyhow::Result<()> {
                             anyhow::ensure!(events.get() == 0, "search/sort emitted an action event");
                             let state = this.probe_snapshot();
+                            let count = this.inventory_count().map(|count| count.label());
+                            anyhow::ensure!(count.is_some() == state.page.is_some(), "missing snapshots must not claim zero items");
+                            if let Some(count) = count {
+                                anyhow::ensure!(count.starts_with(&state.rows.len().to_string()), "header count did not react to cached search");
+                            }
                             anyhow::ensure!(state.view_renders > previous_renders, "stage {stage}: view did not render");
                             previous_renders = state.view_renders;
                             let expected = match stage { 4 => 40, 5 => 10, 8 | 12..=16 => 0, 11 => 1, _ => 80 };

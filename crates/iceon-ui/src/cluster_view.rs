@@ -12,7 +12,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     collapsible::Collapsible,
     h_flex,
-    input::Input,
+    input::{Input, InputState},
     resizable::{HandleEdge, resize_handle},
     scroll::ScrollableElement as _,
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
@@ -2507,15 +2507,87 @@ impl IceonApp {
 
     pub(crate) fn focus_resource_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.history.current(), Route::Cluster { .. })
-            && section_to_resource_kind(&self.active_cluster_section).is_some()
             && !self.console_focus.contains_focused(window, cx)
+            && let Some(search) = self.header_search_state(cx)
         {
-            self.resource_filter_input
-                .read(cx)
-                .focus_handle(cx)
-                .focus(window, cx);
+            search.read(cx).focus_handle(cx).focus(window, cx);
             cx.notify();
         }
+    }
+
+    fn header_search_state(&self, cx: &Context<Self>) -> Option<Entity<InputState>> {
+        match self.active_cluster_section.as_str() {
+            "helm-charts" | "helm-releases" | "helm/charts" | "helm/releases" => {
+                Some(self.helm_table.read(cx).search_state())
+            }
+            "users" | "access-control/users" => Some(self.rbac_users_table.read(cx).search_state()),
+            section if section_to_resource_kind(section).is_some() => {
+                Some(self.resource_filter_input.clone())
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn header_inventory_count(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        use crate::inventory_count::InventoryCount;
+        let count = match self.active_cluster_section.as_str() {
+            "helm-charts" | "helm-releases" | "helm/charts" | "helm/releases" => {
+                let view = if matches!(
+                    self.active_cluster_section.as_str(),
+                    "helm-releases" | "helm/releases"
+                ) {
+                    HelmView::Releases
+                } else {
+                    HelmView::Charts
+                };
+                self.helm_table.update(cx, |table, cx| {
+                    table.sync(
+                        self.helm_page.clone(),
+                        view,
+                        self.cluster_loading,
+                        self.cluster_error.clone(),
+                        self.preferences_draft.app.timezone.clone(),
+                        cx,
+                    )
+                });
+                self.helm_table.read(cx).inventory_count()
+            }
+            "users" | "access-control/users" => self.rbac_users_table.read(cx).inventory_count(),
+            section if parse_custom_resource_target(section).is_some() => self
+                .custom_instances_page
+                .as_ref()
+                .filter(|page| !self.cluster_loading || !page.items.is_empty())
+                .map(|page| {
+                    InventoryCount::new(
+                        page.items.len(),
+                        page.items.len(),
+                        page.truncated || page.continue_token.is_some() || self.cluster_loading,
+                    )
+                }),
+            section => {
+                let kind = section_to_resource_kind(section)?;
+                let page = self
+                    .resource_page
+                    .as_ref()
+                    .filter(|page| page.kind == kind)?;
+                let loaded = page.items.len();
+                if loaded == 0 && (self.cluster_loading || self.resource_pagination.loading) {
+                    return None;
+                }
+                let partial = page.truncated
+                    || page.continue_token.is_some()
+                    || self.resource_pagination.stopped
+                    || self.cluster_loading
+                    || self.resource_pagination.loading;
+                let table = self.sync_inventory_table(kind, cx);
+                Some(InventoryCount::new(
+                    table.read(cx).visible_row_count(),
+                    loaded,
+                    partial,
+                ))
+            }
+        };
+        count.map(InventoryCount::label)
     }
 
     pub(crate) fn encoded_status_filter(&self, kind: ResourceKind) -> Option<String> {
@@ -2629,17 +2701,19 @@ impl IceonApp {
         let dock_count = self.pod_dock_tabs.len() + self.port_forwards.len();
         self.sync_namespace_select(window, cx);
 
+        let search = self.header_search_state(cx);
         h_flex()
             .h_full()
             .gap_2()
             .items_center()
             .flex_shrink_0()
-            .when(active_kind.is_some(), |el| {
+            .when_some(search, |el, search| {
                 el.child(
                     // Keep the compact input height; the header centers it vertically.
                     div().w(px(240.0)).child(
-                        Input::new(&self.resource_filter_input)
+                        Input::new(&search)
                             .xsmall()
+                            .aria_label("Search inventory")
                             .appearance(false)
                             .bordered(false)
                             .focus_bordered(false)
@@ -2896,6 +2970,42 @@ impl IceonApp {
             .unwrap_or_default()
     }
 
+    fn sync_inventory_table(
+        &mut self,
+        kind: ResourceKind,
+        cx: &mut Context<Self>,
+    ) -> Entity<crate::resource_table::ResourceTable> {
+        let owner = cx.entity().downgrade();
+        let table = self
+            .resource_table
+            .get_or_insert_with(|| {
+                cx.new(|cx| crate::resource_table::ResourceTable::new(owner, cx))
+            })
+            .clone();
+        let data = crate::resource_table::TableData {
+            page: self.resource_page.clone(),
+            scope: crate::resource_scroll::ResourceScrollScope {
+                cluster_id: self
+                    .cluster_session
+                    .as_ref()
+                    .map(|session| session.cluster_id.clone())
+                    .unwrap_or_default(),
+                kind,
+                namespace: self.selected_namespace.clone(),
+                query: self
+                    .resource_filter_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_lowercase(),
+                status: self.encoded_status_filter(kind),
+                page_token: None,
+            },
+        };
+        table.update(cx, |table, cx| table.sync(data, cx));
+        table
+    }
+
     fn render_resource_table_body(
         &mut self,
         kind: ResourceKind,
@@ -2966,59 +3076,13 @@ impl IceonApp {
                 .child(state)
                 .into_any_element();
         }
-        let owner = cx.entity().downgrade();
-        let table = self
-            .resource_table
-            .get_or_insert_with(|| {
-                cx.new(|cx| crate::resource_table::ResourceTable::new(owner, cx))
-            })
-            .clone();
-        let data = crate::resource_table::TableData {
-            page: self.resource_page.clone(),
-            scope: crate::resource_scroll::ResourceScrollScope {
-                cluster_id: self
-                    .cluster_session
-                    .as_ref()
-                    .map(|session| session.cluster_id.clone())
-                    .unwrap_or_default(),
-                kind,
-                namespace: self.selected_namespace.clone(),
-                query: self
-                    .resource_filter_input
-                    .read(cx)
-                    .value()
-                    .trim()
-                    .to_lowercase(),
-                status: self.encoded_status_filter(kind),
-                page_token: None,
-            },
-        };
-        table.update(cx, |table, cx| table.sync(data, cx));
+        let table = self.sync_inventory_table(kind, cx);
         table
             .cached(StyleRefinement::default().size_full())
             .into_any_element()
     }
 
     fn render_helm_body(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let view = if matches!(
-            self.active_cluster_section.as_str(),
-            "helm-releases" | "helm/releases"
-        ) {
-            HelmView::Releases
-        } else {
-            HelmView::Charts
-        };
-        self.helm_table.update(cx, |table, cx| {
-            table.sync(
-                self.helm_page.clone(),
-                view,
-                self.cluster_loading,
-                self.cluster_error.clone(),
-                self.preferences_draft.app.timezone.clone(),
-                cx,
-            )
-        });
-
         v_flex()
             .flex_1()
             .w_full()
@@ -3160,11 +3224,10 @@ impl IceonApp {
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(format!(
-                                    "{} ({}/{}) · {} instances",
+                                    "{} ({}/{})",
                                     page.kind,
                                     page.group,
-                                    page.version,
-                                    page.items.len()
+                                    page.version
                                 )),
                         )
                         .children(page.items.into_iter().map(|inst| {

@@ -4,7 +4,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::InputState,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     tag::Tag,
     v_flex, v_virtual_list,
@@ -217,10 +217,27 @@ impl HelmTable {
     }
     #[cfg(debug_assertions)]
     pub(crate) fn probe_query(&self, query: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.search.update(cx, |input, cx| {
+        self.search_state().update(cx, |input, cx| {
             input.set_value(query.to_owned(), window, cx)
         });
     }
+    pub(crate) fn search_state(&self) -> Entity<InputState> {
+        self.search.clone()
+    }
+
+    pub(crate) fn inventory_count(&self) -> Option<crate::inventory_count::InventoryCount> {
+        if self.loading && self.page.as_ref().is_none_or(|page| page.items.is_empty()) {
+            return None;
+        }
+        self.page.as_ref().map(|page| {
+            crate::inventory_count::InventoryCount::new(
+                self.rows.len(),
+                page.items.len(),
+                page.truncated || self.loading,
+            )
+        })
+    }
+
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search Helm inventory…"));
         cx.observe(&search, |this, _, cx| this.rebuild(cx)).detach();
@@ -445,34 +462,6 @@ impl Render for HelmTable {
             .min_w_0()
             .size_full()
             .gap_2()
-            .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div().flex_1().max_w(px(320.)).child(
-                            Input::new(&self.search)
-                                .small()
-                                .aria_label("Search Helm inventory"),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} / {}{} items",
-                                rows.len(),
-                                items.len(),
-                                if self.page.as_ref().is_some_and(|page| page.truncated) {
-                                    "+"
-                                } else {
-                                    ""
-                                }
-                            )),
-                    ),
-            )
             .when_some(status, |el, status| {
                 el.child(
                     div()

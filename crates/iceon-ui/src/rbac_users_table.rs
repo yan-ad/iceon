@@ -9,7 +9,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState},
+    input::InputState,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     v_flex, v_virtual_list,
 };
@@ -165,6 +165,7 @@ pub(crate) struct RbacUsersTable {
     search: Entity<InputState>,
     response: Option<RbacUsersResponse>,
     loading: bool,
+    partial: bool,
     error: Option<String>,
     rows: Rc<Vec<UsersRow>>,
     row_sizes: Rc<Vec<Size<Pixels>>>,
@@ -176,6 +177,28 @@ pub(crate) struct RbacUsersTable {
 }
 
 impl RbacUsersTable {
+    pub(crate) fn search_state(&self) -> Entity<InputState> {
+        self.search.clone()
+    }
+
+    pub(crate) fn inventory_count(&self) -> Option<crate::inventory_count::InventoryCount> {
+        if self.loading
+            && self
+                .response
+                .as_ref()
+                .is_none_or(|response| response.items.is_empty())
+        {
+            return None;
+        }
+        self.response.as_ref().map(|response| {
+            crate::inventory_count::InventoryCount::new(
+                self.rows.len(),
+                response.items.len(),
+                self.loading || self.partial,
+            )
+        })
+    }
+
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx
             .new(|cx| InputState::new(window, cx).placeholder("Search users, bindings, or roles…"));
@@ -185,6 +208,7 @@ impl RbacUsersTable {
             search,
             response: None,
             loading: false,
+            partial: false,
             error: None,
             rows: Rc::new(Vec::new()),
             row_sizes: Rc::new(Vec::new()),
@@ -207,6 +231,14 @@ impl RbacUsersTable {
         if self.response == response && self.loading == loading && self.error == error {
             return;
         }
+        self.partial = response.as_ref().is_some_and(|response| {
+            response.truncated
+                || response
+                    .coverage
+                    .iter()
+                    .any(|coverage| coverage.state != "complete")
+                || response.items.iter().any(|item| item.bindings_truncated)
+        });
         self.response = response;
         self.loading = loading;
         self.error = error;
@@ -364,19 +396,6 @@ impl Render for RbacUsersTable {
         let scroll = self.scroll.clone();
         let entity = cx.entity();
         let query = self.search.read(cx).value();
-        let (truncated, bindings_truncated, incomplete) =
-            self.response
-                .as_ref()
-                .map_or((false, false, false), |response| {
-                    (
-                        response.truncated,
-                        response.items.iter().any(|item| item.bindings_truncated),
-                        response
-                            .coverage
-                            .iter()
-                            .any(|coverage| coverage.state != "complete"),
-                    )
-                });
         let status = if let Some(error) = self.error.clone() {
             Some(format!("Error: {error}"))
         } else if self.loading {
@@ -397,26 +416,6 @@ impl Render for RbacUsersTable {
             .w_full()
             .h_full()
             .gap_2()
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div().w(px(320.)).child(
-                            Input::new(&self.search)
-                                .small()
-                                .aria_label("Search users, bindings, or roles"),
-                        ),
-                    )
-                    .when(truncated || bindings_truncated || incomplete, |el| {
-                        el.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().warning)
-                                .child("Results incomplete"),
-                        )
-                    }),
-            )
             .when_some(status, |el, status| {
                 el.child(
                     div()
@@ -583,6 +582,11 @@ pub fn run_probe() -> anyhow::Result<()> {
                         window.draw(cx).clear(cx);
                         table.update(cx, |this, cx| -> anyhow::Result<()> {
                             let (renders, row_renders) = this.probe_renders.get();
+                            let count = this.inventory_count().map(|count| count.label());
+                            anyhow::ensure!(count.is_some() == this.response.is_some(), "missing snapshots must not claim zero items");
+                            if let Some(count) = count {
+                                anyhow::ensure!(count.starts_with(&this.rows.len().to_string()), "header count did not react to cached search");
+                            }
                             anyhow::ensure!(renders > previous_renders, "stage {stage}: view did not render");
                             previous_renders = renders;
                             let expected = match stage { 4 => 24, 5 | 8 | 9 => 0, _ => 72 };
@@ -607,14 +611,14 @@ pub fn run_probe() -> anyhow::Result<()> {
                                 }
                                 3 => {
                                     anyhow::ensure!(this.sort.is_none(), "third sort did not reset");
-                                    this.search.update(cx, |input, cx| input.set_value("ServiceAccount", window, cx));
+                                    this.search_state().update(cx, |input, cx| input.set_value("ServiceAccount", window, cx));
                                 }
                                 4 => {
                                     anyhow::ensure!(this.rows.iter().all(|r| this.response.as_ref().unwrap().items[r.source_index].kind == "ServiceAccount"), "type filter failed");
-                                    this.search.update(cx, |input, cx| input.set_value("no-such-offline-subject", window, cx));
+                                    this.search_state().update(cx, |input, cx| input.set_value("no-such-offline-subject", window, cx));
                                 }
-                                5 => { this.search.update(cx, |input, cx| input.set_value("team-fixture", window, cx)); }
-                                6 => { this.search.update(cx, |input, cx| input.set_value("", window, cx)); }
+                                5 => { this.search_state().update(cx, |input, cx| input.set_value("team-fixture", window, cx)); }
+                                6 => { this.search_state().update(cx, |input, cx| input.set_value("", window, cx)); }
                                 7 => this.sync(None, true, None, cx),
                                 8 => {
                                     anyhow::ensure!(this.loading, "loading state missing");

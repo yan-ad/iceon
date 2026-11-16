@@ -43,6 +43,7 @@ pub use overview_probe::run as run_overview_probe;
 mod helm_table;
 #[cfg(debug_assertions)]
 mod helm_table_probe;
+mod inventory_count;
 #[cfg(debug_assertions)]
 pub use helm_table_probe::run as run_helm_table_probe;
 mod pod_columns;
@@ -329,6 +330,11 @@ impl IceonApp {
             cx.new(|cx| InputState::new(window, cx).placeholder("new-service-account"));
         let rbac_users_table = cx.new(|cx| rbac_users_table::RbacUsersTable::new(window, cx));
         let helm_table = cx.new(|cx| helm_table::HelmTable::new(window, cx));
+        // Child observers rebuild cached local rows first; these observers only
+        // invalidate header counts. They never reload the active section.
+        cx.observe(&helm_table, |_, _, cx| cx.notify()).detach();
+        cx.observe(&rbac_users_table, |_, _, cx| cx.notify())
+            .detach();
         cx.subscribe_in(
             &helm_table,
             window,
