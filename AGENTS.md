@@ -65,6 +65,12 @@ These requirements **MUST** be preserved by every implementation, refactor, fixt
 - Terminal output **MUST NOT** be interpreted as permission to run host commands, access the clipboard, open links, or perform other host-side actions.
 - Terminal changes **MUST** preserve bounded buffers, cancellation/shutdown behavior, and child-process cleanup.
 
+### Native Navigation
+
+- Quick Jump uses the sidebar hierarchy for every catalog cluster. Cached visibility is cluster-specific; navigation discovery does not authorize resource reads. Custom-resource destinations remain bound to the active discovery lease.
+- macOS packages register only the exact `iceon://create-cluster` and `iceon://settings` actions. The former opens kubeconfig import, not cluster provisioning. These links carry no cluster metadata or arbitrary parameters.
+- Native URL activation is implemented; Core Spotlight indexing is not. The pinned GPUI backend does not expose Spotlight user-activity continuation. Do not claim that URL registration alone creates Spotlight results, or replace/swizzle GPUI's application delegate to implement it.
+
 ## 4. Required Working Process
 
 ### Investigate Before Editing

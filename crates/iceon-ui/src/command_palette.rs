@@ -1,55 +1,180 @@
 //! Global navigation through GPUI Kit's keyboard-accessible Command component.
-use crate::{
-    IceonApp,
-    navigation::{Route, destination_label},
-};
+use crate::{IceonApp, navigation::Route};
 use gpui_kit::{
     component::{
-        command::{Command, CommandItem},
+        ActiveTheme as _,
+        command::{Command, CommandGroup, CommandItem},
         h_flex,
     },
     prelude::*,
     *,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JumpAction {
+    CreateCluster,
+    Settings,
+    Navigate(Route),
+}
+
+struct JumpEntry {
+    title: String,
+    keywords: Vec<String>,
+    icon: gpui_kit_assets::IconName,
+    action: JumpAction,
+    // Dynamic destinations must not outlive their discovery lease.
+    lease: Option<String>,
+}
+
+struct JumpGroup {
+    title: String,
+    entries: Vec<JumpEntry>,
+}
+
+fn entry_at(groups: &[JumpGroup], section: usize, row: usize) -> Option<&JumpEntry> {
+    groups.get(section)?.entries.get(row)
+}
+
 fn destinations(
     clusters: &[iceon_core::catalog::ClusterSummary],
-    current: &Route,
-    allowed: impl Fn(&str) -> bool,
-) -> Vec<(String, Vec<String>, Route)> {
-    let mut entries = vec![("Secrets".into(), vec!["vault".into()], Route::Secrets)];
-    entries.extend(clusters.iter().map(|cluster| {
-        (
-            format!("Cluster · {}", cluster.name),
-            vec![cluster.context_name.clone()],
-            Route::Cluster {
-                cluster_id: cluster.id.clone(),
-                section: "overview".into(),
-            },
-        )
-    }));
-    let cluster_id = match current {
-        Route::Cluster { cluster_id, .. } => Some(cluster_id.clone()),
-        _ => clusters.first().map(|cluster| cluster.id.clone()),
-    };
-    if let Some(cluster_id) = cluster_id {
-        entries.extend(
-            iceon_core::catalog::SECTIONS
-                .iter()
-                .filter(|section| allowed(section))
-                .map(|section| {
-                    (
-                        format!("Section · {}", destination_label(section)),
-                        vec![(*section).into()],
-                        Route::Cluster {
-                            cluster_id: cluster_id.clone(),
-                            section: (*section).into(),
-                        },
-                    )
+    lease: Option<(&str, &str)>,
+    custom_page: Option<&iceon_core::connection::ResourcePage>,
+    allowed: impl Fn(&str, &str) -> bool,
+) -> Vec<JumpGroup> {
+    use gpui_kit_assets::IconName;
+    let mut groups = vec![JumpGroup {
+        title: "Actions".into(),
+        entries: [
+            (
+                "Create Cluster",
+                "add import kubeconfig connect",
+                IconName::Plus,
+                JumpAction::CreateCluster,
+            ),
+            (
+                "Iceon Settings",
+                "preferences appearance theme",
+                IconName::Settings,
+                JumpAction::Settings,
+            ),
+            (
+                "Secrets",
+                "vault",
+                IconName::KeyRound,
+                JumpAction::Navigate(Route::Secrets),
+            ),
+        ]
+        .into_iter()
+        .map(|(title, keywords, icon, action)| JumpEntry {
+            title: title.into(),
+            keywords: vec![keywords.into()],
+            icon,
+            action,
+            lease: None,
+        })
+        .collect(),
+    }];
+    for cluster in clusters {
+        let duplicate_name = clusters
+            .iter()
+            .filter(|other| other.name == cluster.name)
+            .count()
+            > 1;
+        let title = if duplicate_name {
+            format!("{} · {}", cluster.name, cluster.context_name)
+        } else {
+            cluster.name.clone()
+        };
+        let mut entries = Vec::new();
+        let mut push = |section: &str, title: String, lease: Option<String>| {
+            if !allowed(&cluster.id, section) {
+                return;
+            }
+            let mut keywords = vec![
+                section.to_owned(),
+                cluster.name.clone(),
+                cluster.context_name.clone(),
+            ];
+            // Command's filter is a substring search within each individual keyword.
+            // Keep combined terms so e.g. "prod pods" can cross the cluster/title boundary.
+            let leaf = title.rsplit(" · ").next().unwrap_or(&title);
+            for prefix in [&cluster.name, &cluster.context_name] {
+                keywords.push(format!("{prefix} {leaf}"));
+                keywords.push(format!("{prefix} {title}"));
+                keywords.push(format!("{prefix} {section}"));
+            }
+            entries.push(JumpEntry {
+                title,
+                keywords,
+                icon: crate::sidebar_view::section_asset_icon(if lease.is_some() {
+                    "custom-resources"
+                } else {
+                    section
                 }),
-        );
+                action: JumpAction::Navigate(Route::Cluster {
+                    cluster_id: cluster.id.clone(),
+                    section: section.into(),
+                }),
+                lease,
+            });
+        };
+        for group in crate::navigation::ordered_cluster_sections() {
+            if group.children.is_empty() {
+                push(
+                    group.default_child,
+                    if group.default_child == "overview" {
+                        "Open Cluster · Overview".into()
+                    } else {
+                        group.label.into()
+                    },
+                    None,
+                );
+            } else {
+                for child in group.children {
+                    push(child.id, format!("{} · {}", group.label, child.label), None);
+                }
+            }
+        }
+        let page = custom_page.filter(|page| {
+            lease.is_some_and(|(cluster_id, session_id)| {
+                cluster_id == cluster.id
+                    && page.cluster_id == cluster_id
+                    && page.session_id == session_id
+                    && page.kind == iceon_core::connection::ResourceKind::CustomResourceDefinitions
+            })
+        });
+        for (api_group, definitions) in crate::custom_resource_navigation::grouped_definitions(page)
+        {
+            for definition in definitions {
+                let section = format!("crd:{}", definition.name);
+                let Some(page) = page else {
+                    continue;
+                };
+                if !crate::custom_resource_navigation::discovered_route(
+                    Some(page),
+                    &cluster.id,
+                    &page.session_id,
+                    &section,
+                ) {
+                    continue;
+                }
+                let kind = definition
+                    .columns
+                    .get("kind")
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or(&definition.name);
+                push(
+                    &section,
+                    format!("Custom Resources · {api_group} · {kind}"),
+                    Some(page.session_id.clone()),
+                );
+            }
+        }
+        if !entries.is_empty() {
+            groups.push(JumpGroup { title, entries });
+        }
     }
-    entries
+    groups
 }
 impl IceonApp {
     pub(crate) fn toggle_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -73,48 +198,89 @@ impl IceonApp {
     pub(crate) fn render_search_modal(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let destinations = destinations(
             &self.catalog_snapshot.clusters,
-            self.history.current(),
-            |section| self.route_visible(section),
+            self.cluster_session
+                .as_ref()
+                .filter(|session| session.status == "connected")
+                .map(|session| (session.cluster_id.as_str(), session.session_id.as_str())),
+            self.custom_definitions_page.as_ref(),
+            |cluster_id, section| {
+                self.cluster_route_visible(cluster_id, section)
+                    && (!section.starts_with("crd:") || self.route_allowed(section))
+            },
         );
-        let items = destinations
+        let count = destinations
             .iter()
-            .map(|(label, keywords, _)| {
-                CommandItem::new()
-                    .label(label.clone())
-                    .keywords(keywords.clone())
-            })
-            .collect::<Vec<_>>();
+            .map(|group| group.entries.len())
+            .sum::<usize>();
+        let mut command = Command::new(&self.command_state);
+        // All entries are explicitly grouped: IndexPath.section is the model group,
+        // and row is the original unfiltered item index, not a flattened result index.
+        for group in &destinations {
+            command = command.group(CommandGroup::new().label(group.title.clone()).items(
+                group.entries.iter().map(|entry| CommandItem::new()
+                    .label(entry.title.clone())
+                    .keywords(entry.keywords.clone())
+                    .icon(entry.icon)
+                    .checked(matches!(&entry.action, JumpAction::Navigate(route) if route == self.history.current())))
+            ));
+        }
         let owner = cx.entity().downgrade();
         let cancel_owner = owner.clone();
-        Command::new(&self.command_state)
-            .w(px(520.0))
+        command
+            .w(px(680.0))
             .max_w(relative(0.9))
-            .max_h(px(320.0))
-            .placeholder("Jump to cluster or section…")
-            .items(items)
+            .max_h(px(520.0))
+            .placeholder("Quick Jump · Search actions, clusters, and resources…")
             .on_confirm(move |index, window, cx| {
-                if let Some((label, _, route)) = destinations.get(index.row) {
+                if let Some(entry) = entry_at(&destinations, index.section, index.row) {
                     let _ = owner.update(cx, |app, cx| {
-                        if label.starts_with("Section · ")
-                            && let Route::Cluster { section, .. } = route
-                            && (!app.route_visible(section))
+                        if let JumpAction::Navigate(Route::Cluster {
+                            cluster_id,
+                            section,
+                        }) = &entry.action
                         {
-                            return;
+                            if !app
+                                .catalog_snapshot
+                                .clusters
+                                .iter()
+                                .any(|cluster| &cluster.id == cluster_id)
+                                || !app.cluster_route_visible(cluster_id, section)
+                            {
+                                return;
+                            }
+                            if let Some(lease) = &entry.lease {
+                                if !app.cluster_session.as_ref().is_some_and(|session| {
+                                    &session.cluster_id == cluster_id
+                                        && &session.session_id == lease
+                                        && session.status == "connected"
+                                }) || !app.route_allowed(section)
+                                {
+                                    return;
+                                }
+                            }
                         }
                         app.close_command_palette(window, cx);
-                        app.navigate(route.clone(), true, window, cx);
+                        match &entry.action {
+                            JumpAction::CreateCluster => app.open_add_config(window, cx),
+                            JumpAction::Settings => app.open_preferences(window, cx),
+                            JumpAction::Navigate(route) => {
+                                app.navigate(route.clone(), true, window, cx)
+                            }
+                        }
                     });
                 }
             })
             .on_cancel(move |window, cx| {
                 let _ = cancel_owner.update(cx, |app, cx| app.close_command_palette(window, cx));
             })
-            .footer(|_, _, _| {
+            .footer(move |_, _, cx| {
                 h_flex()
                     .px_3()
                     .py_2()
                     .gap_3()
                     .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("{count} destinations"))
                     .child("↑↓ Navigate")
                     .child("Enter Open")
                     .child("Esc Clear / Close")
@@ -124,49 +290,186 @@ impl IceonApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{Route, destinations};
-    #[test]
-    fn no_cluster_has_only_global_routes() {
-        let entries = destinations(&[], &Route::Setup, |_| true);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].2, Route::Secrets);
+    use super::{JumpAction, JumpGroup, Route, destinations, entry_at};
+    use iceon_core::{
+        catalog::ClusterSummary,
+        connection::{ResourceItem, ResourceKind, ResourcePage},
+    };
+    use std::collections::HashSet;
+
+    fn clusters() -> Vec<ClusterSummary> {
+        ["prod", "staging"]
+            .into_iter()
+            .map(|context| ClusterSummary {
+                id: context.into(),
+                name: "Shared".into(),
+                context_name: context.into(),
+                source: "kubeconfig".into(),
+                status: "disconnected",
+                pinned: false,
+                pinned_sections: vec![],
+                labels: vec![],
+                color: "".into(),
+            })
+            .collect()
     }
-    #[test]
-    fn denied_sections_are_omitted_not_global_routes() {
-        let entries = destinations(
-            &[],
-            &Route::Cluster {
-                cluster_id: "active".into(),
-                section: "pods".into(),
-            },
-            |_| false,
-        );
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].2, Route::Secrets);
-        let entries = destinations(
-            &[],
-            &Route::Cluster {
-                cluster_id: "active".into(),
-                section: "pods".into(),
-            },
-            |section| section == "pods",
-        );
-        assert_eq!(entries.len(), 2);
-        assert!(matches!(&entries[1].2, Route::Cluster { section, .. } if section == "pods"));
+
+    fn sections(group: &JumpGroup) -> Vec<&str> {
+        group
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.action {
+                JumpAction::Navigate(Route::Cluster { section, .. }) => Some(section.as_str()),
+                _ => None,
+            })
+            .collect()
     }
+
     #[test]
-    fn sections_target_the_current_cluster_and_are_not_truncated() {
-        let entries = destinations(
-            &[],
-            &Route::Cluster {
-                cluster_id: "active".into(),
-                section: "pods".into(),
-            },
-            |_| true,
+    fn global_actions_exist_without_clusters() {
+        let groups = destinations(&[], None, None, |_, _| false);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "Actions");
+        assert_eq!(
+            groups[0]
+                .entries
+                .iter()
+                .map(|e| &e.action)
+                .collect::<Vec<_>>(),
+            [
+                &JumpAction::CreateCluster,
+                &JumpAction::Settings,
+                &JumpAction::Navigate(Route::Secrets),
+            ]
         );
-        assert_eq!(entries.len(), 1 + iceon_core::catalog::SECTIONS.len());
-        for (_, _, route) in entries.iter().skip(1) {
-            assert!(matches!(route, Route::Cluster { cluster_id, .. } if cluster_id == "active"));
+    }
+
+    #[test]
+    fn every_cluster_gets_all_sidebar_leaves_without_aliases_or_duplicates() {
+        let clusters = clusters();
+        let groups = destinations(&clusters, None, None, |_, _| true);
+        assert_eq!(groups[1].title, "Shared · prod");
+        assert_eq!(groups[2].title, "Shared · staging");
+        let expected: HashSet<_> = crate::navigation::ordered_cluster_sections()
+            .into_iter()
+            .flat_map(|group| {
+                if group.children.is_empty() {
+                    vec![group.default_child]
+                } else {
+                    group.children.iter().map(|child| child.id).collect()
+                }
+            })
+            .collect();
+        for (group, cluster) in groups[1..].iter().zip(&clusters) {
+            let targets = sections(group);
+            assert_eq!(targets.len(), expected.len());
+            assert_eq!(targets.into_iter().collect::<HashSet<_>>(), expected);
+            assert_eq!(
+                sections(group).iter().filter(|s| **s == "overview").count(),
+                1
+            );
+            for entry in &group.entries {
+                assert!(
+                    matches!(&entry.action, JumpAction::Navigate(Route::Cluster { cluster_id, .. }) if cluster_id == &cluster.id)
+                );
+            }
         }
+        let pods = groups[1]
+            .entries
+            .iter()
+            .find(|entry| entry.title == "Workloads · Pods")
+            .unwrap();
+        assert!(
+            pods.keywords
+                .iter()
+                .any(|keyword| keyword.to_lowercase().contains("prod pods"))
+        );
+    }
+
+    #[test]
+    fn permissions_are_per_cluster_and_lookup_uses_group_and_original_row() {
+        let groups = destinations(&clusters(), None, None, |cluster, section| {
+            !(cluster == "prod" && section == "nodes")
+        });
+        assert!(!sections(&groups[1]).contains(&"nodes"));
+        assert!(sections(&groups[2]).contains(&"nodes"));
+        for (section, group) in groups.iter().enumerate() {
+            for (row, entry) in group.entries.iter().enumerate() {
+                assert_eq!(
+                    entry_at(&groups, section, row).unwrap().action,
+                    entry.action
+                );
+            }
+        }
+        assert_ne!(
+            entry_at(&groups, 1, 0).unwrap().action,
+            entry_at(&groups, 2, 0).unwrap().action
+        );
+        assert!(entry_at(&groups, 99, 0).is_none());
+        assert!(entry_at(&groups, 0, 99).is_none());
+        let denied = destinations(&clusters(), None, None, |_, _| false);
+        assert_eq!(denied.len(), 1);
+        assert_eq!(denied[0].entries.len(), 3);
+    }
+
+    #[test]
+    fn custom_types_require_matching_current_discovery_lease_and_permission() {
+        let page = ResourcePage {
+            cluster_id: "prod".into(),
+            session_id: "lease".into(),
+            kind: ResourceKind::CustomResourceDefinitions,
+            read_id: 1,
+            items: vec![ResourceItem {
+                name: "widgets.example.io".into(),
+                uid: Some("fixture-uid".into()),
+                namespace: None,
+                resource_version: None,
+                created_at: None,
+                status: "Established".into(),
+                node: None,
+                containers: vec![],
+                columns: [
+                    ("group".into(), "example.io".into()),
+                    ("kind".into(), "Widget".into()),
+                ]
+                .into(),
+            }],
+            truncated: false,
+            fetched_at: 0,
+            namespace: None,
+            continue_token: None,
+            metrics: None,
+        };
+        let clusters = clusters();
+        let custom = "crd:widgets.example.io";
+        let groups = destinations(&clusters, Some(("prod", "lease")), Some(&page), |_, _| true);
+        assert!(sections(&groups[1]).contains(&custom));
+        assert!(!sections(&groups[2]).contains(&custom));
+        let entry = groups[1]
+            .entries
+            .iter()
+            .find(|e| e.lease.is_some())
+            .unwrap();
+        assert_eq!(entry.title, "Custom Resources · example.io · Widget");
+        assert_eq!(entry.lease.as_deref(), Some("lease"));
+        for lease in [None, Some(("prod", "stale")), Some(("staging", "lease"))] {
+            let groups = destinations(&clusters, lease, Some(&page), |_, _| true);
+            assert!(
+                groups
+                    .iter()
+                    .all(|group| !sections(group).contains(&custom))
+            );
+        }
+        let groups = destinations(
+            &clusters,
+            Some(("prod", "lease")),
+            Some(&page),
+            |_, section| section != custom,
+        );
+        assert!(
+            groups
+                .iter()
+                .all(|group| !sections(group).contains(&custom))
+        );
     }
 }

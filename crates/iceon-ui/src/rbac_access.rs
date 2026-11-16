@@ -20,6 +20,50 @@ struct AccessScope {
     lease: String,
     namespace: Option<String>,
 }
+fn cluster_sidebar_route_visible(
+    lists: Option<&HashMap<PermissionCheck, PermissionDecision>>,
+    section: &str,
+) -> bool {
+    let known = crate::navigation::ordered_cluster_sections()
+        .iter()
+        .any(|group| {
+            if group.children.is_empty() {
+                group.default_child == section
+            } else {
+                group.children.iter().any(|child| child.id == section)
+            }
+        });
+    if !known {
+        return false;
+    }
+    let Some(lists) = lists else {
+        return true;
+    };
+    let permitted = |kind| {
+        lists.get(&check(kind, PermissionAction::List, None, None))
+            == Some(&PermissionDecision::Allowed)
+    };
+    if let Some(kind) = section_to_resource_kind(section) {
+        return resource_route_visible(
+            kind,
+            lists
+                .get(&check(kind, PermissionAction::List, None, None))
+                .copied(),
+        );
+    }
+    match section {
+        "users" | "access-control/users" => [
+            ResourceKind::ServiceAccounts,
+            ResourceKind::Roles,
+            ResourceKind::RoleBindings,
+            ResourceKind::ClusterRoles,
+            ResourceKind::ClusterRoleBindings,
+        ]
+        .into_iter()
+        .all(permitted),
+        _ => true,
+    }
+}
 #[derive(Default)]
 pub(crate) struct AccessState {
     initial_lease: Option<(String, String)>,
@@ -230,6 +274,33 @@ impl AccessState {
     }
 }
 impl IceonApp {
+    /// Quick Jump discovery does not authorize reads. A not-yet-visited cluster
+    /// exposes known sidebar destinations; selecting one starts the usual lease
+    /// and fresh permission review before the page can query its resources.
+    pub(crate) fn cluster_route_visible(&self, cluster_id: &str, section: &str) -> bool {
+        if !self
+            .catalog_snapshot
+            .clusters
+            .iter()
+            .any(|cluster| cluster.id == cluster_id)
+        {
+            return false;
+        }
+        let active = matches!(self.history.current(), crate::navigation::Route::Cluster {
+            cluster_id: current, ..
+        } if current == cluster_id);
+        if active {
+            return self.route_visible(section);
+        }
+        if crate::cluster_view::parse_custom_resource_target(section).is_some() {
+            return false;
+        }
+        cluster_sidebar_route_visible(
+            self.known_cluster_access.navigation.get(cluster_id),
+            section,
+        )
+    }
+
     fn access_scope(&self) -> Option<AccessScope> {
         self.cluster_session
             .as_ref()
@@ -867,6 +938,37 @@ impl IceonApp {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quick_jump_cluster_visibility_does_not_reuse_another_clusters_denial() {
+        use super::*;
+        let mut denied = HashMap::new();
+        denied.insert(
+            check(ResourceKind::Nodes, PermissionAction::List, None, None),
+            PermissionDecision::Denied,
+        );
+        assert!(!cluster_sidebar_route_visible(Some(&denied), "nodes"));
+        assert!(cluster_sidebar_route_visible(None, "nodes"));
+        assert!(cluster_sidebar_route_visible(Some(&denied), "pods"));
+        assert!(!cluster_sidebar_route_visible(
+            None,
+            "crd:widgets.example.io"
+        ));
+        assert!(!cluster_sidebar_route_visible(None, "workloads"));
+        assert!(!cluster_sidebar_route_visible(Some(&denied), "users"));
+        for kind in [
+            ResourceKind::ServiceAccounts,
+            ResourceKind::Roles,
+            ResourceKind::RoleBindings,
+            ResourceKind::ClusterRoles,
+            ResourceKind::ClusterRoleBindings,
+        ] {
+            denied.insert(
+                check(kind, PermissionAction::List, None, None),
+                PermissionDecision::Allowed,
+            );
+        }
+        assert!(cluster_sidebar_route_visible(Some(&denied), "users"));
+    }
     #[test]
     fn revisited_navigation_cache_does_not_restore_action_permissions() {
         let mut known = super::KnownClusterAccess::default();
