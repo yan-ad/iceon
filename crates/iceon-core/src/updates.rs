@@ -305,16 +305,16 @@ pub fn extract_tar_gz(archive_path: &Path, extract_to: &Path) -> Result<(), Stri
 }
 
 pub async fn check_and_download(current_version: &str) -> Result<Option<DownloadedUpdate>, String> {
-    if let Some(existing) = read_downloaded_update() {
-        if let (Ok(existing_v), Ok(curr_v)) = (
+    if let Some(existing) = read_downloaded_update()
+        && let (Ok(existing_v), Ok(curr_v)) = (
             semver::Version::parse(&existing.version),
             semver::Version::parse(current_version),
-        ) {
-            if existing_v > curr_v && existing.path.exists() {
-                return Ok(Some(existing));
-            } else if existing_v <= curr_v {
-                clear_downloaded_update();
-            }
+        )
+    {
+        if existing_v > curr_v && existing.path.exists() {
+            return Ok(Some(existing));
+        } else if existing_v <= curr_v {
+            clear_downloaded_update();
         }
     }
 

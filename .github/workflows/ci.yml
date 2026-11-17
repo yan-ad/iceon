@@ -60,13 +60,13 @@ jobs:
       # GPUI/native packaging remain covered by the shipped-platform jobs below.
       # Do not build the default app member on this headless Linux runner.
       - name: Check portable crates and all targets
-        run: cargo check -p iceon-core -p iceon-xtask --all-targets --all-features --locked
+        run: cargo check -p iceon-core -p iceon-extension -p iceon-xtask --all-targets --all-features --locked
 
       - name: Test portable crates
-        run: cargo test -p iceon-core -p iceon-xtask --all-features --locked
+        run: cargo test -p iceon-core -p iceon-extension -p iceon-xtask --all-features --locked
 
       - name: Lint portable crates
-        run: cargo clippy -p iceon-core -p iceon-xtask --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy -p iceon-core -p iceon-extension -p iceon-xtask --all-targets --all-features --locked -- -D warnings
 
   rust:
     name: Rust (${{ matrix.os }})

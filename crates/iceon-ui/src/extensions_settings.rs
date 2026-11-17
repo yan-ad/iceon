@@ -73,10 +73,10 @@ impl ExtensionsSettings {
     }
 
     fn matches_filter(&self, manifest: &ExtensionManifest, query: &str) -> bool {
-        if let Some(cat) = self.selected_category {
-            if manifest.category != cat {
-                return false;
-            }
+        if let Some(cat) = self.selected_category
+            && manifest.category != cat
+        {
+            return false;
         }
         if query.is_empty() {
             return true;

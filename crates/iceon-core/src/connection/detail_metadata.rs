@@ -469,9 +469,13 @@ mod tests {
     }
     #[test]
     fn sensitive_kinds_have_no_shared_metadata() {
-        for kind in [ResourceKind::Secrets] {
-            assert!(project(kind, &json!({"metadata":{"labels":{"leak":"no"}}})).is_none());
-        }
+        assert!(
+            project(
+                ResourceKind::Secrets,
+                &json!({"metadata":{"labels":{"leak":"no"}}})
+            )
+            .is_none()
+        );
     }
     #[test]
     fn config_maps_project_safe_metadata() {

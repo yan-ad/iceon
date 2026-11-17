@@ -80,13 +80,13 @@ impl IceonApp {
                         app.update_status =
                             crate::shell_footer::UpdateStatus::Downloaded(downloaded.version);
                     }
-                    Ok(Ok(None)) => {
+                    Ok(Ok(None))
                         if !matches!(
                             app.update_status,
                             crate::shell_footer::UpdateStatus::Downloaded(_)
-                        ) {
-                            app.update_status = crate::shell_footer::UpdateStatus::Current;
-                        }
+                        ) =>
+                    {
+                        app.update_status = crate::shell_footer::UpdateStatus::Current;
                     }
                     _ => {
                         // Background polling does not overwrite an existing downloaded status or pop errors.
