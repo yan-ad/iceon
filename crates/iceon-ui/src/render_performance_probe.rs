@@ -192,7 +192,16 @@ impl Probe {
         // IceonApp's harmless catalog timer may run, but has no home to discover.
         let owner =
             cx.new(|cx| IceonApp::new(catalog, connection, preferences, secrets, window, cx));
-        let table = cx.new(|cx| ResourceTable::new(owner.downgrade(), cx));
+        // Match production: create the child while its parent holds an update
+        // lease. Reading the parent from the constructor must not be required.
+        let table = owner.update(cx, |app, cx| {
+            let revision = app.access_revision();
+            let owner = cx.entity().downgrade();
+            cx.new(|cx| ResourceTable::new(owner, revision, cx))
+        });
+        cx.observe(&table, |_, _, _| {
+            eprintln!("TRACE table notification {:?}", Instant::now());
+        }).detach();
         table.update(cx, |table, cx| {
             table.sync(
                 TableData {
@@ -257,6 +266,7 @@ impl Probe {
     }
 
     fn check(&mut self, stage: usize, cx: &mut Context<Self>) -> Result<(), String> {
+        eprintln!("TRACE check {stage} {:?}", Instant::now());
         let stats = self.table.read(cx).stats();
         let terminal = self.terminal.read(cx).performance_snapshot();
         let require = |ok: bool, message: &str| {

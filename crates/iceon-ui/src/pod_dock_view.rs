@@ -1058,6 +1058,32 @@ impl IceonApp {
                     })),
             )
         }));
+        if self.marketplace_open {
+            tabs.push(
+                self.boxed_console_tab(
+                    crate::console_tabs::ConsoleTab::Marketplace,
+                    "Marketplace".into(),
+                    "Browse and install themes and icon themes".into(),
+                    gpui_kit::component::Icon::new(gpui_kit_assets::IconName::Package),
+                    cx,
+                )
+                .child(
+                    Button::new("close-marketplace-tab")
+                        .opacity(0.)
+                        .group_hover("console-session-tab", |style| style.opacity(1.))
+                        .focus_visible(|style| style.opacity(1.))
+                        .xsmall()
+                        .ghost()
+                        .icon(IconName::Close)
+                        .tooltip("Close marketplace")
+                        .accessibility_label("Close marketplace")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.close_marketplace_tab(cx);
+                        })),
+                ),
+            );
+        }
         let duplicate_key = (!self.local_terminal_active && self.active_yaml_tab.is_none())
             .then(|| {
                 self.active_pod_tab
@@ -1194,6 +1220,9 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.active_marketplace {
+            return self.render_marketplace_dock_panel(window, cx);
+        }
         if self.active_yaml_tab.is_some() {
             return self.render_yaml_dock(window, cx);
         }
@@ -1836,6 +1865,91 @@ fn feed_tab_output(tab: &mut PodDockTab, chunk: &str, cx: &mut Context<IceonApp>
         }
     } else if let Some(terminal) = &tab.terminal {
         terminal.update(cx, |terminal, cx| terminal.feed(chunk, cx));
+    }
+}
+
+impl IceonApp {
+    pub(crate) fn open_marketplace(
+        &mut self,
+        category: Option<crate::marketplace_dock::MarketplaceCategory>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.marketplace_open = true;
+        self.active_marketplace = true;
+        self.active_yaml_tab = None;
+        self.local_terminal_active = false;
+        self.active_pod_tab = None;
+        self.pod_dock_open = true;
+
+        if let Some(view) = &self.marketplace_view {
+            if let Some(cat) = category {
+                view.update(cx, |v, cx| v.set_category(cat, window, cx));
+            }
+        } else {
+            let view = cx.new(|cx| {
+                let mut v = crate::marketplace_dock::MarketplaceDockView::new(window, cx);
+                if let Some(cat) = category {
+                    v.category = cat;
+                }
+                v
+            });
+            self.marketplace_view = Some(view);
+        }
+
+        if let Some(dock) = self.workspace_dock.as_mut() {
+            dock.sync(true, window, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn close_marketplace_tab(&mut self, cx: &mut Context<Self>) {
+        self.marketplace_open = false;
+        self.active_marketplace = false;
+        if let Some(first) = self.console_tab_order().first().copied() {
+            match first {
+                crate::console_tabs::ConsoleTab::Device(key) => {
+                    self.active_device_terminal = Some(key);
+                    self.local_terminal_active = true;
+                }
+                crate::console_tabs::ConsoleTab::Pod(key) => {
+                    if let Some(idx) = self.pod_dock_tabs.iter().position(|t| t.key == key) {
+                        self.active_pod_tab = Some(idx);
+                        self.local_terminal_active = false;
+                    }
+                }
+                crate::console_tabs::ConsoleTab::Yaml(key) => {
+                    self.active_yaml_tab = Some(key);
+                    self.local_terminal_active = false;
+                }
+                crate::console_tabs::ConsoleTab::Marketplace => {}
+            }
+        } else {
+            self.pod_dock_open = false;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn select_marketplace_tab(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_marketplace = true;
+        self.active_yaml_tab = None;
+        self.local_terminal_active = false;
+        self.active_pod_tab = None;
+        self.pod_dock_open = true;
+        cx.notify();
+    }
+
+    pub(crate) fn render_marketplace_dock_panel(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.marketplace_view.is_none() {
+            let view = cx.new(|cx| crate::marketplace_dock::MarketplaceDockView::new(window, cx));
+            self.marketplace_view = Some(view);
+        }
+        let view = self.marketplace_view.clone().unwrap();
+        view.into_any_element()
     }
 }
 

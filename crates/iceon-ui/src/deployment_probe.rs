@@ -406,10 +406,14 @@ impl Probe {
             app.inspector.detail = Some(expected.0.clone());
             app.inspector.collections = expected.1.clone();
         });
-        let table = cx.new(|cx| {
-            ResourceTable::new(owner.downgrade(), cx)
-                .without_selection()
-                .without_pagination()
+        let table = owner.update(cx, |app, cx| {
+            let revision = app.access_revision();
+            let owner = cx.entity().downgrade();
+            cx.new(|cx| {
+                ResourceTable::new(owner, revision, cx)
+                    .without_selection()
+                    .without_pagination()
+            })
         });
         table.update(cx, |table, cx| {
             table.sync(

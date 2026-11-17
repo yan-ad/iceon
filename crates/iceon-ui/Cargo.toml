@@ -12,8 +12,13 @@ iceon-core.workspace = true
 iceon-extension.workspace = true
 jiff.workspace = true
 tokio.workspace = true
+futures.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSImage", "objc2-core-foundation"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSData", "NSObject", "NSString", "NSGeometry"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSImage", "NSColor", "NSColorSpace", "NSBezierPath", "NSGradient", "NSGraphics", "NSGraphicsContext", "objc2-core-foundation"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSData", "NSObject", "NSString", "NSGeometry", "NSNotification"] }
+block2 = "=0.6.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = ["UI_ViewManagement", "UI", "Foundation"] }

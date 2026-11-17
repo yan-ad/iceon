@@ -32,6 +32,7 @@ pub use deployment_probe::run as run_deployment_probe;
 pub mod inspector_view;
 mod kubectl_tools;
 mod local_console;
+pub(crate) mod marketplace_dock;
 mod native_menu;
 mod native_spotlight;
 pub mod navigation;
@@ -70,6 +71,7 @@ mod shell_footer;
 mod shell_header;
 mod shell_theme;
 mod sidebar_view;
+pub(crate) mod system_accent;
 mod terminal_surface;
 mod tray;
 mod update_check;
@@ -204,6 +206,9 @@ pub struct IceonApp {
 
     pub(crate) inspector: InspectorState,
     pub(crate) pod_dock_open: bool,
+    pub(crate) marketplace_open: bool,
+    pub(crate) active_marketplace: bool,
+    pub(crate) marketplace_view: Option<Entity<marketplace_dock::MarketplaceDockView>>,
     pub(crate) pod_dock_tabs: Vec<PodDockTab>,
     pub(crate) active_pod_tab: Option<usize>,
     pub(crate) port_forwards: Vec<PodForward>,
@@ -521,6 +526,9 @@ impl IceonApp {
             rbac_users_table,
             inspector: InspectorState::default(),
             pod_dock_open: false,
+            marketplace_open: false,
+            active_marketplace: false,
+            marketplace_view: None,
             pod_dock_tabs: vec![],
             active_pod_tab: None,
             port_forwards: vec![],
@@ -552,6 +560,7 @@ impl IceonApp {
 
         cx.set_global(preferences_view::GlobalPreferencesState {
             engine: app.preferences_engine.clone(),
+            connection: app.connection.clone(),
             revision: app.preferences_revision,
             preferences: app.preferences_draft.clone(),
             error: None,
@@ -829,6 +838,7 @@ pub fn run() {
             console_font::init(cx);
             terminal_surface::init(cx);
             native_menu::init(cx);
+            system_accent::init(cx);
             let shutdown_connection = connection.clone();
             let shutdown_secrets = secrets_engine.clone();
             cx.on_app_quit(move |_| {

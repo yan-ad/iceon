@@ -580,13 +580,15 @@ pub(crate) struct ResourceTable {
 }
 
 impl ResourceTable {
-    pub(crate) fn new(owner: WeakEntity<IceonApp>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        owner: WeakEntity<IceonApp>,
+        last_access_revision: u64,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // Access reviews update the owner without changing the cached page/scope.
         // Redraw this independently cached entity so newly reviewed actions reveal.
-        let last_access_revision = owner
-            .upgrade()
-            .map(|app| app.read(cx).access_revision())
-            .unwrap_or(0);
+        // The owner may be leased for rendering while constructing this child.
+        // Take its current revision from the caller instead of reading it here.
         if let Some(app) = owner.upgrade() {
             cx.observe(&app, |table, app, cx| {
                 let rev = app.read(cx).access_revision();

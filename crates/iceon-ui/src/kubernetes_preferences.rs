@@ -202,8 +202,7 @@ impl KubernetesPreferencesView {
         }
         let connection = cx
             .try_global::<GlobalPreferencesState>()
-            .and_then(|state| state.main_app.upgrade())
-            .map(|main| main.read(cx).connection.clone());
+            .map(|state| state.connection.clone());
         let Some(connection) = connection else {
             self.message = Some(
                 "The main workspace is unavailable. Reopen Preferences from the main window."
@@ -576,10 +575,9 @@ pub(super) fn groups(view: &Entity<KubernetesPreferencesView>, _cx: &App) -> Vec
             let main = cx
                 .try_global::<GlobalPreferencesState>()
                 .map(|state| state.main_app.clone());
-            let status = main
-                .as_ref()
-                .and_then(|main| main.upgrade())
-                .and_then(|main| main.read(cx).preferences_error.clone());
+            let status = cx
+                .try_global::<GlobalPreferencesState>()
+                .and_then(|state| state.error.clone());
             v_flex()
                 .w_full()
                 .gap_2()

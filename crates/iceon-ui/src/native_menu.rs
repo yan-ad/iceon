@@ -13,7 +13,7 @@ use crate::IceonApp;
 use iceon_core::project::REPOSITORY_URL;
 
 #[path = "native_app.rs"]
-mod native_app;
+pub(crate) mod native_app;
 
 gpui_kit::actions!(
     iceon,
@@ -21,6 +21,8 @@ gpui_kit::actions!(
         About,
         Preferences,
         Extensions,
+        InstallTheme,
+        InstallIconTheme,
         Hide,
         HideOthers,
         ShowAll,
@@ -201,6 +203,27 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
         cx.activate(true);
         window.activate_window();
         this.open_extensions_preferences(window, cx);
+    });
+    register!(InstallTheme, |this, _: &InstallTheme, window, cx| {
+        cx.activate(true);
+        window.activate_window();
+        this.open_marketplace(
+            Some(crate::marketplace_dock::MarketplaceCategory::Themes),
+            window,
+            cx,
+        );
+    });
+    register!(InstallIconTheme, |this,
+                                 _: &InstallIconTheme,
+                                 window,
+                                 cx| {
+        cx.activate(true);
+        window.activate_window();
+        this.open_marketplace(
+            Some(crate::marketplace_dock::MarketplaceCategory::IconThemes),
+            window,
+            cx,
+        );
     });
     register!(AddCluster, |this, _: &AddCluster, window, cx| {
         this.open_add_config(window, cx);
@@ -394,6 +417,20 @@ impl IceonApp {
             }))
             .on_action(cx.listener(|this, _: &Extensions, window, cx| {
                 this.open_extensions_preferences(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &InstallTheme, window, cx| {
+                this.open_marketplace(
+                    Some(crate::marketplace_dock::MarketplaceCategory::Themes),
+                    window,
+                    cx,
+                );
+            }))
+            .on_action(cx.listener(|this, _: &InstallIconTheme, window, cx| {
+                this.open_marketplace(
+                    Some(crate::marketplace_dock::MarketplaceCategory::IconThemes),
+                    window,
+                    cx,
+                );
             }))
             .on_action(cx.listener(|this, _: &AddCluster, window, cx| {
                 this.open_add_config(window, cx);
@@ -600,11 +637,20 @@ fn owned_menu(menu: &Menu) -> OwnedMenu {
 }
 
 fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
+    let settings_submenu = Menu::new("Settings").items([
+        MenuItem::action("Preferences", Preferences),
+        MenuItem::separator(),
+        MenuItem::action("Theme", ThemePicker),
+        MenuItem::action("Install Theme", InstallTheme),
+        MenuItem::separator(),
+        MenuItem::action("Icon Theme", IconThemePicker),
+        MenuItem::action("Install Icon Theme", InstallIconTheme),
+        MenuItem::separator(),
+    ]);
     let mut app = vec![
         MenuItem::action("About Iceon", About),
         MenuItem::separator(),
-        MenuItem::action("Iceon Settings…", Preferences),
-        MenuItem::action("Extension", Extensions),
+        MenuItem::submenu(settings_submenu),
     ];
     if macos {
         app.extend([
@@ -729,15 +775,22 @@ mod tests {
     #[test]
     fn native_search_actions_use_the_public_names_and_existing_handlers() {
         let menus = menu_model(true, Capabilities::default());
+        let all_items: Vec<_> = menus
+            .iter()
+            .flat_map(|menu| flatten_items(&menu.items))
+            .collect();
         for (title, expected) in [
             ("Create Cluster…", super::AddCluster.name()),
-            ("Iceon Settings…", super::Preferences.name()),
+            ("Preferences", super::Preferences.name()),
             ("Quick Jump…", super::CommandPalette.name()),
+            ("Theme", super::ThemePicker.name()),
+            ("Install Theme", super::InstallTheme.name()),
+            ("Icon Theme", super::IconThemePicker.name()),
+            ("Install Icon Theme", super::InstallIconTheme.name()),
         ] {
             assert_eq!(
-                menus
+                all_items
                     .iter()
-                    .flat_map(|menu| &menu.items)
                     .filter(|item| {
                         matches!(item, MenuItem::Action { name, action, disabled, .. }
                     if name.as_ref() == title && action.name() == expected && !disabled)
@@ -796,12 +849,29 @@ mod tests {
         }
     }
 
+    fn flatten_items(items: &[MenuItem]) -> Vec<&MenuItem> {
+        let mut out = Vec::new();
+        for item in items {
+            out.push(item);
+            if let MenuItem::Submenu(sub) = item {
+                out.extend(flatten_items(&sub.items));
+            }
+        }
+        out
+    }
+
     #[test]
     fn interactive_menu_commands_are_enabled_and_history_defaults_disabled() {
         for macos in [true, false] {
             let menus = menu_model(macos, Capabilities::default());
+            let all_items: Vec<&MenuItem> =
+                menus.iter().flat_map(|m| flatten_items(&m.items)).collect();
             for enabled_item in [
-                "Extension",
+                "Preferences",
+                "Theme",
+                "Install Theme",
+                "Icon Theme",
+                "Install Icon Theme",
                 "Toggle Sidebar",
                 "Developer Tools",
                 "Actual Size",
@@ -810,9 +880,8 @@ mod tests {
                 "Documentation",
                 "Licenses",
             ] {
-                let item = menus
+                let item = all_items
                     .iter()
-                    .flat_map(|m| &m.items)
                     .find(|i| {
                         matches!(i, MenuItem::Action { name, .. } if name.as_ref() == enabled_item)
                     })
@@ -820,9 +889,8 @@ mod tests {
                 assert!(!item.is_disabled(), "{enabled_item} should be enabled");
             }
             for disabled_item in ["Back", "Forward"] {
-                let item = menus
+                let item = all_items
                     .iter()
-                    .flat_map(|m| &m.items)
                     .find(|i| {
                         matches!(i, MenuItem::Action { name, .. } if name.as_ref() == disabled_item)
                     })

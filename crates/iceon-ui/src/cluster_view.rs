@@ -2980,10 +2980,11 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) -> Entity<crate::resource_table::ResourceTable> {
         let owner = cx.entity().downgrade();
+        let access_revision = self.access_revision();
         let table = self
             .resource_table
             .get_or_insert_with(|| {
-                cx.new(|cx| crate::resource_table::ResourceTable::new(owner, cx))
+                cx.new(|cx| crate::resource_table::ResourceTable::new(owner, access_revision, cx))
             })
             .clone();
         let data = crate::resource_table::TableData {

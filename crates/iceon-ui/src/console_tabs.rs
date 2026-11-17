@@ -15,6 +15,7 @@ pub(crate) enum ConsoleTab {
     Device(u64),
     Pod(u64),
     Yaml(u64),
+    Marketplace,
 }
 
 fn keyboard_target(order: &[ConsoleTab], current: ConsoleTab, key: &str) -> Option<ConsoleTab> {
@@ -215,15 +216,22 @@ impl IceonApp {
         self.console_tab_menu(tab, target, cx)
     }
     pub(crate) fn console_tab_order(&self) -> Vec<ConsoleTab> {
-        self.device_terminals
+        let mut order: Vec<ConsoleTab> = self
+            .device_terminals
             .iter()
             .map(|t| ConsoleTab::Device(t.key))
             .chain(self.pod_dock_tabs.iter().map(|t| ConsoleTab::Pod(t.key)))
             .chain(self.yaml_dock_tabs.iter().map(|t| ConsoleTab::Yaml(t.key)))
-            .collect()
+            .collect();
+        if self.marketplace_open {
+            order.push(ConsoleTab::Marketplace);
+        }
+        order
     }
     pub(crate) fn active_console_tab(&self) -> Option<ConsoleTab> {
-        if let Some(key) = self.active_yaml_tab {
+        if self.active_marketplace {
+            Some(ConsoleTab::Marketplace)
+        } else if let Some(key) = self.active_yaml_tab {
             Some(ConsoleTab::Yaml(key))
         } else if self.local_terminal_active {
             self.active_device_terminal.map(ConsoleTab::Device)
@@ -240,11 +248,17 @@ impl IceonApp {
         cx: &mut Context<Self>,
     ) {
         match tab {
+            ConsoleTab::Marketplace => {
+                self.select_marketplace_tab(window, cx);
+                return;
+            }
             ConsoleTab::Yaml(key) => {
+                self.active_marketplace = false;
                 self.select_yaml_tab(key, window, cx);
                 return;
             }
             ConsoleTab::Device(key) => {
+                self.active_marketplace = false;
                 let Some(tab) = self.device_terminals.iter().find(|t| t.key == key) else {
                     return;
                 };
@@ -253,6 +267,7 @@ impl IceonApp {
                 window.focus(&tab.terminal.focus_handle(cx), cx);
             }
             ConsoleTab::Pod(key) => {
+                self.active_marketplace = false;
                 let Some(index) = self.pod_dock_tabs.iter().position(|t| t.key == key) else {
                     return;
                 };
@@ -330,6 +345,7 @@ impl IceonApp {
         });
         for target in targets {
             match *target {
+                ConsoleTab::Marketplace => self.close_marketplace_tab(cx),
                 ConsoleTab::Device(key) => self.close_device_terminal(key, cx),
                 ConsoleTab::Pod(key) => {
                     if let Some(i) = self.pod_dock_tabs.iter().position(|t| t.key == key) {

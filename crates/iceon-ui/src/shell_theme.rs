@@ -140,7 +140,11 @@ fn readable_surfaces(colors: &mut ThemeColor) {
         .alpha(colors.status_bar.a.max(DEFAULT_CHROME_ALPHA));
 }
 
-fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
+pub(crate) fn brand_colors_with_accent(
+    colors: &mut ThemeColor,
+    mode: ThemeMode,
+    accent: Option<u32>,
+) {
     let selected = if mode.is_dark() {
         AppTheme::Dark
     } else {
@@ -154,7 +158,7 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
         muted,
         border,
         link,
-        primary,
+        default_primary,
     ] = selected.palette_colors().expect("built-in default palette");
     if mode.is_dark() {
         colors.sidebar = neutral(surface, DEFAULT_CHROME_ALPHA);
@@ -192,10 +196,21 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
 
     // Brand interactive tokens in both modes without tinting the glass surfaces
     // or changing semantic success, warning, info, and danger colors.
-    colors.primary = neutral(primary, 1.0);
-    colors.primary_foreground = neutral(0xffffff, 1.0);
-    colors.primary_hover = neutral(0x163aa6, 1.0);
-    colors.primary_active = neutral(0x12308a, 1.0);
+    if let Some(accent) = accent {
+        let hover = shade(accent, 0.94);
+        let active = shade(accent, 0.88);
+        let ink = primary_ink(accent);
+
+        colors.primary = neutral(accent, 1.0);
+        colors.primary_foreground = neutral(ink, 1.0);
+        colors.primary_hover = neutral(hover, 1.0);
+        colors.primary_active = neutral(active, 1.0);
+    } else {
+        colors.primary = neutral(default_primary, 1.0);
+        colors.primary_foreground = neutral(0xffffff, 1.0);
+        colors.primary_hover = neutral(0x163aa6, 1.0);
+        colors.primary_active = neutral(0x12308a, 1.0);
+    }
     colors.button_primary = colors.primary;
     colors.button_primary_foreground = colors.primary_foreground;
     colors.button_primary_hover = colors.primary_hover;
@@ -227,6 +242,11 @@ fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
     } else {
         colors.primary
     };
+}
+
+#[cfg(test)]
+pub(crate) fn brand_colors(colors: &mut ThemeColor, mode: ThemeMode) {
+    brand_colors_with_accent(colors, mode, None);
 }
 
 /// A small set of canonical palette roles, projected onto every component
@@ -452,7 +472,7 @@ fn zed_mode(theme: &iceon_core::zed_themes::ZedTheme) -> ThemeMode {
 
 /// Project only supplied, valid tokens; absent/invalid roles retain the fresh
 /// base palette. Imported RGB/status roles win; readability clamps surface alpha last.
-fn apply_zed_theme(colors: &mut ThemeColor, theme: &iceon_core::zed_themes::ZedTheme) {
+pub(crate) fn apply_zed_theme(colors: &mut ThemeColor, theme: &iceon_core::zed_themes::ZedTheme) {
     macro_rules! roles {
         ($key:literal => $($field:ident),+ $(,)?) => {
             if let Some(color) = zed_color(theme, $key) {
@@ -717,7 +737,8 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
             theme.mono_font_family = mono;
             theme.mono_font_size = gpui_kit::px(f32::from(size));
         }
-        brand_colors(&mut theme.colors, mode);
+        let system_accent = crate::system_accent::current_accent_color();
+        brand_colors_with_accent(&mut theme.colors, mode, system_accent);
         custom_colors(&mut theme.colors, selected);
         semantic_tag_colors(&mut theme.colors, mode);
         // Configurations without a highlight section do not reset this in
@@ -750,6 +771,22 @@ pub(crate) fn apply(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) 
         });
     }
     mode
+}
+
+pub(crate) fn apply_current(cx: &mut App) -> ThemeMode {
+    let mode = cx
+        .try_global::<crate::preferences_view::GlobalPreferencesState>()
+        .map(|state| {
+            crate::preference_runtime::theme_mode(
+                &state.preferences,
+                matches!(
+                    cx.window_appearance(),
+                    gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark
+                ),
+            )
+        })
+        .unwrap_or(ThemeMode::Dark);
+    apply(mode, None, cx)
 }
 
 #[cfg(test)]

@@ -125,95 +125,159 @@ impl ZedIconTheme {
             _ => {}
         }
 
-        // 2. Named directory icons
-        let dir_key = match stem.as_str() {
-            "server" => Some("server"),
-            "database" | "hard-drive" => Some("database"),
-            "settings" | "settings-2" | "sliders-horizontal" => Some("config"),
-            "shield" | "shield-check" | "shield-alert" => Some("security"),
-            "key-round" | "crown" => Some("keys"),
-            "network" | "cable" | "route" | "signpost" => Some("network"),
-            "log" | "logs" => Some("log"),
-            "users" | "user-cog" | "contact" => Some("users"),
-            "archive" => Some("archive"),
-            "puzzle" | "blocks" | "plug" => Some("plugins"),
-            _ => None,
+        let find_key = |key: &str| -> Option<String> {
+            if let Some(def) = self.file_icons.get(key) {
+                return Some(clean_path(&def.path));
+            }
+            if let Some(icon_key) = self.file_stems.get(key)
+                && let Some(def) = self.file_icons.get(icon_key)
+            {
+                return Some(clean_path(&def.path));
+            }
+            if let Some(icon_key) = self.file_suffixes.get(key)
+                && let Some(def) = self.file_icons.get(icon_key)
+            {
+                return Some(clean_path(&def.path));
+            }
+            if let Some(dir) = self.named_directory_icons.get(key)
+                && let Some(p) = &dir.collapsed
+            {
+                return Some(clean_path(p));
+            }
+            None
         };
 
-        if let Some(key) = dir_key
-            && let Some(dir) = self.named_directory_icons.get(key)
-            && let Some(p) = &dir.collapsed
-        {
-            return Some(clean_path(p));
+        // 2. Direct match with stem
+        if let Some(path) = find_key(&stem) {
+            return Some(path);
         }
 
-        // Direct named directory match
-        if let Some(dir) = self.named_directory_icons.get(&stem)
-            && let Some(p) = &dir.collapsed
-        {
-            return Some(clean_path(p));
-        }
-
-        // 3. File stems map
-        if let Some(icon_key) = self.file_stems.get(&stem)
-            && let Some(def) = self.file_icons.get(icon_key)
-        {
-            return Some(clean_path(&def.path));
-        }
-
-        // 4. File suffixes map
-        if let Some(icon_key) = self.file_suffixes.get(&stem)
-            && let Some(def) = self.file_icons.get(icon_key)
-        {
-            return Some(clean_path(&def.path));
-        }
-
-        // 5. Direct file_icons match
-        if let Some(def) = self.file_icons.get(&stem) {
-            return Some(clean_path(&def.path));
-        }
-
-        // 6. Semantic aliases in file_icons
+        // 3. Semantic aliases covering all Kubernetes sections, actions, tabs, and menus
         let aliases: &[&str] = match stem.as_str() {
-            "square-terminal" | "terminal" => &["terminal", "console", "bash", "shell"],
-            "settings" | "settings-2" | "sliders-horizontal" => &["settings", "config", "toml"],
-            "logs" | "file-text" | "file" | "file-check" => &["log", "document", "text", "file"],
-            "container" | "box" | "package" | "package-check" => &[
+            "layout-dashboard" => &[
+                "dashboard",
+                "project",
+                "view",
+                "window",
+                "home",
+                "layout",
+                "browser",
+            ],
+            "server" => &["server", "host", "node", "compute", "cluster", "linux"],
+            "box" | "container" => &[
                 "docker",
                 "container",
-                "package",
+                "pod",
                 "cube",
+                "package",
                 "helm",
                 "kubernetes",
+                "k8s",
             ],
-            "database" | "hard-drive" => &["database", "db", "sql"],
-            "shield" | "shield-check" | "shield-alert" => &["shield", "security", "cert"],
-            "key-round" | "crown" => &["key", "lock", "cert", "certificate"],
-            "network" | "cable" | "route" => &["network", "routing", "link"],
-            "search" => &["search"],
-            "trash" | "shredder" => &["trash"],
-            "pencil" => &["edit", "pencil"],
-            "copy" | "copy-check" | "clipboard-check" => &["copy"],
-            "refresh-cw" => &["refresh"],
-            "check" | "badge-check" => &["check"],
-            "download" | "hard-drive-download" => &["download"],
-            "git-pull-request" => &["git", "vcs"],
-            "puzzle" | "plug" => &["plugin", "extension"],
-            "layers" | "layers2" => &["layers", "kubernetes", "k8s"],
-            "link" | "link-2" => &["link"],
-            "info" => &["info"],
+            "layers" | "layers2" | "layers-2" => &[
+                "kubernetes",
+                "k8s",
+                "layers",
+                "stack",
+                "deploy",
+                "namespace",
+                "group",
+            ],
+            "network" | "cable" | "route" | "signpost" => &[
+                "network",
+                "routing",
+                "link",
+                "connection",
+                "port",
+                "traffic",
+            ],
+            "database" | "hard-drive" | "hard-drive-download" => &[
+                "database", "db", "sql", "storage", "disk", "drive", "volume",
+            ],
+            "copy" | "copy-check" | "clipboard-check" => &[
+                "copy",
+                "clone",
+                "duplicate",
+                "files",
+                "document",
+                "template",
+            ],
+            "list-checks" | "list-ordered" => {
+                &["task", "job", "todo", "list", "test", "check", "ci"]
+            }
+            "calendar-clock" | "timer" => &[
+                "clock", "calendar", "schedule", "cron", "time", "history", "timer", "watch",
+            ],
+            "file-text" | "file" | "file-check" => &[
+                "yaml", "yml", "config", "settings", "text", "document", "file", "json", "toml",
+            ],
+            "key-round" | "crown" => &[
+                "key",
+                "lock",
+                "cert",
+                "certificate",
+                "secret",
+                "auth",
+                "admin",
+                "security",
+            ],
+            "chart-pie" => &[
+                "chart",
+                "analytics",
+                "graph",
+                "quota",
+                "metrics",
+                "dashboard",
+            ],
+            "sliders-horizontal" | "settings" | "settings-2" => {
+                &["settings", "config", "toml", "tune", "controls", "sliders"]
+            }
+            "arrow-left-right" | "arrow-up-down" => {
+                &["arrows", "scale", "sync", "transfer", "swap", "refresh"]
+            }
+            "shield" | "shield-check" | "shield-alert" => {
+                &["shield", "security", "cert", "guard", "policy", "lock"]
+            }
+            "webhook" => &["webhook", "hook", "api", "http", "network", "link"],
+            "badge-check" | "check" => &["check", "badge", "cert", "policy", "success", "verified"],
+            "plug" | "blocks" | "puzzle" => &[
+                "plugin",
+                "extension",
+                "service",
+                "connect",
+                "components",
+                "puzzle",
+                "crd",
+            ],
+            "map-pin" => &["location", "pin", "target", "endpoint", "network", "point"],
+            "archive" => &["archive", "zip", "tar", "package", "storage", "bundle"],
+            "bell" => &["bell", "notification", "event", "alert", "notice", "log"],
+            "package" | "package-check" => {
+                &["helm", "package", "cube", "box", "tar", "bundle", "docker"]
+            }
+            "users" | "user-cog" | "contact" => &[
+                "users", "user", "team", "people", "account", "profile", "person", "admin",
+            ],
+            "link" | "link-2" => &["link", "url", "binding", "chain", "connection"],
+            "square-terminal" | "terminal" => &[
+                "terminal", "console", "bash", "shell", "prompt", "sh", "zsh",
+            ],
+            "logs" => &["log", "logs", "document", "text", "file"],
+            "square-arrow-up-left-exit" => &["terminal", "console", "external", "link", "connect"],
+            "trash" | "shredder" => &["trash", "delete", "remove", "bin"],
+            "pencil" => &["edit", "pencil", "write"],
+            "refresh-cw" => &["refresh", "reload", "sync"],
+            "search" => &["search", "find"],
+            "download" => &["download", "install", "get"],
+            "git-pull-request" => &["git", "vcs", "branch"],
+            "info" => &["info", "about"],
             "triangle-alert" | "circle-alert" | "ban" => &["warning", "alert", "error"],
             _ => &[],
         };
 
         for alias in aliases {
-            if let Some(def) = self.file_icons.get(*alias) {
-                return Some(clean_path(&def.path));
-            }
-            if let Some(dir) = self.named_directory_icons.get(*alias)
-                && let Some(p) = &dir.collapsed
-            {
-                return Some(clean_path(p));
+            if let Some(path) = find_key(alias) {
+                return Some(path);
             }
         }
 
@@ -1203,5 +1267,246 @@ mod tests {
         assert!(read_svg("test-icons", "/etc/passwd").is_err());
         assert!(read_svg("test-icons", "icons/../bad.svg").is_err());
         assert!(read_svg("test-icons", "").is_err());
+    }
+
+    #[test]
+    fn resolve_icon_maps_all_sidebar_and_action_aliases() {
+        let mut theme = ZedIconTheme {
+            id: "test-theme".into(),
+            extension: "test-ext".into(),
+            name: "Test Icons".into(),
+            appearance: "dark".into(),
+            directory_icons: None,
+            chevron_icons: None,
+            named_directory_icons: BTreeMap::new(),
+            file_stems: BTreeMap::new(),
+            file_suffixes: BTreeMap::new(),
+            file_icons: BTreeMap::new(),
+        };
+
+        theme.file_icons.insert(
+            "docker".into(),
+            FileIconDef {
+                path: "icons/docker.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "kubernetes".into(),
+            FileIconDef {
+                path: "icons/k8s.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "server".into(),
+            FileIconDef {
+                path: "icons/server.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "yaml".into(),
+            FileIconDef {
+                path: "icons/yaml.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "lock".into(),
+            FileIconDef {
+                path: "icons/lock.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "task".into(),
+            FileIconDef {
+                path: "icons/task.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "clock".into(),
+            FileIconDef {
+                path: "icons/clock.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "users".into(),
+            FileIconDef {
+                path: "icons/users.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "helm".into(),
+            FileIconDef {
+                path: "icons/helm.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "database".into(),
+            FileIconDef {
+                path: "icons/database.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "network".into(),
+            FileIconDef {
+                path: "icons/network.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "dashboard".into(),
+            FileIconDef {
+                path: "icons/dashboard.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "chart".into(),
+            FileIconDef {
+                path: "icons/chart.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "shield".into(),
+            FileIconDef {
+                path: "icons/shield.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "plugin".into(),
+            FileIconDef {
+                path: "icons/plugin.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "terminal".into(),
+            FileIconDef {
+                path: "icons/terminal.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "log".into(),
+            FileIconDef {
+                path: "icons/log.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "trash".into(),
+            FileIconDef {
+                path: "icons/trash.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "arrows".into(),
+            FileIconDef {
+                path: "icons/arrows.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "archive".into(),
+            FileIconDef {
+                path: "icons/archive.svg".into(),
+            },
+        );
+        theme.file_icons.insert(
+            "bell".into(),
+            FileIconDef {
+                path: "icons/bell.svg".into(),
+            },
+        );
+
+        // Sidebar items
+        assert_eq!(
+            theme.resolve_icon("icons/layout-dashboard.svg").unwrap(),
+            "icons/dashboard.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/server.svg").unwrap(),
+            "icons/server.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/box.svg").unwrap(),
+            "icons/docker.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/layers.svg").unwrap(),
+            "icons/k8s.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/layers-2.svg").unwrap(),
+            "icons/k8s.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/file-text.svg").unwrap(),
+            "icons/yaml.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/key-round.svg").unwrap(),
+            "icons/lock.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/list-checks.svg").unwrap(),
+            "icons/task.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/calendar-clock.svg").unwrap(),
+            "icons/clock.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/users.svg").unwrap(),
+            "icons/users.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/package.svg").unwrap(),
+            "icons/helm.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/database.svg").unwrap(),
+            "icons/database.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/network.svg").unwrap(),
+            "icons/network.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/chart-pie.svg").unwrap(),
+            "icons/chart.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/shield-check.svg").unwrap(),
+            "icons/shield.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/puzzle.svg").unwrap(),
+            "icons/plugin.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/archive.svg").unwrap(),
+            "icons/archive.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/bell.svg").unwrap(),
+            "icons/bell.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/arrow-up-down.svg").unwrap(),
+            "icons/arrows.svg"
+        );
+
+        // Action icons
+        assert_eq!(
+            theme.resolve_icon("icons/square-terminal.svg").unwrap(),
+            "icons/terminal.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/logs.svg").unwrap(),
+            "icons/log.svg"
+        );
+        assert_eq!(
+            theme.resolve_icon("icons/trash.svg").unwrap(),
+            "icons/trash.svg"
+        );
+        assert_eq!(
+            theme
+                .resolve_icon("icons/square-arrow-up-left-exit.svg")
+                .unwrap(),
+            "icons/terminal.svg"
+        );
     }
 }

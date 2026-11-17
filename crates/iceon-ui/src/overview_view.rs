@@ -651,11 +651,12 @@ impl IceonApp {
                 )
                 .into_any_element()
             } else {
+                let access_revision = self.access_revision();
                 let table = self
                     .overview_events_table
                     .get_or_insert_with(|| {
                         cx.new(|cx| {
-                            ResourceTable::new(owner, cx)
+                            ResourceTable::new(owner, access_revision, cx)
                                 .without_selection()
                                 .without_pagination()
                         })

@@ -230,6 +230,7 @@ const PREFERENCE_SECTIONS: [&str; 7] = [
 
 pub(crate) struct GlobalPreferencesState {
     pub engine: Arc<PreferencesEngine>,
+    pub connection: Arc<iceon_core::connection::ConnectionEngine>,
     pub revision: u64,
     pub preferences: Preferences,
     pub error: Option<String>,
@@ -1141,24 +1142,12 @@ impl IceonApp {
     }
 
     pub(crate) fn open_theme_management(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_preferences(window, cx);
-        if let Some(handle) = self.preferences_window {
-            let _ = handle.update(cx, |_, window, cx| {
-                if let Some(root) = window.root::<gpui_kit::component::Root>().flatten() {
-                    let view = root.read(cx).view().clone();
-                    if let Ok(settings) = view.downcast::<PreferencesWindow>() {
-                        settings.update(cx, |settings, cx| {
-                            settings.section = 1;
-                            settings
-                                .themes_settings
-                                .update(cx, |themes, cx| themes.open_marketplace(window, cx));
-                            cx.notify();
-                        });
-                    }
-                }
-            });
-        }
-        cx.notify();
+        self.open_preferences_internal(
+            1,
+            Some(crate::themes_settings::ThemesTab::ColorThemes),
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn open_icon_theme_management(
@@ -1166,24 +1155,12 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_preferences(window, cx);
-        if let Some(handle) = self.preferences_window {
-            let _ = handle.update(cx, |_, window, cx| {
-                if let Some(root) = window.root::<gpui_kit::component::Root>().flatten() {
-                    let view = root.read(cx).view().clone();
-                    if let Ok(settings) = view.downcast::<PreferencesWindow>() {
-                        settings.update(cx, |settings, cx| {
-                            settings.section = 1;
-                            settings
-                                .themes_settings
-                                .update(cx, |themes, cx| themes.open_icon_marketplace(window, cx));
-                            cx.notify();
-                        });
-                    }
-                }
-            });
-        }
-        cx.notify();
+        self.open_preferences_internal(
+            1,
+            Some(crate::themes_settings::ThemesTab::IconThemes),
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn open_extensions_preferences(
@@ -1191,24 +1168,20 @@ impl IceonApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_preferences(window, cx);
-        if let Some(handle) = self.preferences_window {
-            let _ = handle.update(cx, |_, window, cx| {
-                if let Some(root) = window.root::<gpui_kit::component::Root>().flatten() {
-                    let view = root.read(cx).view().clone();
-                    if let Ok(settings) = view.downcast::<PreferencesWindow>() {
-                        settings.update(cx, |settings, cx| {
-                            settings.section = 2;
-                            cx.notify();
-                        });
-                    }
-                }
-            });
-        }
-        cx.notify();
+        self.open_preferences_internal(2, None, window, cx);
     }
 
-    pub(crate) fn open_preferences(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_preferences_internal(0, None, window, cx);
+    }
+
+    pub(crate) fn open_preferences_internal(
+        &mut self,
+        section: usize,
+        theme_tab: Option<crate::themes_settings::ThemesTab>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Ok(snapshot) = self.preferences_engine.snapshot() {
             self.preferences_revision = snapshot.revision;
             self.preferences_draft = snapshot.preferences.clone();
@@ -1217,6 +1190,7 @@ impl IceonApp {
 
         cx.set_global(GlobalPreferencesState {
             engine: self.preferences_engine.clone(),
+            connection: self.connection.clone(),
             revision: self.preferences_revision,
             preferences: self.preferences_draft.clone(),
             error: None,
@@ -1225,8 +1199,22 @@ impl IceonApp {
 
         if let Some(existing) = self.preferences_window {
             let activated = existing
-                .update(cx, |_, win, _| {
+                .update(cx, |_, win, cx| {
                     win.activate_window();
+                    if let Some(root) = win.root::<gpui_kit::component::Root>().flatten() {
+                        let view = root.read(cx).view().clone();
+                        if let Ok(settings) = view.downcast::<PreferencesWindow>() {
+                            settings.update(cx, |settings, cx| {
+                                settings.section = section;
+                                if let Some(tab) = theme_tab {
+                                    settings.themes_settings.update(cx, |themes, cx| {
+                                        themes.set_tab(tab, cx);
+                                    });
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }
                 })
                 .is_ok();
             if activated {
@@ -1246,13 +1234,27 @@ impl IceonApp {
             ..TitleBar::window_options()
         };
 
-        if let Ok((handle, _preferences)) =
-            crate::shell_theme::open_window(options, cx, |window, cx| {
-                cx.new(|cx| PreferencesWindow::new(window, cx))
-            })
-        {
-            self.preferences_window = Some(handle);
-        }
+        let app_handle = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            if let Ok((handle, _preferences)) =
+                crate::shell_theme::open_window(options, cx, |window, cx| {
+                    cx.new(|cx| {
+                        let mut win = PreferencesWindow::new(window, cx);
+                        win.section = section;
+                        if let Some(tab) = theme_tab {
+                            win.themes_settings.update(cx, |themes, cx| {
+                                themes.set_tab(tab, cx);
+                            });
+                        }
+                        win
+                    })
+                })
+            {
+                let _ = app_handle.update(cx, |this, _| {
+                    this.preferences_window = Some(handle);
+                });
+            }
+        });
         cx.notify();
     }
 }
