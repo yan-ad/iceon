@@ -3200,12 +3200,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "iceon-extension"
+version = "0.1.6"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "iceon-ui"
 version = "0.1.6"
 dependencies = [
  "gpui-kit",
  "gpui-kit-assets",
  "iceon-core",
+ "iceon-extension",
  "jiff",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",

@@ -352,6 +352,62 @@ impl IceonApp {
                 SidebarMenu::new().children(resources),
             ));
         }
+
+        let ext_registry = iceon_extension::ExtensionRegistry::new();
+        let enabled_exts = &self.preferences_draft.app.enabled_extensions;
+        let active_exts = ext_registry.enabled_extensions(enabled_exts);
+        if !active_exts.is_empty() {
+            let mut ext_resources = Vec::new();
+            for ext in active_exts {
+                for item in ext.sidebar_items {
+                    if item.parent_id.is_none() {
+                        let cid = cluster_id.to_owned();
+                        let destination = format!("ext:{}", item.id);
+                        let selected = active == &destination;
+                        let icon_name = match item.icon {
+                            Some("database") => AssetIconName::Database,
+                            Some("network") => AssetIconName::Network,
+                            Some("key") => AssetIconName::KeyRound,
+                            Some("layers") => AssetIconName::Layers,
+                            Some("archive") => AssetIconName::Archive,
+                            Some("server") => AssetIconName::Server,
+                            Some("cpu") => AssetIconName::Container,
+                            Some("shield") => AssetIconName::Shield,
+                            Some("box") => AssetIconName::Box,
+                            Some("link") => AssetIconName::Link,
+                            Some("package") => AssetIconName::Package,
+                            Some("git-pull-request") => AssetIconName::PackageCheck,
+                            _ => AssetIconName::Puzzle,
+                        };
+                        ext_resources.push(menu_item(
+                            format!("ext-nav-{}", item.id),
+                            item.title,
+                            Some(Icon::new(icon_name)),
+                            selected,
+                            None,
+                            cx.listener(move |app, _, window, cx| {
+                                app.navigate(
+                                    Route::Cluster {
+                                        cluster_id: cid.clone(),
+                                        section: destination.clone(),
+                                    },
+                                    true,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ));
+                    }
+                }
+            }
+            if !ext_resources.is_empty() {
+                groups.push(NavigationGroup::new(
+                    "Extensions",
+                    SidebarMenu::new().children(ext_resources),
+                ));
+            }
+        }
+
         Sidebar::new(SharedString::from(format!(
             "cluster-navigation-{cluster_id}"
         )))

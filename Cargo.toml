@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/iceon-core",
+    "crates/iceon-extension",
     "crates/iceon-ui",
     "crates/iceon-app",
     "crates/iceon-xtask",
@@ -24,6 +25,7 @@ opt-level = 2
 
 [workspace.dependencies]
 iceon-core = { path = "crates/iceon-core" }
+iceon-extension = { path = "crates/iceon-extension" }
 iceon-ui = { path = "crates/iceon-ui" }
 gpui-kit = { version = "0.9.0", features = ["tree-sitter-yaml"] }
 vt100 = "=0.18.1"

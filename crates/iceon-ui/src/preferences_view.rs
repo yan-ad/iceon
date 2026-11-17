@@ -15,6 +15,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use gpui_kit_assets::IconName as AssetIconName;
 
 use crate::IceonApp;
 #[path = "kubernetes_preferences.rs"]
@@ -28,6 +29,7 @@ use iceon_core::preferences::{
 pub enum PreferencesSection {
     General,
     Themes,
+    Extensions,
     Proxy,
     Kubernetes,
     Editor,
@@ -73,6 +75,7 @@ mod tests {
             [
                 "General",
                 "Themes",
+                "Extensions",
                 "Proxy",
                 "Kubernetes",
                 "Editor",
@@ -174,9 +177,10 @@ fn timezone_choices(current: &str) -> Vec<TimezoneChoice> {
 
 type TimezoneSelectState = SelectState<SearchableVec<TimezoneChoice>>;
 
-const PREFERENCE_SECTIONS: [&str; 6] = [
+const PREFERENCE_SECTIONS: [&str; 7] = [
     "General",
     "Themes",
+    "Extensions",
     "Proxy",
     "Kubernetes",
     "Editor",
@@ -193,7 +197,7 @@ pub(crate) struct GlobalPreferencesState {
 
 impl Global for GlobalPreferencesState {}
 
-fn current_prefs(cx: &App) -> Preferences {
+pub(crate) fn current_prefs(cx: &App) -> Preferences {
     cx.try_global::<GlobalPreferencesState>()
         .map(|s| s.preferences.clone())
         .unwrap_or_default()
@@ -244,7 +248,7 @@ impl iceon_core::preferences::app_integration::AppIntegration for RuntimeAppInte
     }
 }
 
-fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
+pub(crate) fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferences)) {
     if !cx.has_global::<GlobalPreferencesState>() {
         return;
     }
@@ -324,6 +328,7 @@ pub struct PreferencesWindow {
     editor_font_select: Entity<SelectState<SearchableVec<String>>>,
     section: usize,
     themes_settings: Entity<crate::themes_settings::ThemesSettings>,
+    extensions_settings: Entity<crate::extensions_settings::ExtensionsSettings>,
     kubernetes_preferences: Entity<kubernetes_preferences::KubernetesPreferencesView>,
 }
 
@@ -380,6 +385,8 @@ impl PreferencesWindow {
         }
         let kubernetes_preferences =
             cx.new(|cx| kubernetes_preferences::KubernetesPreferencesView::new(window, cx));
+        let extensions_settings =
+            cx.new(|cx| crate::extensions_settings::ExtensionsSettings::new(window, cx));
         Self {
             focus_handle,
             timezone_select,
@@ -388,6 +395,7 @@ impl PreferencesWindow {
             editor_font_select,
             section: 0,
             themes_settings: cx.new(|cx| crate::themes_settings::ThemesSettings::new(window, cx)),
+            extensions_settings,
             kubernetes_preferences,
         }
     }
@@ -942,12 +950,13 @@ impl Render for PreferencesWindow {
                                                 .gap_2()
                                                 .items_center()
                                                 .child(gpui_kit::component::Icon::new(match ix {
-                                                    0 => IconName::Settings2,
-                                                    1 => IconName::Palette,
-                                                    2 => IconName::Network,
-                                                    3 => IconName::LayoutDashboard,
-                                                    4 => IconName::FileText,
-                                                    _ => IconName::SquareTerminal,
+                                                    0 => AssetIconName::Settings2,
+                                                    1 => AssetIconName::Palette,
+                                                    2 => AssetIconName::Puzzle,
+                                                    3 => AssetIconName::Network,
+                                                    4 => AssetIconName::LayoutDashboard,
+                                                    5 => AssetIconName::FileText,
+                                                    _ => AssetIconName::Square,
                                                 }))
                                                 .child(
                                                     div()
@@ -978,7 +987,14 @@ impl Render for PreferencesWindow {
                             .h_full()
                             .child(if self.section == 1 {
                                 self.themes_settings.clone().into_any_element()
+                            } else if self.section == 2 {
+                                self.extensions_settings.clone().into_any_element()
                             } else {
+                                let page_idx = if self.section > 2 {
+                                    self.section - 1
+                                } else {
+                                    self.section
+                                };
                                 Settings::new(("iceon-settings-page", self.section))
                                     .small()
                                     .sidebar_width(px(0.0))
@@ -991,7 +1007,7 @@ impl Render for PreferencesWindow {
                                             .overflow_hidden(),
                                     )
                                     .with_group_variant(GroupBoxVariant::Normal)
-                                    .page(self.build_pages(cx).remove(self.section))
+                                    .page(self.build_pages(cx).remove(page_idx))
                                     .into_any_element()
                             }),
                     ),
@@ -1012,7 +1028,7 @@ impl IceonApp {
                     let view = root.read(cx).view().clone();
                     if let Ok(settings) = view.downcast::<PreferencesWindow>() {
                         settings.update(cx, |settings, cx| {
-                            settings.section = 3;
+                            settings.section = 4;
                             cx.notify();
                         });
                     }
@@ -1033,6 +1049,28 @@ impl IceonApp {
                             settings
                                 .themes_settings
                                 .update(cx, |themes, cx| themes.open_marketplace(window, cx));
+                            cx.notify();
+                        });
+                    }
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn open_extensions_preferences(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_preferences(window, cx);
+        if let Some(handle) = self.preferences_window {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(root) = window.root::<gpui_kit::component::Root>().flatten() {
+                    let view = root.read(cx).view().clone();
+                    if let Ok(settings) = view.downcast::<PreferencesWindow>() {
+                        settings.update(cx, |settings, cx| {
+                            settings.section = 2;
                             cx.notify();
                         });
                     }

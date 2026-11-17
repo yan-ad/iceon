@@ -39,6 +39,7 @@ fn expected_preferences(payload: &str) -> Value {
     }
     app.insert("zedTheme".into(), Value::Null);
     app.insert("fontFamily".into(), json!(".SystemUIFont"));
+    app.insert("enabledExtensions".into(), json!([]));
     expected
 }
 

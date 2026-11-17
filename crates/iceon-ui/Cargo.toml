@@ -9,6 +9,7 @@ gpui-kit.workspace = true
 gpui-kit-assets = "=0.9.0"
 vt100.workspace = true
 iceon-core.workspace = true
+iceon-extension.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 

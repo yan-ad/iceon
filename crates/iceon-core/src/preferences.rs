@@ -80,6 +80,8 @@ pub struct AppPreferences {
     pub zed_theme: Option<String>,
     #[serde(default)]
     pub restore_last_page: bool,
+    #[serde(default)]
+    pub enabled_extensions: std::collections::BTreeSet<String>,
 }
 
 fn default_ui_font_family() -> String {
@@ -97,6 +99,7 @@ impl Default for AppPreferences {
             show_tray_icon: default_show_tray_icon(),
             zed_theme: None,
             restore_last_page: false,
+            enabled_extensions: std::collections::BTreeSet::new(),
         }
     }
 }

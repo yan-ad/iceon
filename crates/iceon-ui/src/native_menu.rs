@@ -196,15 +196,10 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
         window.activate_window();
         this.open_preferences(window, cx);
     });
-    register!(Extensions, |_, _: &Extensions, window, cx| {
-        window.open_dialog(cx, |dialog, _, _| {
-            dialog.title("Extensions").child(
-                v_flex()
-                    .gap_2()
-                    .child("Iceon runs a native 100% Rust engine without external JS/Electron extensions.")
-                    .child("Built-in capabilities include Kubernetes 41-kind inventory, live Pod watch, logs/exec/attach, port-forwarding, Helm v3/v4, CRD discovery, and RBAC permission planner."),
-            )
-        });
+    register!(Extensions, |this, _: &Extensions, window, cx| {
+        cx.activate(true);
+        window.activate_window();
+        this.open_extensions_preferences(window, cx);
     });
     register!(AddCluster, |this, _: &AddCluster, window, cx| {
         this.open_add_config(window, cx);
@@ -393,15 +388,8 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &Preferences, window, cx| {
                 this.open_preferences(window, cx);
             }))
-            .on_action(cx.listener(|_, _: &Extensions, window, cx| {
-                window.open_dialog(cx, |dialog, _, _| {
-                    dialog.title("Extensions").child(
-                        v_flex()
-                            .gap_2()
-                            .child("Iceon runs a native 100% Rust engine without external JS/Electron extensions.")
-                            .child("Built-in capabilities include Kubernetes 41-kind inventory, live Pod watch, logs/exec/attach, port-forwarding, Helm v3/v4, CRD discovery, and RBAC permission planner."),
-                    )
-                });
+            .on_action(cx.listener(|this, _: &Extensions, window, cx| {
+                this.open_extensions_preferences(window, cx);
             }))
             .on_action(cx.listener(|this, _: &AddCluster, window, cx| {
                 this.open_add_config(window, cx);
@@ -410,7 +398,9 @@ impl IceonApp {
                 this.new_device_terminal(window, cx);
             }))
             .on_action(cx.listener(|app, _: &CloseWindow, window, cx| {
-                if !app.close_focused_console_tab(window, cx) { window.remove_window(); }
+                if !app.close_focused_console_tab(window, cx) {
+                    window.remove_window();
+                }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar_collapsed = !this.sidebar_collapsed;
@@ -419,8 +409,12 @@ impl IceonApp {
             .on_action(cx.listener(|this, _: &CheckForUpdates, window, cx| {
                 this.check_for_updates(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &FocusResourceSearch, window, cx| { this.focus_resource_search(window,cx); }))
-            .on_action(cx.listener(|this, _: &ThemePicker, window, cx| { this.toggle_theme_picker(window,cx); }))
+            .on_action(cx.listener(|this, _: &FocusResourceSearch, window, cx| {
+                this.focus_resource_search(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ThemePicker, window, cx| {
+                this.toggle_theme_picker(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
             }))
@@ -603,7 +597,7 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
         MenuItem::action("About Iceon", About),
         MenuItem::separator(),
         MenuItem::action("Iceon Settings…", Preferences),
-        MenuItem::action("Extensions…", Extensions),
+        MenuItem::action("Extension", Extensions),
     ];
     if macos {
         app.extend([
@@ -798,7 +792,7 @@ mod tests {
         for macos in [true, false] {
             let menus = menu_model(macos, Capabilities::default());
             for enabled_item in [
-                "Extensions…",
+                "Extension",
                 "Toggle Sidebar",
                 "Developer Tools",
                 "Actual Size",

@@ -21,6 +21,7 @@ mod custom_resource_navigation;
 #[cfg(debug_assertions)]
 mod deployment_probe;
 mod empty_state;
+pub(crate) mod extensions_settings;
 mod selectable_text;
 mod theme_picker;
 mod themes_settings;
@@ -592,7 +593,6 @@ impl IceonApp {
             }
         })
         .detach();
-        app.init_update_lifecycle(cx);
         let owner = cx.entity().downgrade();
         window
             .observe_window_appearance(move |window, cx| {
@@ -866,7 +866,10 @@ pub fn run() {
                     });
                     native_menu::register_window(&app, window, cx);
                     let dock = workspace_dock::create(app.downgrade(), window, cx);
-                    app.update(cx, |app, _| app.workspace_dock = Some(dock));
+                    app.update(cx, |app, cx| {
+                        app.workspace_dock = Some(dock);
+                        app.init_update_lifecycle(cx);
+                    });
                     app
                 })
                 .expect("failed to open Iceon GPUI window");
