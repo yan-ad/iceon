@@ -294,8 +294,8 @@ pub async fn download_release(url: &str, destination: &Path) -> Result<u64, Stri
 }
 
 pub fn extract_tar_gz(archive_path: &Path, extract_to: &Path) -> Result<(), String> {
-    let file = fs::File::open(archive_path)
-        .map_err(|e| format!("Failed to open update archive: {e}"))?;
+    let file =
+        fs::File::open(archive_path).map_err(|e| format!("Failed to open update archive: {e}"))?;
     let tar = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(tar);
     archive
@@ -327,10 +327,7 @@ pub async fn check_and_download(current_version: &str) -> Result<Option<Download
         return Err("No download URL found for this platform.".into());
     };
 
-    let filename = download_url
-        .rsplit('/')
-        .next()
-        .unwrap_or("update_payload");
+    let filename = download_url.rsplit('/').next().unwrap_or("update_payload");
     let version_dir = updates_dir().join(format!("v{}", check_res.latest));
     let payload_path = version_dir.join(filename);
 
@@ -474,5 +471,13 @@ mod tests {
         assert_eq!(decoded.version, "0.1.7");
         assert_eq!(decoded.path, target_file);
         assert_eq!(decoded.downloaded_at, 1234567);
+    }
+
+    #[test]
+    fn version_comparison_logic() {
+        assert!(is_newer_version("0.1.7", "0.1.6"));
+        assert!(!is_newer_version("0.1.6", "0.1.6"));
+        assert!(!is_newer_version("0.1.5", "0.1.6"));
+        assert!(!is_newer_version("bad", "0.1.6"));
     }
 }

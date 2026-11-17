@@ -17,11 +17,8 @@ pub(crate) struct UpdateDialogState {
 
 impl IceonApp {
     pub(crate) fn init_update_lifecycle(&mut self, cx: &mut Context<Self>) {
-        if let Some(downloaded) =
-            iceon_core::updates::has_ready_update(env!("CARGO_PKG_VERSION"))
-        {
-            self.update_status =
-                crate::shell_footer::UpdateStatus::Downloaded(downloaded.version);
+        if let Some(downloaded) = iceon_core::updates::has_ready_update(env!("CARGO_PKG_VERSION")) {
+            self.update_status = crate::shell_footer::UpdateStatus::Downloaded(downloaded.version);
         }
 
         // Initial background check shortly after application startup.
@@ -111,11 +108,9 @@ impl IceonApp {
                 dialog.title("Update Ready").child(
                     v_flex()
                         .gap_3()
-                        .child(
-                            div().text_sm().child(format!(
-                                "Iceon {version} has been downloaded and is ready to install."
-                            )),
-                        )
+                        .child(div().text_sm().child(format!(
+                            "Iceon {version} has been downloaded and is ready to install."
+                        )))
                         .child(
                             h_flex()
                                 .gap_2()

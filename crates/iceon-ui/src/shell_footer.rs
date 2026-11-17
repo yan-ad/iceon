@@ -125,7 +125,9 @@ impl IceonApp {
                             .ghost()
                             .icon(match &self.update_status {
                                 UpdateStatus::Downloaded(_) => gpui_kit_assets::IconName::RefreshCw,
-                                UpdateStatus::Downloading(_) => gpui_kit_assets::IconName::RefreshCw,
+                                UpdateStatus::Downloading(_) => {
+                                    gpui_kit_assets::IconName::RefreshCw
+                                }
                                 _ => gpui_kit_assets::IconName::Download,
                             })
                             .accessibility_label(match &self.update_status {
