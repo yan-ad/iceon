@@ -220,6 +220,7 @@ fn legacy_preferences_migrate_removed_rail_setting() {
     let restored = decode_preferences(&value.to_string()).unwrap();
     assert_eq!(restored.app.theme, AppTheme::System);
     assert!(restored.app.zed_theme.is_none());
+    assert!(restored.app.zed_icon_theme.is_none());
 }
 
 #[test]

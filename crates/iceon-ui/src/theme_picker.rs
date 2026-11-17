@@ -10,6 +10,11 @@ pub(crate) fn selected_zed(cx: &App) -> Option<&str> {
         .and_then(|state| state.preferences.app.zed_theme.as_deref())
 }
 
+pub(crate) fn selected_zed_icon(cx: &App) -> Option<&str> {
+    cx.try_global::<crate::preferences_view::GlobalPreferencesState>()
+        .and_then(|state| state.preferences.app.zed_icon_theme.as_deref())
+}
+
 fn selected(cx: &App) -> AppTheme {
     cx.try_global::<crate::preferences_view::GlobalPreferencesState>()
         .map(|state| state.preferences.app.theme)
@@ -109,6 +114,99 @@ impl crate::IceonApp {
                                 let _ = install.update(cx, |app, cx| {
                                     app.theme_picker_open = false;
                                     app.open_theme_management(window, cx);
+                                });
+                            }),
+                    )
+            })
+    }
+
+    pub(crate) fn toggle_icon_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.icon_theme_picker_open = !self.icon_theme_picker_open;
+        self.theme_picker_open = false;
+        self.search_modal_open = false;
+        if self.icon_theme_picker_open {
+            self.icon_theme_command_state.update(cx, |state, cx| {
+                state.set_query("", window, cx);
+                state.focus(window, cx);
+            });
+        } else {
+            self.shell_focus.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn render_icon_theme_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::{
+            Sizable as _,
+            button::{Button, ButtonVariants as _},
+            command::{Command, CommandItem},
+            h_flex,
+        };
+        let mut choices: Vec<(String, Option<String>)> = vec![("Default (Built-in)".into(), None)];
+        if let Some(catalog) = cx.try_global::<crate::themes_settings::ThemeCatalog>() {
+            let mut installed = catalog
+                .icon_extensions
+                .iter()
+                .flat_map(|e| &e.themes)
+                .map(|t| (format!("{} ({})", t.name, t.appearance), Some(t.id.clone())))
+                .collect::<Vec<_>>();
+            installed.sort_by(|a, b| a.0.cmp(&b.0));
+            choices.extend(installed);
+        }
+        let items = choices
+            .iter()
+            .map(|(label, id)| {
+                CommandItem::new()
+                    .label(label.clone())
+                    .checked(if let Some(id) = id {
+                        selected_zed_icon(cx) == Some(id.as_str())
+                    } else {
+                        selected_zed_icon(cx).is_none()
+                    })
+            })
+            .collect::<Vec<_>>();
+        let owner = cx.entity().downgrade();
+        let cancel = owner.clone();
+        let install = owner.clone();
+        Command::new(&self.icon_theme_command_state)
+            .w(px(560.))
+            .max_w(relative(0.9))
+            .max_h(px(420.))
+            .placeholder("Select Icon Theme…")
+            .items(items)
+            .on_confirm(move |index, window, cx| {
+                if let Some((_, id)) = choices.get(index.row) {
+                    crate::preferences_view::set_zed_icon_theme(cx, id.clone());
+                    let _ = owner.update(cx, |app, cx| {
+                        app.icon_theme_picker_open = false;
+                        app.shell_focus.focus(window, cx);
+                        cx.notify();
+                    });
+                }
+            })
+            .on_cancel(move |window, cx| {
+                let _ = cancel.update(cx, |app, cx| {
+                    app.icon_theme_picker_open = false;
+                    app.shell_focus.focus(window, cx);
+                    cx.notify();
+                });
+            })
+            .footer(move |_, _, _| {
+                let install = install.clone();
+                h_flex()
+                    .px_3()
+                    .py_2()
+                    .justify_between()
+                    .child("↑↓ Navigate · Enter Apply")
+                    .child(
+                        Button::new("install-icon-themes")
+                            .small()
+                            .ghost()
+                            .label("Install Icon Themes")
+                            .on_click(move |_, window, cx| {
+                                let _ = install.update(cx, |app, cx| {
+                                    app.icon_theme_picker_open = false;
+                                    app.open_icon_theme_management(window, cx);
                                 });
                             }),
                     )

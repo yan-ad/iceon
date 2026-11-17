@@ -79,6 +79,8 @@ pub struct AppPreferences {
     #[serde(default)]
     pub zed_theme: Option<String>,
     #[serde(default)]
+    pub zed_icon_theme: Option<String>,
+    #[serde(default)]
     pub restore_last_page: bool,
     #[serde(default)]
     pub enabled_extensions: std::collections::BTreeSet<String>,
@@ -98,6 +100,7 @@ impl Default for AppPreferences {
             open_at_login: false,
             show_tray_icon: default_show_tray_icon(),
             zed_theme: None,
+            zed_icon_theme: None,
             restore_last_page: false,
             enabled_extensions: std::collections::BTreeSet::new(),
         }
@@ -292,6 +295,14 @@ pub(crate) fn decode_preferences(
 fn validate(p: &Preferences) -> Result<()> {
     if p.app
         .zed_theme
+        .as_ref()
+        .is_some_and(|id| id.len() > 512 || id.chars().any(char::is_control) || !id.contains('/'))
+    {
+        return Err(PreferencesError::InvalidInput);
+    }
+
+    if p.app
+        .zed_icon_theme
         .as_ref()
         .is_some_and(|id| id.len() > 512 || id.chars().any(char::is_control) || !id.contains('/'))
     {

@@ -64,6 +64,22 @@ pub(crate) fn set_zed_theme(cx: &mut App, id: Option<String>) {
     });
 }
 
+pub(crate) fn set_zed_icon_theme(cx: &mut App, id: Option<String>) {
+    if id
+        .as_ref()
+        .is_some_and(|id| crate::themes_settings::find_icon_theme(id, cx).is_none())
+    {
+        return;
+    }
+    let active = id
+        .as_ref()
+        .and_then(|id| crate::themes_settings::find_icon_theme(id, cx));
+    crate::app_assets::set_active_icon_theme(active);
+    mutate_preferences(cx, |preferences| {
+        preferences.app.zed_icon_theme = id;
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PREFERENCE_SECTIONS, SelectItem as _, TimezoneChoice, timezone_choices};
@@ -130,6 +146,31 @@ mod tests {
         assert!(jakarta.matches(" ASIA/ "));
         assert!(!jakarta.matches("London"));
         assert!(TimezoneChoice("system".into()).matches("System"));
+    }
+
+    #[test]
+    fn icon_theme_setting_item_is_valid_and_does_not_panic() {
+        use gpui_kit::component::setting::{SettingField, SettingItem};
+        use gpui_kit::{App, SharedString};
+
+        let field = SettingField::dropdown(
+            vec![(
+                SharedString::from("default"),
+                SharedString::from("Default (Built-in)"),
+            )],
+            |_: &App| SharedString::from("default"),
+            |_: SharedString, _: &mut App| {},
+        )
+        .default_value(SharedString::from("default"))
+        .on_reset(|_| false, |_, _| {});
+
+        let item = SettingItem::new("Icon Theme", field);
+        match item {
+            SettingItem::Item { title, .. } => {
+                assert_eq!(title.as_ref(), "Icon Theme");
+            }
+            _ => panic!("Expected SettingItem::Item"),
+        }
     }
 }
 
@@ -259,6 +300,7 @@ pub(crate) fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferen
                 state.preferences.app.theme,
                 state.preferences.app.zed_theme.clone(),
             );
+            let prev_icon = state.preferences.app.zed_icon_theme.clone();
             let mut next = state.preferences.clone();
             mutate(&mut next);
             if next.app.timezone.trim().is_empty() {
@@ -281,6 +323,16 @@ pub(crate) fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferen
                 Err(err) => {
                     state.error = Some(err.to_string());
                 }
+            }
+
+            if prev_icon != state.preferences.app.zed_icon_theme {
+                let active = state
+                    .preferences
+                    .app
+                    .zed_icon_theme
+                    .as_ref()
+                    .and_then(|id| crate::themes_settings::find_icon_theme(id, _cx));
+                crate::app_assets::set_active_icon_theme(active);
             }
 
             let new_theme = state.preferences.app.theme;
@@ -462,7 +514,7 @@ impl PreferencesWindow {
                                 |cx| {
                                     current_prefs(cx).app.timezone
                                         != Preferences::default().app.timezone
-                                },
+                                 },
                                 |_, cx| {
                                     mutate_preferences(cx, |prefs| {
                                         prefs.app.timezone = Preferences::default().app.timezone;
@@ -472,6 +524,57 @@ impl PreferencesWindow {
                         )
                         .description(
                             "Choose a timezone for timestamps, or System to use your device's timezone.",
+                        ),
+                        SettingItem::new(
+                            "Icon Theme",
+                            SettingField::dropdown(
+                                {
+                                    let mut options = vec![(
+                                        SharedString::from("default"),
+                                        SharedString::from("Default (Built-in)"),
+                                    )];
+                                    if let Some(catalog) =
+                                        cx.try_global::<crate::themes_settings::ThemeCatalog>()
+                                    {
+                                        for ext in &catalog.icon_extensions {
+                                            for theme in &ext.themes {
+                                                options.push((
+                                                    SharedString::from(theme.id.clone()),
+                                                    SharedString::from(format!(
+                                                        "{} ({})",
+                                                        theme.name, theme.appearance
+                                                    )),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    options
+                                },
+                                |cx: &App| {
+                                    current_prefs(cx)
+                                        .app
+                                        .zed_icon_theme
+                                        .as_ref()
+                                        .map(SharedString::from)
+                                        .unwrap_or_else(|| SharedString::from("default"))
+                                },
+                                |val: SharedString, cx: &mut App| {
+                                    let id = if val.as_ref() == "default" {
+                                        None
+                                    } else {
+                                        Some(val.to_string())
+                                    };
+                                    set_zed_icon_theme(cx, id);
+                                },
+                            )
+                            .default_value(SharedString::from("default"))
+                            .on_reset(
+                                |cx| current_prefs(cx).app.zed_icon_theme.is_some(),
+                                |_, cx| set_zed_icon_theme(cx, None),
+                            ),
+                        )
+                        .description(
+                            "Choose between the default Lucide icon pack and installed Zed icon themes.",
                         ),
                     ]),
                 SettingGroup::new()
@@ -1049,6 +1152,31 @@ impl IceonApp {
                             settings
                                 .themes_settings
                                 .update(cx, |themes, cx| themes.open_marketplace(window, cx));
+                            cx.notify();
+                        });
+                    }
+                }
+            });
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn open_icon_theme_management(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_preferences(window, cx);
+        if let Some(handle) = self.preferences_window {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(root) = window.root::<gpui_kit::component::Root>().flatten() {
+                    let view = root.read(cx).view().clone();
+                    if let Ok(settings) = view.downcast::<PreferencesWindow>() {
+                        settings.update(cx, |settings, cx| {
+                            settings.section = 1;
+                            settings
+                                .themes_settings
+                                .update(cx, |themes, cx| themes.open_icon_marketplace(window, cx));
                             cx.notify();
                         });
                     }

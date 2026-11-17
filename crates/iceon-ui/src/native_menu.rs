@@ -33,6 +33,7 @@ gpui_kit::actions!(
         CloseInspector,
         CommandPalette,
         ThemePicker,
+        IconThemePicker,
         FocusResourceSearch,
         CheckForUpdates,
         Back,
@@ -238,6 +239,9 @@ pub(crate) fn register_window(app: &Entity<IceonApp>, window: &Window, cx: &mut 
     register!(ThemePicker, |this, _: &ThemePicker, window, cx| {
         this.toggle_theme_picker(window, cx);
     });
+    register!(IconThemePicker, |this, _: &IconThemePicker, window, cx| {
+        this.toggle_icon_theme_picker(window, cx);
+    });
     register!(CommandPalette, |this, _: &CommandPalette, window, cx| {
         this.toggle_command_palette(window, cx);
     });
@@ -414,6 +418,9 @@ impl IceonApp {
             }))
             .on_action(cx.listener(|this, _: &ThemePicker, window, cx| {
                 this.toggle_theme_picker(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &IconThemePicker, window, cx| {
+                this.toggle_icon_theme_picker(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
                 this.toggle_command_palette(window, cx);
@@ -634,6 +641,8 @@ fn menu_model(macos: bool, caps: Capabilities) -> Vec<Menu> {
         Menu::new("View").items([
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Quick Jump…", CommandPalette),
+            MenuItem::action("Theme…", ThemePicker),
+            MenuItem::action("Icon Theme…", IconThemePicker),
             MenuItem::separator(),
             if caps.back {
                 MenuItem::action("Back", Back)

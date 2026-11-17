@@ -1,6 +1,34 @@
 //! Default component icons plus the extra Lucide assets used by Iceon.
 use gpui_kit::{AssetSource, SharedString};
+use iceon_core::zed_icon_themes::ZedIconTheme;
 use std::borrow::Cow;
+use std::sync::{Arc, RwLock};
+
+static ACTIVE_ICON_THEME: RwLock<Option<Arc<ZedIconTheme>>> = RwLock::new(None);
+
+pub(crate) fn set_active_icon_theme(theme: Option<ZedIconTheme>) {
+    if let Ok(mut lock) = ACTIVE_ICON_THEME.write() {
+        *lock = theme.map(Arc::new);
+    }
+}
+
+pub(crate) fn active_icon_theme() -> Option<Arc<ZedIconTheme>> {
+    ACTIVE_ICON_THEME
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+pub(crate) fn init_icon_resolver(cx: &mut gpui_kit::App) {
+    gpui_kit::component::set_icon_resolver(cx, |path, _cx| {
+        let active = active_icon_theme()?;
+        let rel_path = active.resolve_icon(path)?;
+        Some(SharedString::from(format!(
+            "zed-icons/{}/{}",
+            active.extension, rel_path
+        )))
+    });
+}
 
 gpui_kit_assets::icon_assets!(
     ExtraIcons,
@@ -66,6 +94,12 @@ gpui_kit_assets::icon_assets!(
 pub(crate) struct AppAssets;
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
+        if let Some(rest) = path.strip_prefix("zed-icons/")
+            && let Some((ext, rel)) = rest.split_once('/')
+            && let Ok(bytes) = iceon_core::zed_icon_themes::read_svg(ext, rel)
+        {
+            return Ok(Some(Cow::Owned(bytes)));
+        }
         if let Some((_, bytes)) = crate::brand_icons::ASSETS
             .iter()
             .find(|(name, _)| *name == path)
@@ -76,6 +110,14 @@ impl AssetSource for AppAssets {
             return Ok(Some(Cow::Borrowed(include_bytes!(
                 "../assets/icons/square-arrow-up-left-exit.svg"
             ))));
+        }
+        if path.starts_with("icons/")
+            && !path.starts_with("icons/custom-brand/")
+            && let Some(active) = active_icon_theme()
+            && let Some(rel) = active.resolve_icon(path)
+            && let Ok(bytes) = iceon_core::zed_icon_themes::read_svg(&active.extension, &rel)
+        {
+            return Ok(Some(Cow::Owned(bytes)));
         }
         if let Some(bytes) = ExtraIcons.load(path)? {
             return Ok(Some(bytes));
@@ -175,5 +217,45 @@ mod tests {
                 .iter()
                 .any(|p| p.as_ref() == path)
         );
+    }
+    #[test]
+    fn zed_icon_theme_switching_and_fallback_to_default_pack() {
+        use iceon_core::zed_icon_themes::{FileIconDef, ZedIconTheme};
+        use std::collections::BTreeMap;
+
+        super::set_active_icon_theme(None);
+        let default_folder = AppAssets.load("icons/folder.svg").unwrap().unwrap();
+        assert!(
+            std::str::from_utf8(&default_folder)
+                .unwrap()
+                .contains("<svg")
+        );
+
+        let mut file_icons = BTreeMap::new();
+        file_icons.insert(
+            "custom".into(),
+            FileIconDef {
+                path: "./icons/custom.svg".into(),
+            },
+        );
+        let theme = ZedIconTheme {
+            id: "fixture-icons/Dark".into(),
+            extension: "fixture-icons".into(),
+            name: "Dark".into(),
+            appearance: "dark".into(),
+            directory_icons: None,
+            chevron_icons: None,
+            named_directory_icons: BTreeMap::new(),
+            file_stems: BTreeMap::new(),
+            file_suffixes: BTreeMap::new(),
+            file_icons,
+        };
+        super::set_active_icon_theme(Some(theme));
+
+        let fallback = AppAssets.load("icons/folder.svg").unwrap().unwrap();
+        assert_eq!(fallback.as_ref(), default_folder.as_ref());
+
+        super::set_active_icon_theme(None);
+        assert!(super::active_icon_theme().is_none());
     }
 }

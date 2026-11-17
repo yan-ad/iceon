@@ -141,6 +141,8 @@ pub struct IceonApp {
     pub(crate) search_modal_open: bool,
     pub(crate) theme_picker_open: bool,
     pub(crate) theme_command_state: Entity<gpui_kit::component::command::CommandState>,
+    pub(crate) icon_theme_picker_open: bool,
+    pub(crate) icon_theme_command_state: Entity<gpui_kit::component::command::CommandState>,
     pub(crate) preferences_window: Option<AnyWindowHandle>,
     pub(crate) preferences_revision: u64,
     runtime_editor_preferences: Option<iceon_core::preferences::EditorPreferences>,
@@ -461,6 +463,9 @@ impl IceonApp {
             theme_picker_open: false,
             theme_command_state: cx
                 .new(|cx| gpui_kit::component::command::CommandState::new(window, cx)),
+            icon_theme_picker_open: false,
+            icon_theme_command_state: cx
+                .new(|cx| gpui_kit::component::command::CommandState::new(window, cx)),
             preferences_window: None,
             preferences_revision,
             runtime_editor_preferences: None,
@@ -757,37 +762,43 @@ impl Render for IceonApp {
                     ),
             )
             .child(self.render_shell_footer(window, cx))
-            .when(self.search_modal_open || self.theme_picker_open, |el| {
-                el.child(
-                    v_flex()
-                        .occlude()
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .items_center()
-                        .justify_center()
-                        .bg(gpui_kit::black().opacity(0.35))
-                        .on_mouse_down(
-                            gpui_kit::MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                this.theme_picker_open = false;
-                                this.close_command_palette(window, cx);
-                            }),
-                        )
-                        .child(
-                            div()
-                                .occlude()
-                                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation()
-                                })
-                                .child(if self.theme_picker_open {
-                                    self.render_theme_picker(cx).into_any_element()
-                                } else {
-                                    self.render_search_modal(cx).into_any_element()
+            .when(
+                self.search_modal_open || self.theme_picker_open || self.icon_theme_picker_open,
+                |el| {
+                    el.child(
+                        v_flex()
+                            .occlude()
+                            .absolute()
+                            .inset_0()
+                            .size_full()
+                            .items_center()
+                            .justify_center()
+                            .bg(gpui_kit::black().opacity(0.35))
+                            .on_mouse_down(
+                                gpui_kit::MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.theme_picker_open = false;
+                                    this.icon_theme_picker_open = false;
+                                    this.close_command_palette(window, cx);
                                 }),
-                        ),
-                )
-            })
+                            )
+                            .child(
+                                div()
+                                    .occlude()
+                                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .child(if self.theme_picker_open {
+                                        self.render_theme_picker(cx).into_any_element()
+                                    } else if self.icon_theme_picker_open {
+                                        self.render_icon_theme_picker(cx).into_any_element()
+                                    } else {
+                                        self.render_search_modal(cx).into_any_element()
+                                    }),
+                            ),
+                    )
+                },
+            )
     }
 }
 
@@ -814,6 +825,7 @@ pub fn run() {
         .with_assets(crate::app_assets::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            crate::app_assets::init_icon_resolver(cx);
             console_font::init(cx);
             terminal_surface::init(cx);
             native_menu::init(cx);

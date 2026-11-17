@@ -9,6 +9,7 @@ pub mod route_history;
 pub mod runtime;
 pub mod secrets;
 pub mod tls;
+pub mod zed_icon_themes;
 pub mod zed_themes;
 
 pub mod updates;
