@@ -366,7 +366,7 @@ impl IceonApp {
                 );
             }
         }
-        if !self.can_reference_action(&reference, PermissionAction::Get) {
+        if self.access_ready() && !self.can_reference_action(&reference, PermissionAction::Get) {
             return;
         }
         self.inspector.helm_read = None;

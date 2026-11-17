@@ -1,7 +1,7 @@
 //! Cached, read-only Helm inventory. Rendering and local search never query Helm.
 use crate::cluster_view::table_cell;
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, VirtualListScrollHandle,
+    ActiveTheme as _, IconName, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::InputState,
@@ -440,19 +440,45 @@ impl Render for HelmTable {
             .unwrap_or_default();
         let rows = self.rows.clone();
         let scroll = self.scroll.clone();
-        let status = if let Some(error) = &self.error {
-            Some(error.clone())
-        } else if self.loading {
+
+        if let Some(error) = &self.error {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(crate::empty_state::error_state(error.clone()))
+                .into_any_element();
+        }
+
+        if self.page.is_some() && rows.is_empty() && !self.loading {
+            let search_val = self.search.read(cx).value().trim().to_string();
+            let state = if !search_val.is_empty() {
+                crate::empty_state::empty_state(
+                    IconName::Search,
+                    "No Helm items match the search",
+                    "Try a different search query or select another namespace.",
+                )
+            } else {
+                crate::empty_state::empty_state(
+                    IconName::Inbox,
+                    "No Helm items found",
+                    "No Helm releases or charts found in this scope.",
+                )
+            };
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(state)
+                .into_any_element();
+        }
+
+        let status: Option<String> = if self.loading {
             Some("Loading Helm inventory…".into())
-        } else if self.page.is_some() && rows.is_empty() {
-            Some(
-                if self.search.read(cx).value().trim().is_empty() {
-                    "No Helm items found"
-                } else {
-                    "No Helm items match the search"
-                }
-                .into(),
-            )
         } else {
             None
         };
@@ -527,5 +553,6 @@ impl Render for HelmTable {
                             ),
                     ),
             )
+            .into_any_element()
     }
 }

@@ -643,29 +643,38 @@ impl IceonApp {
         let events = if !self.can_list(ResourceKind::Events) {
             div().into_any_element()
         } else if let Some(page) = snap.events.as_ref() {
-            let table = self
-                .overview_events_table
-                .get_or_insert_with(|| {
-                    cx.new(|cx| {
-                        ResourceTable::new(owner, cx)
-                            .without_selection()
-                            .without_pagination()
+            if page.items.is_empty() {
+                crate::empty_state::compact_empty_state(
+                    IconName::Bell,
+                    "No events reported",
+                    "No recent cluster events in this scope.",
+                )
+                .into_any_element()
+            } else {
+                let table = self
+                    .overview_events_table
+                    .get_or_insert_with(|| {
+                        cx.new(|cx| {
+                            ResourceTable::new(owner, cx)
+                                .without_selection()
+                                .without_pagination()
+                        })
                     })
-                })
-                .clone();
-            let data = TableData {
-                page: Some(page.clone()),
-                scope: ResourceScrollScope {
-                    cluster_id: page.cluster_id.clone(),
-                    kind: ResourceKind::Events,
-                    namespace: page.namespace.clone(),
-                    query: String::new(),
-                    status: None,
-                    page_token: None,
-                },
-            };
-            table.update(cx, |table, cx| table.sync(data, cx));
-            div().h(px(330.)).w_full().child(table).into_any_element()
+                    .clone();
+                let data = TableData {
+                    page: Some(page.clone()),
+                    scope: ResourceScrollScope {
+                        cluster_id: page.cluster_id.clone(),
+                        kind: ResourceKind::Events,
+                        namespace: page.namespace.clone(),
+                        query: String::new(),
+                        status: None,
+                        page_token: None,
+                    },
+                };
+                table.update(cx, |table, cx| table.sync(data, cx));
+                div().h(px(330.)).w_full().child(table).into_any_element()
+            }
         } else if self.cluster_loading {
             v_flex()
                 .w_full()

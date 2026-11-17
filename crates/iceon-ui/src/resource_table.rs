@@ -566,6 +566,7 @@ impl TableCache {
 
 pub(crate) struct ResourceTable {
     owner: WeakEntity<IceonApp>,
+    last_access_revision: u64,
     selection_enabled: bool,
     pagination_enabled: bool,
     selected: Vec<DeleteTarget>,
@@ -582,11 +583,23 @@ impl ResourceTable {
     pub(crate) fn new(owner: WeakEntity<IceonApp>, cx: &mut Context<Self>) -> Self {
         // Access reviews update the owner without changing the cached page/scope.
         // Redraw this independently cached entity so newly reviewed actions reveal.
+        let last_access_revision = owner
+            .upgrade()
+            .map(|app| app.read(cx).access_revision())
+            .unwrap_or(0);
         if let Some(app) = owner.upgrade() {
-            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            cx.observe(&app, |table, app, cx| {
+                let rev = app.read(cx).access_revision();
+                if table.last_access_revision != rev {
+                    table.last_access_revision = rev;
+                    cx.notify();
+                }
+            })
+            .detach();
         }
         Self {
             owner,
+            last_access_revision,
             selection_enabled: true,
             pagination_enabled: true,
             selected: Vec::new(),
@@ -1037,18 +1050,18 @@ impl ResourceTable {
                     )
                     .into_any_element()
                 } else {
-                    crate::selectable_text::selectable_text(
-                        if kind == ResourceKind::CustomResourceDefinitions {
+                    div()
+                        .truncate()
+                        .child(if kind == ResourceKind::CustomResourceDefinitions {
                             item.columns
                                 .get("kind")
                                 .cloned()
                                 .unwrap_or_else(|| item.name.clone())
                         } else {
                             item.name.clone()
-                        },
-                    )
-                    .text_color(cx.theme().sidebar_accent_foreground)
-                    .into_any_element()
+                        })
+                        .text_color(cx.theme().sidebar_accent_foreground)
+                        .into_any_element()
                 }),
             )
             .when(show_ns, |el| {
@@ -1074,12 +1087,14 @@ impl ResourceTable {
                 } else if kind == ResourceKind::Pods && matches!(c.key, "cpu" | "memory") {
                     table_cell(layout.width(c.key), false, true, cx.theme().border)
                         .text_xs()
-                        .child(crate::selectable_text::selectable_text(
-                            item.columns
-                                .get(c.key)
-                                .cloned()
-                                .unwrap_or_else(|| "N/A".into()),
-                        ))
+                        .child(
+                            div().truncate().child(
+                                item.columns
+                                    .get(c.key)
+                                    .cloned()
+                                    .unwrap_or_else(|| "N/A".into()),
+                            ),
+                        )
                         .into_any_element()
                 } else if kind == ResourceKind::DaemonSets && c.key == "nodeSelector" {
                     let selector = cell_value(item, c.key);
@@ -1122,9 +1137,7 @@ impl ResourceTable {
                     table_cell(layout.width(c.key), false, true, cx.theme().border)
                         .text_xs()
                         .truncate()
-                        .child(crate::selectable_text::selectable_text(cell_value(
-                            item, c.key,
-                        )))
+                        .child(div().truncate().child(cell_value(item, c.key)))
                         .into_any_element()
                 }
             }))
@@ -1254,7 +1267,9 @@ impl ResourceTable {
                     "type" => cell
                         .text_color(severity)
                         .child(
-                            crate::selectable_text::selectable_text(item.status.clone())
+                            div()
+                                .truncate()
+                                .child(item.status.clone())
                                 .text_color(severity),
                         )
                         .into_any_element(),
@@ -1262,7 +1277,9 @@ impl ResourceTable {
                         .truncate()
                         .text_color(severity)
                         .child(
-                            crate::selectable_text::selectable_text(cell_value(item, "message"))
+                            div()
+                                .truncate()
+                                .child(cell_value(item, "message"))
                                 .text_color(severity),
                         )
                         .into_any_element(),
@@ -1308,16 +1325,16 @@ impl ResourceTable {
                         .truncate()
                         .text_color(cx.theme().sidebar_accent_foreground)
                         .child(
-                            crate::selectable_text::selectable_text(cell_value(item, column.key))
+                            div()
+                                .truncate()
+                                .child(cell_value(item, column.key))
                                 .text_color(cx.theme().sidebar_accent_foreground),
                         )
                         .into_any_element(),
                     _ => cell
                         .truncate()
                         .text_color(cx.theme().muted_foreground)
-                        .child(crate::selectable_text::selectable_text(cell_value(
-                            item, column.key,
-                        )))
+                        .child(div().truncate().child(cell_value(item, column.key)))
                         .into_any_element(),
                 }
             }))
@@ -1823,6 +1840,28 @@ impl Render for ResourceTable {
         let item_sizes = self.cache.row_sizes.clone();
         let scroll_handle = self.scroll.clone();
         let entity = cx.entity();
+
+        if indices.is_empty() {
+            let filtered = !data.scope.query.trim().is_empty() || data.scope.status.is_some();
+            let (title, description) = if filtered {
+                ("No matching items", "Try a different search or filter.")
+            } else {
+                ("No items reported", "There are no resources in this scope.")
+            };
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(crate::empty_state::empty_state(
+                    IconName::Search,
+                    title,
+                    description,
+                ))
+                .into_any_element();
+        }
+
         v_flex()
             .flex_1()
             .h_full()

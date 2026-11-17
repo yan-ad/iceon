@@ -635,7 +635,7 @@ impl Render for Probe {
                                                 }), cx);
                                             }
                                             20 => {
-                                                click(window, cx, bounds.unwrap().origin + point(px(30.), px(70.)));
+                                                click(window, cx, bounds.unwrap().origin + point(px(50.), px(70.)));
                                             }
                                             21 => {
                                                 let _ = this.update(cx, |probe, cx| {

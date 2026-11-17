@@ -6,7 +6,7 @@
 
 use crate::cluster_view::table_cell;
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, VirtualListScrollHandle,
+    ActiveTheme as _, IconName, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::InputState,
@@ -396,16 +396,52 @@ impl Render for RbacUsersTable {
         let scroll = self.scroll.clone();
         let entity = cx.entity();
         let query = self.search.read(cx).value();
-        let status = if let Some(error) = self.error.clone() {
-            Some(format!("Error: {error}"))
-        } else if self.loading {
-            Some("Loading users…".into())
-        } else if self.response.is_some() && rows.is_empty() {
-            Some(if query.trim().is_empty() {
-                "No users reported".into()
+
+        if let Some(error) = self.error.clone() {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(crate::empty_state::error_state(format!("Error: {error}")))
+                .into_any_element();
+        }
+
+        if self.response.is_some() && rows.is_empty() && !self.loading {
+            let filtered = !query.trim().is_empty();
+            let state = if filtered {
+                crate::empty_state::empty_state(
+                    IconName::Search,
+                    "No users match the search",
+                    "Try a different search query or select another namespace.",
+                )
             } else {
-                "No users match the search".into()
-            })
+                crate::empty_state::empty_state(
+                    IconName::User,
+                    "No users reported",
+                    "No RBAC subjects or users found in this cluster.",
+                )
+            };
+            let notices = response_notices(self.response.as_ref());
+            let mut container = v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .gap_2();
+            if !notices.is_empty() {
+                container =
+                    container.children(notices.into_iter().map(|notice| {
+                        div().text_xs().text_color(cx.theme().warning).child(notice)
+                    }));
+            }
+            return container.child(state).into_any_element();
+        }
+
+        let status: Option<String> = if self.loading {
+            Some("Loading users…".into())
         } else {
             None
         };
@@ -515,6 +551,7 @@ impl Render for RbacUsersTable {
                             ),
                     ),
             )
+            .into_any_element()
     }
 }
 

@@ -202,8 +202,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use iceon_core::connection::{
-    OpenRequest, ResourceItem, ResourceKind, ResourcePage, ResourceRequest, SessionRequest,
-    custom_resources::{CustomResourcePage, CustomResourceRequest, CustomResourceTarget},
+    OpenRequest, ResourceKind, ResourcePage, ResourceRequest, SessionRequest,
+    custom_resources::{CustomResourceRequest, CustomResourceTarget},
     details::ResourceReference,
     helm::{
         HelmRequest, HelmView,
@@ -2882,6 +2882,20 @@ impl IceonApp {
 
     fn render_port_forwarding_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let forwards = self.port_forwards.clone();
+        if forwards.is_empty() {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(crate::empty_state::empty_state(
+                    IconName::Network,
+                    "No active port-forwards",
+                    "Start one from a Service row or Pod container port.",
+                ))
+                .into_any_element();
+        }
         v_flex()
             .flex_1()
             .w_full()
@@ -2896,13 +2910,6 @@ impl IceonApp {
                     .text_color(cx.theme().muted_foreground)
                     .child(format!("Active Local Port Forwards ({})", forwards.len())),
             )
-            .when(forwards.is_empty(), |el| {
-                el.child(crate::empty_state::empty_state(
-                    IconName::Network,
-                    "No active port-forwards",
-                    "Start one from a Service row or Pod container port.",
-                ))
-            })
             .children(forwards.into_iter().enumerate().map(|(idx, fwd)| {
                 let fid = fwd.id.clone();
                 let copy_addr = format!("127.0.0.1:{}", fwd.local_port);
@@ -2964,35 +2971,7 @@ impl IceonApp {
                             ),
                     )
             }))
-    }
-
-    fn filtered_resource_items<'a>(
-        &'a self,
-        kind: ResourceKind,
-        cx: &Context<Self>,
-    ) -> Vec<&'a ResourceItem> {
-        let query = self
-            .resource_filter_input
-            .read(cx)
-            .value()
-            .trim()
-            .to_lowercase();
-        self.resource_page
-            .as_ref()
-            .filter(|page| page.kind == kind)
-            .map(|page| {
-                page.items
-                    .iter()
-                    .filter(|item| {
-                        crate::resource_table::matches_filter(
-                            item,
-                            &query,
-                            self.encoded_status_filter(kind).as_deref(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+            .into_any_element()
     }
 
     fn sync_inventory_table(
@@ -3036,19 +3015,17 @@ impl IceonApp {
         kind: ResourceKind,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if let Some(table) = &self.resource_table {
-            let lease = self
-                .cluster_session
-                .as_ref()
-                .map(|session| session.session_id.clone())
-                .unwrap_or_default();
-            table.update(cx, |table, cx| table.sync_selection_lease(lease, cx));
-        }
-        let has_rows = !self.filtered_resource_items(kind, cx).is_empty();
+        let table = self.sync_inventory_table(kind, cx);
+        let lease = self
+            .cluster_session
+            .as_ref()
+            .map(|session| session.session_id.clone())
+            .unwrap_or_default();
+        table.update(cx, |table, cx| table.sync_selection_lease(lease, cx));
+
+        let has_rows = table.read(cx).visible_row_count() > 0;
         if !has_rows {
-            if let Some(table) = &self.resource_table {
-                table.update(cx, |table, cx| table.clear_selection(cx));
-            }
+            table.update(cx, |table, cx| table.clear_selection(cx));
             let query = self
                 .resource_filter_input
                 .read(cx)
@@ -3101,7 +3078,6 @@ impl IceonApp {
                 .child(state)
                 .into_any_element();
         }
-        let table = self.sync_inventory_table(kind, cx);
         table
             .cached(StyleRefinement::default().size_full())
             .into_any_element()
@@ -3207,6 +3183,58 @@ impl IceonApp {
     fn render_custom_resources_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let instances = self.custom_instances_page.clone();
 
+        if let Some(error) = self.cluster_error.clone() {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(crate::empty_state::error_state(error))
+                .into_any_element();
+        }
+
+        if self.cluster_loading && instances.is_none() {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(div().text_sm().child("Loading custom resources…"))
+                .into_any_element();
+        }
+
+        let Some(page) = instances else {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(crate::empty_state::empty_state(
+                    IconName::FileText,
+                    "No custom resources found",
+                    "There are no instances of this resource in the selected namespace scope.",
+                ))
+                .into_any_element();
+        };
+
+        if page.items.is_empty() {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .min_w_0()
+                .items_center()
+                .justify_center()
+                .child(crate::empty_state::empty_state(
+                    IconName::FileText,
+                    "No custom resources found",
+                    "There are no instances of this resource in the selected namespace scope.",
+                ))
+                .into_any_element();
+        }
+
         v_flex()
             .flex_1()
             .w_full()
@@ -3218,73 +3246,58 @@ impl IceonApp {
             .when(self.cluster_loading, |el| {
                 el.child(div().text_sm().child("Loading custom resources…"))
             })
-            .when_some(self.cluster_error.clone(), |el, error| {
-                el.child(crate::empty_state::error_state(error))
-            })
-            .when_some(instances, |el, page: CustomResourcePage| {
-                let el = el
-                    .when(page.items.is_empty(), |el| {
-                        el.child(
-                            crate::empty_state::empty_state(IconName::FileText, "No custom resources found", "There are no instances of this resource in the selected namespace scope."),
-                        )
-                    })
-                    .when(page.continue_token.is_some() || page.truncated, |el| {
-                        el.child(
-                            div()
-                                .text_xs()
-                                .child("Showing a partial page of custom resources."),
-                        )
-                    });
+            .when(page.continue_token.is_some() || page.truncated, |el| {
                 el.child(
-                    v_flex()
-                        .w_full()
-                        .p_3()
-                        .gap_2()
-                        .rounded(px(8.0))
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .bg(cx.theme().secondary)
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!(
-                                    "{} ({}/{})",
-                                    page.kind,
-                                    page.group,
-                                    page.version
-                                )),
-                        )
-                        .children(page.items.into_iter().map(|inst| {
-                            h_flex()
-                                .w_full()
-                                .py_1p5()
-                                .justify_between()
-                                .items_center()
-                                .border_b_1()
-                                .border_color(cx.theme().border)
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(inst.name),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .when_some(inst.namespace, |el, ns| {
-                                            el.child(Tag::secondary().small().child(ns))
-                                        })
-                                        .child(
-                                            Tag::secondary()
-                                                .small()
-                                                .child(format!("{} labels", inst.label_count)),
-                                        ),
-                                )
-                        })),
+                    div()
+                        .text_xs()
+                        .child("Showing a partial page of custom resources."),
                 )
             })
+            .child(
+                v_flex()
+                    .w_full()
+                    .p_3()
+                    .gap_2()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().secondary)
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("{} ({}/{})", page.kind, page.group, page.version)),
+                    )
+                    .children(page.items.into_iter().map(|inst| {
+                        h_flex()
+                            .w_full()
+                            .py_1p5()
+                            .justify_between()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(inst.name),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .when_some(inst.namespace, |el, ns| {
+                                        el.child(Tag::secondary().small().child(ns))
+                                    })
+                                    .child(
+                                        Tag::secondary()
+                                            .small()
+                                            .child(format!("{} labels", inst.label_count)),
+                                    ),
+                            )
+                    })),
+            )
+            .into_any_element()
     }
 
     fn render_rbac_users_body(
