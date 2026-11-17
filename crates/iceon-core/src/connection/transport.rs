@@ -578,10 +578,7 @@ impl ResourceTransport for LiveResourceTransport {
         cancel: &CancellationToken,
     ) -> Result<serde_json::Value> {
         let path = super::details::named_path(reference)?;
-        let accept = if matches!(
-            reference.kind,
-            ResourceKind::Secrets | ResourceKind::ConfigMaps
-        ) {
+        let accept = if reference.kind == ResourceKind::Secrets {
             "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1"
         } else {
             "application/json"

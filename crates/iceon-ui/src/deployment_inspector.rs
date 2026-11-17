@@ -72,7 +72,7 @@ fn state_message(
             Some(if revisions {
                 "No owned ReplicaSets found."
             } else {
-                "No recent events recorded for this Deployment."
+                "No events found"
             })
         }
         _ => None,
@@ -377,6 +377,42 @@ impl IceonApp {
                     .text_color(cx.theme().link).disabled(!self.can_reference_action(&target, PermissionAction::Get))
                     .on_click(cx.listener(move |app, _, window, cx| app.open_resource_inspector(target.clone(), window, cx))))
             }), cx));
+
+        let uid_opt = detail.reference.uid.clone().or(detail.item.uid.clone());
+        if let Some(uid) = uid_opt {
+            let uid_copy = uid.clone();
+            body = body.child(field(
+                "UID",
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(selectable_text(uid)),
+                    )
+                    .child(
+                        Button::new("workload-copy-uid-btn")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Copy)
+                            .tooltip("Copy UID")
+                            .accessibility_label("Copy UID")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(uid_copy.clone()));
+                            })),
+                    ),
+                cx,
+            ));
+        }
+
+        if let Some(rv) = detail.item.resource_version.as_ref() {
+            body = body.child(text_field("Resource Version", rv.clone(), cx));
+        }
+
         if let Some(meta) = &detail.metadata {
             let last_applied = meta
                 .annotations

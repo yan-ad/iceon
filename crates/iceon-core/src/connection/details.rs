@@ -199,17 +199,18 @@ pub(super) fn object_type(kind: ResourceKind) -> (&'static str, &'static str) {
 }
 pub(super) fn project(r: &DetailRequest, value: Value) -> Result<ResourceDetail> {
     let reference = &r.reference;
-    let sensitive = matches!(
-        reference.kind,
-        ResourceKind::Secrets | ResourceKind::ConfigMaps
-    );
+    let sensitive = reference.kind == ResourceKind::Secrets;
     let (api, kind) = if sensitive {
         ("meta.k8s.io/v1", "PartialObjectMetadata")
     } else {
         object_type(reference.kind)
     };
-    if value.get("apiVersion").and_then(Value::as_str) != Some(api)
-        || value.get("kind").and_then(Value::as_str) != Some(kind)
+    let type_matches = (value.get("apiVersion").and_then(Value::as_str) == Some(api)
+        && value.get("kind").and_then(Value::as_str) == Some(kind))
+        || (reference.kind == ResourceKind::ConfigMaps
+            && value.get("apiVersion").and_then(Value::as_str) == Some("meta.k8s.io/v1")
+            && value.get("kind").and_then(Value::as_str) == Some("PartialObjectMetadata"));
+    if !type_matches
         || value.pointer("/metadata/name").and_then(Value::as_str) != Some(&reference.name)
         || value.pointer("/metadata/namespace").and_then(Value::as_str)
             != reference.namespace.as_deref()

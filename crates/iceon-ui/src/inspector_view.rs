@@ -5,7 +5,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariant, ButtonVariants as _},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
     h_flex,
-    input::Input,
+    input::{Editor, EditorState, Input},
     scroll::ScrollableElement as _,
     tag::Tag,
     v_flex,
@@ -119,6 +119,8 @@ pub struct InspectorState {
     pub drain_review: Option<DrainReview>,
     pub drain_result: Option<DrainResult>,
     pub copied_title: bool,
+    pub config_map_editors: std::collections::BTreeMap<String, Entity<EditorState>>,
+    pub config_map_saving: bool,
 }
 
 pub(crate) fn singular_kind_name(kind: ResourceKind) -> &'static str {
@@ -378,6 +380,8 @@ impl IceonApp {
         self.inspector.pod_detail = None;
         self.inspector.collections.clear();
         self.inspector.edit_load = None;
+        self.inspector.config_map_editors.clear();
+        self.inspector.config_map_saving = false;
         self.inspector.helm_detail = None;
         self.inspector.drain_review = None;
         self.inspector.drain_result = None;
@@ -542,7 +546,9 @@ impl IceonApp {
                         );
                     }
                 }
-                if !is_pod && this.inspector.tab == InspectorTab::Yaml {
+                if reference.kind == ResourceKind::ConfigMaps
+                    || (!is_pod && this.inspector.tab == InspectorTab::Yaml)
+                {
                     this.load_inspector_yaml(window, cx);
                 }
                 cx.notify();
@@ -715,8 +721,13 @@ impl IceonApp {
                         let yaml = loaded.yaml.clone().unwrap_or_default();
                         this.inspector.edit_load = Some(loaded);
                         this.inspector_yaml_editor.update(cx, |editor, cx| {
-                            editor.set_value(yaml, window, cx);
+                            editor.set_value(yaml.clone(), window, cx);
                         });
+                        if let Some(InspectorTarget::Resource(ref r)) = this.inspector.target
+                            && r.kind == ResourceKind::ConfigMaps
+                        {
+                            this.populate_config_map_editors(&yaml, window, cx);
+                        }
                     }
                     Err(err) => {
                         this.inspector.action_message =
@@ -798,6 +809,96 @@ impl IceonApp {
                     }
                     Err(err) => {
                         this.inspector.action_message = Some(format!("YAML apply failed: {err:?}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn populate_config_map_editors(
+        &mut self,
+        yaml: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(data) = iceon_core::connection::resource_edit::parse_config_map_data(yaml) else {
+            self.inspector.config_map_editors.clear();
+            return;
+        };
+        self.inspector.config_map_editors.clear();
+        for (name, val_str) in data {
+            let editor = cx.new(|cx| {
+                EditorState::new(window, cx)
+                    .line_number(true)
+                    .default_value(val_str)
+            });
+            self.inspector.config_map_editors.insert(name, editor);
+        }
+    }
+
+    pub(crate) fn save_config_map_data(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.inspector.config_map_saving || !self.inspector_can(PermissionAction::Patch) {
+            return;
+        }
+        let Some(loaded) = self.inspector.edit_load.clone() else {
+            return;
+        };
+        let Some(session) = self.cluster_session.clone() else {
+            return;
+        };
+        let Some(InspectorTarget::Resource(ref reference)) = self.inspector.target else {
+            return;
+        };
+        let name = reference.name.clone();
+
+        let current_yaml = loaded.yaml.as_deref().unwrap_or_default();
+        let mut new_data = std::collections::BTreeMap::new();
+        for (k, editor) in &self.inspector.config_map_editors {
+            new_data.insert(k.clone(), editor.read(cx).text().to_string());
+        }
+        let Some(new_yaml) =
+            iceon_core::connection::resource_edit::update_config_map_data(current_yaml, &new_data)
+        else {
+            return;
+        };
+
+        self.inspector.config_map_saving = true;
+        self.inspector.action_message = Some("Saving ConfigMap…".into());
+        cx.notify();
+
+        let op_id = self.next_operation_id();
+        let connection = self.connection.clone();
+        let target = self.inspector.target.clone();
+        let req = EditRequest {
+            cluster_id: session.cluster_id,
+            session_id: session.session_id,
+            operation_id: op_id,
+            reference: loaded.reference.clone(),
+            resource_version: Some(loaded.resource_version),
+            yaml: Some(new_yaml),
+            mode: EditMode::Apply,
+        };
+
+        cx.spawn_in(window, async move |this, cx| {
+            let result = connection.resource_edit(req).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.inspector.target != target {
+                    return;
+                }
+                this.inspector.config_map_saving = false;
+                match result {
+                    Ok(applied) => {
+                        this.inspector.action_message =
+                            Some(format!("ConfigMap {} successfully updated.", name));
+                        this.inspector.edit_load = Some(applied);
+                        this.load_inspector_yaml(window, cx);
+                        this.reload_active_section(window, cx);
+                    }
+                    Err(err) => {
+                        this.inspector.action_message =
+                            Some(format!("Failed to save config map: {err:?}"));
                     }
                 }
                 cx.notify();
@@ -1679,32 +1780,31 @@ impl IceonApp {
         let mut body = v_flex().w_full().min_w_0();
 
         // 1. Metrics banner (orderNumber: -1)
-        body = body.child(
-            div()
-                .w_full()
-                .p_3()
-                .mb_3()
-                .rounded(px(4.))
-                .bg(cx.theme().secondary)
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(format!(
-                    "Historical CPU, memory, network, and filesystem metrics are not configured for {}.",
-                    match kind {
-                        ResourceKind::Nodes => "Nodes",
-                        ResourceKind::Namespaces => "Namespaces",
-                        ResourceKind::Services => "Services",
-                        ResourceKind::ConfigMaps => "ConfigMaps",
-                        ResourceKind::Secrets => "Secrets",
-                        ResourceKind::Ingresses => "Ingresses",
-                        ResourceKind::Jobs => "Jobs",
-                        ResourceKind::CronJobs => "CronJobs",
-                        ResourceKind::StatefulSets => "StatefulSets",
-                        ResourceKind::ReplicaSets => "ReplicaSets",
-                        _ => kind_singular,
-                    }
-                )),
+        let has_metrics = matches!(
+            kind,
+            ResourceKind::Pods
+                | ResourceKind::Deployments
+                | ResourceKind::DaemonSets
+                | ResourceKind::StatefulSets
+                | ResourceKind::ReplicaSets
+                | ResourceKind::Jobs
+                | ResourceKind::Nodes
         );
+        if has_metrics {
+            body = body.child(
+                div()
+                    .w_full()
+                    .p_3()
+                    .mb_3()
+                    .rounded(px(4.))
+                    .bg(cx.theme().secondary)
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "Historical CPU, memory, network, and filesystem metrics are not configured for {kind_singular}.",
+                    )),
+            );
+        }
 
         // 2. Metadata (orderNumber: 0)
         body = body
@@ -1977,10 +2077,77 @@ impl IceonApp {
         }
 
         // 4. Resource-specific Sections & Facts
-        for sect in &detail.sections {
-            body = body.child(section(&sect.title, cx));
-            for f in &sect.facts {
-                body = body.child(text_field(&f.label, f.value.clone(), cx));
+        if kind == ResourceKind::ConfigMaps {
+            body = body.child(section("Data", cx));
+            if self.inspector.config_map_editors.is_empty() {
+                body = body.child(
+                    div()
+                        .p_3()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if self.inspector.edit_load.is_none() {
+                            "Loading ConfigMap data…"
+                        } else {
+                            "No data entries found in this ConfigMap."
+                        }),
+                );
+            } else {
+                for (name, editor) in &self.inspector.config_map_editors {
+                    let line_count = editor.read(cx).text().to_string().lines().count().max(1);
+                    let height = px(((line_count as f32 * 20.0) + 40.0).clamp(72.0, 260.0));
+                    let name_clone = name.clone();
+                    body =
+                        body.child(
+                            v_flex()
+                                .w_full()
+                                .px_3()
+                                .py_2()
+                                .gap_1p5()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(gpui_kit::FontWeight::BOLD)
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(name_clone),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .rounded(px(4.))
+                                        .overflow_hidden()
+                                        .child(Editor::new(editor).h(height).aria_label(format!(
+                                            "ConfigMap data editor for {name}"
+                                        ))),
+                                ),
+                        );
+                }
+                body = body.child(
+                    h_flex().w_full().px_3().py_2().child(
+                        Button::new("config-map-save-btn")
+                            .primary()
+                            .label(if self.inspector.config_map_saving {
+                                "Saving…"
+                            } else {
+                                "Save"
+                            })
+                            .disabled(
+                                self.inspector.config_map_saving
+                                    || !self.inspector_can(PermissionAction::Patch),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_config_map_data(window, cx);
+                            })),
+                    ),
+                );
+            }
+        } else {
+            for sect in &detail.sections {
+                body = body.child(section(&sect.title, cx));
+                for f in &sect.facts {
+                    body = body.child(text_field(&f.label, f.value.clone(), cx));
+                }
             }
         }
 
@@ -2046,7 +2213,9 @@ impl IceonApp {
             }
         }
 
-        if iceon_core::connection::resource_edit::supports_yaml_edit(kind) {
+        if kind != ResourceKind::ConfigMaps
+            && iceon_core::connection::resource_edit::supports_yaml_edit(kind)
+        {
             let yaml_key = format!("generic-yaml-editor-{}", detail.reference.name);
             let expanded = self.inspector.pod_expanded.contains(&yaml_key);
             body = body.child(section("Resource YAML", cx));
@@ -4459,5 +4628,7 @@ mod destructive_confirmation_tests {
         assert!(!state.copied_title);
         assert!(state.target.is_none());
         assert!(!state.loading);
+        assert!(state.config_map_editors.is_empty());
+        assert!(!state.config_map_saving);
     }
 }

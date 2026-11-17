@@ -180,17 +180,38 @@ impl IceonApp {
             ),
             cx,
         ));
-        body = body.child(text_row(
-            "UID",
-            absent(
-                detail
-                    .reference
-                    .uid
-                    .as_deref()
-                    .or(detail.item.uid.as_deref()),
-            ),
-            cx,
-        ));
+        let uid_opt = detail.reference.uid.clone().or(detail.item.uid.clone());
+        if let Some(uid) = uid_opt {
+            let uid_copy = uid.clone();
+            body = body.child(row(
+                "UID",
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(selectable_text(uid)),
+                    )
+                    .child(
+                        Button::new("pod-copy-uid-btn")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Copy)
+                            .tooltip("Copy UID")
+                            .accessibility_label("Copy UID")
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(uid_copy.clone()));
+                            })),
+                    ),
+                cx,
+            ));
+        } else {
+            body = body.child(text_row("UID", "—", cx));
+        }
         if let Some(meta) = &detail.metadata {
             for (label, entries) in [("Labels", &meta.labels), ("Annotations", &meta.annotations)] {
                 let chips = h_flex()

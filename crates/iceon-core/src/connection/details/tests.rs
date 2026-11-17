@@ -197,12 +197,13 @@ fn identity_and_response_type_are_verified_before_projection() {
 }
 #[test]
 fn secret_and_configmap_contents_never_cross_projection() {
+    let r_sec = request(ResourceKind::Secrets);
+    assert_eq!(
+        project(&r_sec, object(&r_sec)),
+        Err(ConnectionError::InvalidResponse)
+    );
     for kind in [ResourceKind::Secrets, ResourceKind::ConfigMaps] {
         let r = request(kind);
-        assert_eq!(
-            project(&r, object(&r)),
-            Err(ConnectionError::InvalidResponse)
-        );
         let mut v = object(&r);
         v["apiVersion"] = json!("meta.k8s.io/v1");
         v["kind"] = json!("PartialObjectMetadata");

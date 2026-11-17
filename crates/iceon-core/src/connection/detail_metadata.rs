@@ -305,7 +305,7 @@ fn managed(value: Option<&Value>, partial: &mut bool) -> Vec<ManagedField> {
         .collect()
 }
 pub(super) fn project(kind: ResourceKind, value: &Value) -> Option<DetailMetadata> {
-    if matches!(kind, ResourceKind::Secrets | ResourceKind::ConfigMaps) {
+    if kind == ResourceKind::Secrets {
         return None;
     }
     let mut partial = false;
@@ -469,9 +469,20 @@ mod tests {
     }
     #[test]
     fn sensitive_kinds_have_no_shared_metadata() {
-        for kind in [ResourceKind::Secrets, ResourceKind::ConfigMaps] {
+        for kind in [ResourceKind::Secrets] {
             assert!(project(kind, &json!({"metadata":{"labels":{"leak":"no"}}})).is_none());
         }
+    }
+    #[test]
+    fn config_maps_project_safe_metadata() {
+        let meta = project(
+            ResourceKind::ConfigMaps,
+            &json!({"metadata":{"labels":{"app":"iceon"},"annotations":{"meta.helm.sh/release-name":"alb"}}}),
+        )
+        .unwrap();
+        assert_eq!(meta.labels.len(), 1);
+        assert_eq!(meta.labels[0].key, "app");
+        assert_eq!(meta.annotations.len(), 1);
     }
     #[test]
     fn filters_annotations_controls_and_keyed_identifiers() {

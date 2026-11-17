@@ -187,7 +187,7 @@ mod transport_tests {
         let (_root, _, engine, _, _) = super::super::tests::fixture();
         for kind in [
             ResourceKind::Secrets,
-            ResourceKind::ConfigMaps,
+            ResourceKind::ServiceAccounts,
             ResourceKind::Ingresses,
         ] {
             let (mut r, _) = super::tests::fixture();
@@ -385,9 +385,36 @@ fn fields(kind: ResourceKind) -> &'static [(&'static str, Scalar)] {
 }
 /// Whether reduced YAML read/edit is supported. Unsupported kinds return
 /// `ResourceUnavailable`, rather than treating a valid read as malformed input.
-/// Secrets and ConfigMaps never enter this endpoint's projection/patch pipeline.
+/// Secrets never enter this endpoint's projection/patch pipeline.
 pub fn supports_yaml_edit(kind: ResourceKind) -> bool {
-    !fields(kind).is_empty() || container_path(kind).is_some()
+    kind == ResourceKind::ConfigMaps || !fields(kind).is_empty() || container_path(kind).is_some()
+}
+
+/// Parses key-value pairs from a ConfigMap YAML's `data` section.
+pub fn parse_config_map_data(yaml: &str) -> Option<std::collections::BTreeMap<String, String>> {
+    let val: Value = serde_yaml_ng::from_str(yaml).ok()?;
+    let data = val.get("data")?.as_object()?;
+    let mut map = std::collections::BTreeMap::new();
+    for (k, v) in data {
+        if let Some(s) = v.as_str() {
+            map.insert(k.clone(), s.to_owned());
+        }
+    }
+    Some(map)
+}
+
+/// Updates the `data` section of a ConfigMap YAML, preserving all other fields.
+pub fn update_config_map_data(
+    current_yaml: &str,
+    new_data: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let mut val: Value = serde_yaml_ng::from_str(current_yaml).ok()?;
+    let mut map = serde_json::Map::new();
+    for (k, v) in new_data {
+        map.insert(k.clone(), Value::String(v.clone()));
+    }
+    val["data"] = Value::Object(map);
+    serde_yaml_ng::to_string(&val).ok()
 }
 fn container_path(kind: ResourceKind) -> Option<&'static str> {
     if kind == ResourceKind::Pods {
@@ -465,6 +492,15 @@ fn projection(value: &Value, reference: &ResourceReference) -> Result<Value> {
     if let Some(ns) = &reference.namespace {
         out["metadata"]["namespace"] = json!(ns);
     }
+    if reference.kind == ResourceKind::ConfigMaps {
+        if let Some(data) = value.get("data") {
+            out["data"] = data.clone();
+        }
+        if let Some(binary_data) = value.get("binaryData") {
+            out["binaryData"] = binary_data.clone();
+        }
+        return Ok(out);
+    }
     for &(path, schema) in fields(reference.kind) {
         if let Some(v) = value.pointer(path).filter(|v| !v.is_null()) {
             if !scalar_valid(v, schema) {
@@ -519,11 +555,70 @@ fn closed_shape(base: &Value, edited: &Value, depth: usize) -> bool {
 }
 fn patch(current: &Value, edited: &Value, r: &EditRequest) -> Result<Value> {
     let baseline = projection(current, &r.reference)?;
-    if !closed_shape(&baseline, edited, 0)
-        || edited.get("metadata") != baseline.get("metadata")
+    if edited.get("metadata") != baseline.get("metadata")
         || edited.get("apiVersion") != baseline.get("apiVersion")
         || edited.get("kind") != baseline.get("kind")
     {
+        return Err(ConnectionError::InvalidInput);
+    }
+    if r.reference.kind == ResourceKind::ConfigMaps {
+        let mut ops = vec![
+            json!({"op":"test","path":"/metadata/uid","value":r.reference.uid}),
+            json!({"op":"test","path":"/metadata/resourceVersion","value":r.resource_version}),
+        ];
+        let old_data = baseline.get("data").and_then(Value::as_object);
+        let new_data = edited.get("data").and_then(Value::as_object);
+        match (old_data, new_data) {
+            (Some(old_map), Some(new_map)) => {
+                for (k, new_v) in new_map {
+                    let text = new_v.as_str().ok_or(ConnectionError::InvalidInput)?;
+                    if text.len() > YAML_LIMIT {
+                        return Err(ConnectionError::LimitExceeded);
+                    }
+                    if old_map.get(k) != Some(new_v) {
+                        let enc_k = k.replace('~', "~0").replace('/', "~1");
+                        ops.push(json!({
+                            "op": if old_map.contains_key(k) { "replace" } else { "add" },
+                            "path": format!("/data/{enc_k}"),
+                            "value": text
+                        }));
+                    }
+                }
+                for k in old_map.keys() {
+                    if !new_map.contains_key(k) {
+                        let enc_k = k.replace('~', "~0").replace('/', "~1");
+                        ops.push(json!({
+                            "op": "remove",
+                            "path": format!("/data/{enc_k}")
+                        }));
+                    }
+                }
+            }
+            (None, Some(new_map)) => {
+                for (k, new_v) in new_map {
+                    let text = new_v.as_str().ok_or(ConnectionError::InvalidInput)?;
+                    let enc_k = k.replace('~', "~0").replace('/', "~1");
+                    ops.push(json!({
+                        "op": "add",
+                        "path": format!("/data/{enc_k}"),
+                        "value": text
+                    }));
+                }
+            }
+            (Some(_), None) => {
+                ops.push(json!({
+                    "op": "remove",
+                    "path": "/data"
+                }));
+            }
+            (None, None) => {}
+        }
+        if ops.len() == 2 {
+            return Err(ConnectionError::InvalidInput);
+        }
+        return Ok(json!(ops));
+    }
+    if !closed_shape(&baseline, edited, 0) {
         return Err(ConnectionError::InvalidInput);
     }
     let mut ops = vec![
@@ -999,7 +1094,6 @@ mod tests {
     fn sensitive_and_unreviewed_kinds_are_denied() {
         for kind in [
             ResourceKind::Secrets,
-            ResourceKind::ConfigMaps,
             ResourceKind::MutatingWebhookConfigurations,
             ResourceKind::CustomResourceDefinitions,
         ] {
@@ -1011,5 +1105,69 @@ mod tests {
                 Err(ConnectionError::ResourceUnavailable)
             );
         }
+    }
+
+    #[test]
+    fn config_maps_support_data_projection_and_patch() {
+        assert!(supports_yaml_edit(ResourceKind::ConfigMaps));
+        let raw = json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "sample",
+                "namespace": "default",
+                "uid": "cm-uid",
+                "resourceVersion": "100"
+            },
+            "data": {
+                "app.conf": "key=val\n",
+                "env": "production"
+            }
+        });
+        let reference = ResourceReference {
+            kind: ResourceKind::ConfigMaps,
+            name: "sample".into(),
+            namespace: Some("default".into()),
+            uid: Some("cm-uid".into()),
+        };
+        let projected = projection(&raw, &reference).unwrap();
+        assert_eq!(projected["data"]["app.conf"], "key=val\n");
+        assert_eq!(projected["data"]["env"], "production");
+
+        let mut edited = projected.clone();
+        edited["data"]["app.conf"] = json!("key=new_val\n");
+        edited["data"]["new_file"] = json!("hello");
+        edited["data"].as_object_mut().unwrap().remove("env");
+
+        let r = EditRequest {
+            cluster_id: "c".into(),
+            session_id: "s".into(),
+            operation_id: 1,
+            reference: reference.clone(),
+            resource_version: Some("100".into()),
+            yaml: None,
+            mode: EditMode::Apply,
+        };
+        let ops = patch(&raw, &edited, &r).unwrap();
+        let ops_arr = ops.as_array().unwrap();
+        assert_eq!(ops_arr[0]["op"], "test");
+        assert_eq!(ops_arr[0]["path"], "/metadata/uid");
+        assert_eq!(ops_arr[1]["op"], "test");
+        assert_eq!(ops_arr[1]["path"], "/metadata/resourceVersion");
+        assert!(
+            ops_arr
+                .iter()
+                .any(|op| op["op"] == "replace" && op["path"] == "/data/app.conf")
+        );
+        assert!(
+            ops_arr
+                .iter()
+                .any(|op| op["op"] == "add" && op["path"] == "/data/new_file")
+        );
+        assert!(
+            ops_arr
+                .iter()
+                .any(|op| op["op"] == "remove" && op["path"] == "/data/env")
+        );
     }
 }
