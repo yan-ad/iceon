@@ -2,7 +2,9 @@
 <img src="./assets/icons/128x128.png" alt="Iceon" width="60" height="60">
 
 # Iceon
+
 ### A native Kubernetes workspace, built entirely in Rust.
+
 Explore clusters. Debug workloads. Stay in context.
 
 [![Build](https://img.shields.io/github/actions/workflow/status/yan-ad/iceon/release.yml?style=flat-square&label=build)](https://github.com/yan-ad/iceon/actions/workflows/release.yml)
@@ -30,15 +32,16 @@ is not a claim of production readiness or complete provider/platform validation.
   still need fuller native UI exposure and live-cluster acceptance coverage.
 - **Desktop & secrets:** themes/preferences, native macOS menus/tray, and read-only
   Vault KV v2 browsing with explicit, time-limited reveal and OS credential storage.
+- **Extensions (Experimental):** all unofficial port of freelens extension is running natively in rust without installing any package
 
 ## How fast is it?
 
 An overall resource-usage snapshot of the installed apps, measured with Python:
 
-| Metric | Freelens | Iceon | # |
-| --- | --- | --- | --- |
-| CPU Usage (mean, % of one core) | 1.89% | 0.16% | 12.1× lower CPU usage |
-| Memory Usage (median physical footprint) | 633 MiB | 209 MiB | 3.0× lower memory usage |
+| Metric                                   | Freelens | Iceon   | #                       |
+| ---------------------------------------- | -------- | ------- | ----------------------- |
+| CPU Usage (mean, % of one core)          | 1.89%    | 0.16%   | 12.1× lower CPU usage   |
+| Memory Usage (median physical footprint) | 633 MiB  | 209 MiB | 3.0× lower memory usage |
 
 Measured on an Apple M4 with 16 GiB RAM, macOS 27.0.1, using Freelens 2.0.0
 and Iceon 0.1.2. Three 60-second rounds at 1 Hz, including child/helper processes;
@@ -50,15 +53,21 @@ Results vary by workload and machine.
 [Python benchmark](tools/benchmarks/macos_apps.py) ·
 [Results and methodology](docs/benchmarks/macos-idle-2026-11-11.json)
 
+## Installation
+1. Download from [Releases](https://github.com/yan-ad/iceon/releases).
+2. Choose your matched (Mac, Windows, or Linux)
+
+> Current release status is unsigned, so your os might ask security risks, for mac users please run this `xattr -dr com.apple.quarantine /Applications/Iceon.app` manually before launch the apps
+
 ## OS roadmap
 
-| Platform | Current target | Next |
-| --- | --- | --- |
-| macOS · Apple Silicon | CI + DMG/app archive packaging | Packaged smoke tests, Developer ID signing/notarization |
-| Windows · x86 | Compile CI + setup EXE pipeline | Native smoke tests, signing and installer experience |
-| Windows · x64/ARM64 | No release target yet | Dedicated builds and validation |
-| macOS · Intel | No release target yet | Build and hardware validation |
-| Linux | Rust source; CI/builds currently deferred | Restore platform CI, desktop validation and packages |
+| Platform              | Current target      | Next                           |
+| --------------------- | ------------------- | ------------------------------ |
+| macOS · Apple Silicon | Main release target |
+| Windows · x86         | Main release target |
+| Windows · x64/ARM64   | Planned             | .exe release artifact          |
+| macOS · Intel         | Planned             | universal.dmg release artifact |
+| Linux                 | Planned             | .flatpak release artifact      |
 
 Download from [Releases](https://github.com/yan-ad/iceon/releases).
 macOS packages are ad-hoc signed, **not notarized**; Windows packages lack Authenticode signing.
@@ -67,15 +76,40 @@ retains its ZIP assets. The native app cannot yet update itself. See [installati
 
 ## Feature roadmap
 
-| Area | Status | Next |
-| --- | --- | --- |
-| Native shell, catalog, resource explorer | Implemented | Accessibility, polish and large-cluster performance |
-| YAML, logs, terminals, forwarding | Implemented | Broader integration and reconnect/cancellation testing |
-| Helm, RBAC and node operations | Core services; native coverage varies | Complete UI workflows and live safety validation |
-| Metrics and custom resources | Bounded reads/browsing | Richer observability and custom-resource workflows |
-| Secrets | Vault userpass + read-only KV v2 | More providers and authentication methods |
-| Extensions | No extension host | Evaluate a native extension model and Freelens workflow portability |
-| Distribution | macOS packaging; Windows setup + signed migration feed pipeline | Platform signing, native automatic updates and more architectures |
+| Area                                     | Status                 | Next                                                                |
+| ---------------------------------------- | ---------------------- | ------------------------------------------------------------------- |
+| Native shell, catalog, resource explorer | Implemented            | Accessibility, polish and large-cluster performance                 |
+| YAML, logs, terminals, forwarding        | Implemented            | Broader integration and reconnect/cancellation testing              |
+| Helm, RBAC and node operations           | Implemented            | Complete UI workflows and live safety validation                    |
+| Metrics and custom resources             | Implemented            | Richer observability and custom-resource workflows                  |
+| Secrets                                  | Implemented            | More providers and authentication methods                           |
+| Extensions                               | Experimental, Built-in | Evaluate a native extension model and Freelens workflow portability |
+| Distribution                             | Unsigned-package       | Platform signing, native automatic updates and more architectures   |
+
+## Extensions Support
+
+All of this extension is unofficial port based on https://github.com/freelensapp orgs. Since we use rust so we can't have their commit attribution here
+
+| Extension (npm)                     | Ported Version | Status |
+| ----------------------------------- | -------------- | ------ |
+| @freelensapp/keda-extension         | 2.0.3          | Opt-in |
+| @freelensapp/fluxcd-extension       | 2.2.0          | Opt-in |
+| @freelensapp/cnpg-extension         | 2.1.0          | Opt-in |
+| @freelensapp/gateway-api-extension  | 2.1.0          | Opt-in |
+| @freelensapp/eso-extension          | 2.2.0          | Opt-in |
+| @freelensapp/kafka-extension        | 2.1.0          | Opt-in |
+| @freelensapp/rabbitmq-extension     | 2.0.2          | Opt-in |
+| @freelensapp/velero-extension       | 2.2.0          | Opt-in |
+| @freelensapp/karpenter-extension    | 2.1.0          | Opt-in |
+| @freelensapp/kamaji-extension       | 2.0.1          | Opt-in |
+| @freelensapp/sveltos-extension      | 2.0.0          | Opt-in |
+| @freelensapp/gpu-extension          | 2.0.1          | Opt-in |
+| @freelensapp/vals-extension         | 2.0.1          | Opt-in |
+| @freelensapp/resource-map-extension | 2.1.0          | Opt-in |
+| @freelensapp/ai-extension           | 2.0.0          | Opt-in |
+| @freelensapp/for-claude-extension   | 2.0.0          | Opt-in |
+| @freelensapp/agentbridge-extension  | 2.0.0          | Opt-in |
+| @freelensapp/kubeswift-extension    | 2.0.0          | Opt-in |
 
 ## Develop
 
