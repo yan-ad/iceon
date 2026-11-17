@@ -199,9 +199,6 @@ impl Probe {
             let owner = cx.entity().downgrade();
             cx.new(|cx| ResourceTable::new(owner, revision, cx))
         });
-        cx.observe(&table, |_, _, _| {
-            eprintln!("TRACE table notification {:?}", Instant::now());
-        }).detach();
         table.update(cx, |table, cx| {
             table.sync(
                 TableData {
@@ -266,7 +263,6 @@ impl Probe {
     }
 
     fn check(&mut self, stage: usize, cx: &mut Context<Self>) -> Result<(), String> {
-        eprintln!("TRACE check {stage} {:?}", Instant::now());
         let stats = self.table.read(cx).stats();
         let terminal = self.terminal.read(cx).performance_snapshot();
         let require = |ok: bool, message: &str| {
@@ -592,6 +588,15 @@ impl Render for Probe {
                 let _ = weak.update(cx, |_, cx| {
                     cx.spawn_in(window, async move |this, cx| {
                         for stage in 0..=22 {
+                            if stage == 2 {
+                                // Always-visible scrollbars still schedule their
+                                // two-second activity/width idle notification.
+                                // Finish that unrelated work before measuring a
+                                // terminal-only burst, including on occluded
+                                // windows without display-link frames.
+                                cx.background_executor().timer(Duration::from_millis(2300)).await;
+                                let _ = cx.update(|window, cx| window.draw(cx).clear(cx));
+                            }
                             cx.background_executor().timer(Duration::from_millis(220)).await;
                             let result = cx.update(|window, cx| {
                                 let checked = this.update(cx, |probe, cx| {
@@ -718,11 +723,11 @@ pub fn run() {
     let result = outcome.clone();
     gpui_kit::application().with_assets(crate::app_assets::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
-        // This audit measures table/terminal invalidation, not scrollbar fades.
-        // Scrolling mode schedules parent-view notifications (enter/exit and
-        // the two-second idle hold), which can land in stage 3 or stage 15
-        // depending on native display-link timing. Keep the real scrollbars
-        // and wheel paths, but remove that independent animation producer.
+        // This audit measures table/terminal invalidation, not decorative motion.
+        // Always mode removes fades, but activity-width motion and its idle
+        // notification remain. Snap motion and drain that timer before stage 2;
+        // keep the real scrollbars and wheel paths and all cache assertions.
+        cx.set_reduce_motion(true);
         gpui_kit::component::Theme::set_scrollbar_mode(
             gpui_kit::component::scroll::ScrollbarMode::Always,
             cx,
@@ -732,7 +737,7 @@ pub fn run() {
         let watchdog = result.clone();
         let watchdog_directory = directory.clone();
         cx.spawn(async move |cx| {
-            cx.background_executor().timer(Duration::from_secs(10)).await;
+            cx.background_executor().timer(Duration::from_secs(15)).await;
             cx.update(|cx| {
                 if watchdog.borrow().is_none() {
                     eprintln!("FAIL render_performance_probe: timed out before native checks completed");
