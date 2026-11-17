@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import tarfile
+import tomllib
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
@@ -19,7 +20,7 @@ class ChannelTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         self.addCleanup(self.tmp.cleanup)
-        self.version = "0.1.5"
+        self.version = tomllib.loads((channel.ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
 
     def artifacts(self):
         sums = {}

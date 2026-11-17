@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.6
+
+- Add cached, searchable and sortable Helm chart/release tables and safe metadata
+  inspectors with revision history; values, notes and manifests are not fetched.
+- Support Helm 3.17+ and Helm 4 install/upgrade command contracts, explicit
+  all-status release listing, empty repository inventories and safe error handling;
+  reject unsupported mutation versions and options without silently downgrading.
+- Show explicit inventory counts in the header, including filtered and partial
+  results, and refine resource-reference inspector toggles and last-applied YAML.
+- Keep RBAC ServiceAccount planner controls bound to their opening route, cluster,
+  session and namespace scope so stale callbacks cannot act after navigation.
+- Improve shell readability with more opaque chrome and content surfaces while
+  retaining native blur on the intended chrome surfaces.
+- Add separate, manual build-only multi-platform distribution preparation, including
+  optional experimental Flatpak bundles. Stable release assets remain Apple Silicon
+  macOS and Windows x86; no expanded platform publication or signing is claimed.
+
 ## 0.1.5
 
 - Add guided cluster setup, connection diagnostics and recovery, and multi-namespace

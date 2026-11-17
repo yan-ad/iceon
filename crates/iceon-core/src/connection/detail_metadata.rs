@@ -10,10 +10,10 @@ const FIELD_BYTES: usize = 8 * 1024;
 /// `kubectl.kubernetes.io/last-applied-configuration` annotation.
 /// Format it as clean YAML for read-only inspection, matching Freelens behavior.
 pub fn format_last_applied_configuration(value: &str) -> String {
-    if let Ok(json_val) = serde_json::from_str::<Value>(value) {
-        if let Ok(yaml_str) = serde_yaml_ng::to_string(&json_val) {
-            return yaml_str;
-        }
+    if let Ok(json_val) = serde_json::from_str::<Value>(value)
+        && let Ok(yaml_str) = serde_yaml_ng::to_string(&json_val)
+    {
+        return yaml_str;
     }
     value.to_string()
 }

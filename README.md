@@ -62,7 +62,7 @@ Results vary by workload and machine.
 
 Download from [Releases](https://github.com/yan-ad/iceon/releases).
 macOS packages are ad-hoc signed, **not notarized**; Windows packages lack Authenticode signing.
-The `0.1.5` setup/feed pipeline targets older updater-enabled clients; `0.1.2`
+The `0.1.6` setup/feed pipeline targets older updater-enabled clients; `0.1.2`
 retains its ZIP assets. The native app cannot yet update itself. See [installation details](docs/releases.md).
 
 ## Feature roadmap
