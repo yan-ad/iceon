@@ -592,6 +592,7 @@ impl IceonApp {
             }
         })
         .detach();
+        app.init_update_lifecycle(cx);
         let owner = cx.entity().downgrade();
         window
             .observe_window_appearance(move |window, cx| {

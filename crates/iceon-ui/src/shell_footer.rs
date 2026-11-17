@@ -26,22 +26,26 @@ pub(crate) fn footer_frame(border: Hsla) -> Div {
         .border_t(px(FOOTER_BORDER))
         .border_color(border)
 }
-#[derive(Default)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub(crate) enum UpdateStatus {
     #[default]
     Unchecked,
     Current,
+    Downloading(String),
+    Downloaded(String),
     Available(String),
     Failed,
 }
 impl UpdateStatus {
-    fn label(&self, checking: bool) -> String {
+    pub(crate) fn label(&self, checking: bool) -> String {
         if checking {
             return "Checking…".into();
         }
         match self {
             Self::Unchecked => "Check for updates".into(),
             Self::Current => "Up to date".into(),
+            Self::Downloading(version) => format!("Downloading update {version}…"),
+            Self::Downloaded(version) => format!("Restart to Update (v{version})"),
             Self::Available(version) => format!("Update available · {version}"),
             Self::Failed => "Check failed · Retry".into(),
         }
@@ -119,17 +123,33 @@ impl IceonApp {
                         Button::new("footer-updates")
                             .xsmall()
                             .ghost()
-                            .icon(gpui_kit_assets::IconName::Download)
-                            .accessibility_label("Check for Updates")
+                            .icon(match &self.update_status {
+                                UpdateStatus::Downloaded(_) => gpui_kit_assets::IconName::RefreshCw,
+                                UpdateStatus::Downloading(_) => gpui_kit_assets::IconName::RefreshCw,
+                                _ => gpui_kit_assets::IconName::Download,
+                            })
+                            .accessibility_label(match &self.update_status {
+                                UpdateStatus::Downloaded(_) => "Restart to Update",
+                                UpdateStatus::Downloading(_) => "Downloading Update",
+                                _ => "Check for Updates",
+                            })
                             .tooltip(format!(
                                 "Iceon v{} · {}",
                                 env!("CARGO_PKG_VERSION"),
                                 self.update_status.label(self.update_check_running)
                             ))
+                            .when(
+                                matches!(self.update_status, UpdateStatus::Downloaded(_)),
+                                |btn| btn.label("Restart to Update"),
+                            )
                             .disabled(self.update_check_running)
-                            .on_click(
-                                cx.listener(|app, _, window, cx| app.check_for_updates(window, cx)),
-                            ),
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                if matches!(app.update_status, UpdateStatus::Downloaded(_)) {
+                                    app.restart_to_update(window, cx);
+                                } else {
+                                    app.check_for_updates(window, cx);
+                                }
+                            })),
                     ),
             )
             .child(
@@ -165,6 +185,14 @@ mod tests {
         assert_eq!(UpdateStatus::default().label(false), "Check for updates");
         assert_eq!(UpdateStatus::Current.label(false), "Up to date");
         assert_eq!(UpdateStatus::Current.label(true), "Checking…");
+        assert_eq!(
+            UpdateStatus::Downloaded("0.2.0".into()).label(false),
+            "Restart to Update (v0.2.0)"
+        );
+        assert_eq!(
+            UpdateStatus::Downloading("0.2.0".into()).label(false),
+            "Downloading update 0.2.0…"
+        );
         assert_ne!(UpdateStatus::Failed.label(false), "Up to date");
     }
 }
