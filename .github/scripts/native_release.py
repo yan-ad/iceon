@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native 0.1.6 packaging and fail-closed publication (Python 3.11+, stdlib)."""
+"""Native 0.1.7 packaging and fail-closed publication (Python 3.11+, stdlib)."""
 from macos_icons import compile_icon, verify_icon
 
 import argparse
@@ -22,7 +22,7 @@ import tomllib
 import zipfile
 
 REPOSITORY = "yan-ad/iceon"
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 PACKAGES = ("iceon-app", "iceon-core", "iceon-ui", "iceon-xtask")
 MAC = f"Iceon_{VERSION}_aarch64.app.tar.gz"
 DMG = f"Iceon_{VERSION}_aarch64.dmg"
@@ -79,7 +79,7 @@ def verify_dmg(path):
 def changelog(root):
     text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
     matches = list(re.finditer(r"^## " + re.escape(VERSION) + r"(?: \(pending CI\))?\s*$", text, re.M))
-    require(len(matches) == 1, "Need exactly one canonical 0.1.6 changelog section")
+    require(len(matches) == 1, "Need exactly one canonical 0.1.7 changelog section")
     body = re.split(r"^## ", text[matches[0].end():], maxsplit=1, flags=re.M)[0].strip()
     require(bool(body), "Empty release changelog")
     return body
@@ -87,7 +87,7 @@ def changelog(root):
 
 def versions(root):
     workspace = tomllib.loads((root / "Cargo.toml").read_text())
-    require(workspace["workspace"]["package"]["version"] == VERSION, "Workspace version must be 0.1.6")
+    require(workspace["workspace"]["package"]["version"] == VERSION, "Workspace version must be 0.1.7")
     lock = tomllib.loads((root / "Cargo.lock").read_text())
     for name in PACKAGES:
         manifest = tomllib.loads((root / "crates" / name / "Cargo.toml").read_text())["package"]
@@ -110,7 +110,7 @@ def remote_tag(root, sha, expected=None):
 
 def guard(root, expected=None):
     require(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY, "Canonical repository required")
-    require(os.environ.get("RELEASE_TAG") == VERSION, "Only exact tag 0.1.6 is accepted")
+    require(os.environ.get("RELEASE_TAG") == VERSION, "Only exact tag 0.1.7 is accepted")
     event = os.environ.get("GITHUB_EVENT_NAME")
     require(event in ("push", "workflow_dispatch"), "Unsupported release event")
     if event == "push":

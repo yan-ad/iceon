@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.7
+
+- Add native extension foundations and built-in extension navigation, a marketplace,
+  and Zed icon theme support.
+- Follow the operating-system accent for selected sidebar labels and resource links,
+  with readable contrast in light and dark modes.
+- Add collapsible sidebar parents, text-only children, and an icon-only rail that
+  preserves expanded width; include an offline native interaction probe.
+- Use system-owned macOS Icon Composer appearances in packaged apps instead of
+  overriding the Dock with a flattened icon; compile layered assets during packaging.
+- Add automatic update download and restart flow, safe ConfigMap editing, and
+  improved empty states and table rendering.
+- Fix Windows accent observer compilation and remove obsolete sidebar icon code.
+
 ## 0.1.6
 
 - Add cached, searchable and sortable Helm chart/release tables and safe metadata
