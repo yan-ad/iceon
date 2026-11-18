@@ -5,7 +5,7 @@ release workflow, asset/signature contract, tags, and existing release are uncha
 AUR is intentionally skipped. Developer ID signing and notarization are excluded;
 macOS packages retain ad-hoc integrity signatures needed by the native app.
 
-macOS packaging requires Xcode 26 or newer with `xcrun actool` available. Both
+macOS packaging requires a macOS 26+ host and Xcode 26+ with `xcrun actool` available. Both
 packagers compile `assets/icons/iceon.icon` into `Assets.car` and register its
 compiler-generated icon metadata, retaining the ICNS fallback for older systems.
 Bundled apps leave icon rendering to macOS so Default, Dark, Clear, and Tinted
@@ -14,11 +14,14 @@ ICNS fallback; it cannot validate Icon Composer appearance switching.
 
 ### Icon Composer toolchain and diagnostics
 
-The release and distribution macOS build jobs explicitly set
+The release ARM64 packaging job uses `macos-26`; distribution packaging uses
+`macos-26` for ARM64 and `macos-26-intel` for Intel. These are explicitly listed
+in the official [hosted runner image table](https://github.com/actions/runner-images#available-images).
+Both build workflows explicitly set
 `DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer` before compiling
-Rust or packaging. The official [ARM64 macOS 15 image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md#xcode)
-and [Intel macOS 15 image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md#xcode)
-list that installation while still marking Xcode 16.4 as the default. Do not rely
+Rust or packaging. The official [ARM64 macOS 26 image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md#xcode)
+and [Intel macOS 26 image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md#xcode)
+list that installation (checked November 18, 2026). Do not rely
 on the runner label to select Xcode. A missing pinned installation fails the job;
 it does not fall back to an older compiler.
 
@@ -28,8 +31,9 @@ For a local full Xcode installation, set `DEVELOPER_DIR` explicitly and run:
 python3 .github/scripts/macos_icons.py --check-toolchain
 ```
 
-The same preflight runs on every icon compilation and reports the resolved
-`actool` path, Xcode version/build, and actool bundle version. It requires Xcode
+The same preflight runs on every icon compilation and reports the host macOS
+version, resolved `actool` path, Xcode version/build, and actool bundle version.
+It rejects older or unknown hosts before invoking Apple tools and requires Xcode
 26+ and actool bundle version 24127+ (the shipping Xcode 26.0 compiler). Old tools
 can return success for `.icon` input while producing only a partial plist; success
 alone therefore never bypasses the required primary-icon metadata and nonempty
@@ -37,10 +41,23 @@ alone therefore never bypasses the required primary-icon metadata and nonempty
 
 The standalone invocation includes `--include-all-app-icons` and
 `--lightweight-asset-runtime-mode enabled`. The latter uses Xcode's bundled asset
-runtime on macOS 15. See the standalone `.icon` invocation in
+frameworks for consistent output, **not** a guarantee of compatibility with an
+older build host. See the standalone `.icon` invocation in
 [Godot's macOS exporter](https://github.com/godotengine/godot/blob/master/platform/macos/export/export_plugin.cpp)
 and the runtime/version explanation in
 [Chromium's icon compiler](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/tools/mac/icons/compile_car.py).
+Chromium retains the enabled flag and explains the bundled-framework behavior;
+it does not establish that disabling it on macOS 15 safely compiles Iceon's icon.
+In failed release run `44242454682`, Xcode 26.3 / actool 24506 on `macos-15`
+passed version preflight, then dyld reported missing CoreMedia/MediaToolbox
+symbols in framework overrides. `AssetCatalogAgent-AssetRuntime` closed its
+connection and compilation exited 255. This is evidence of host/runtime loading
+failure, not an icon schema error or a reason to change the deployment target.
+The focused compatibility policy is therefore to retain bundled-runtime mode
+and package on macOS 26, including Intel, rather than retrying with an unverified
+flag change or silently falling back to legacy-only icons. Non-compiling macOS
+verification/export jobs and ordinary Rust CI can remain on macOS 15.
+
 Chromium's undocumented `--enable-icon-stack-fallback-generation=disabled`
 workaround is for pairing `.icon` input with existing `.xcassets` bitmaps; Iceon
 does not supply that catalog and does not use that workaround. The existing
@@ -64,8 +81,8 @@ Flatpak is a separate opt-in input and is experimental.
 |---|---|---|
 | Ubuntu 24.04 x86-64 | `x86_64-unknown-linux-gnu` | portable tar, amd64 `.deb` |
 | Ubuntu 24.04 ARM64 | `aarch64-unknown-linux-gnu` | portable tar, arm64 `.deb` |
-| macOS ARM64 | `aarch64-apple-darwin` | app tar, DMG |
-| macOS Intel | `x86_64-apple-darwin` | app tar, DMG |
+| macOS 26 ARM64 (`macos-26`) | `aarch64-apple-darwin` | app tar, DMG |
+| macOS 26 Intel (`macos-26-intel`) | `x86_64-apple-darwin` | app tar, DMG |
 | Windows x86 | `i686-pc-windows-msvc` | NSIS setup, ZIP |
 | Windows 11 ARM64 | `aarch64-pc-windows-msvc` | ARM64 payload NSIS setup, ZIP |
 

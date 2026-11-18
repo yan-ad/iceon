@@ -57,7 +57,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          - os: macos-26
             target: aarch64-apple-darwin
             package: mac
           - os: windows-2022
@@ -79,7 +79,7 @@ jobs:
           TAG_OBJECT: ${{ needs.validate.outputs.tag_object }}
         run: python .github/scripts/native_release.py guard --tag-object "$TAG_OBJECT"
         shell: bash
-      # Both macOS 15 runner images list this version; their default is Xcode 16.4.
+      # The asset runtime requires a macOS 26 host, not just an installed Xcode 26.
       - name: Select Xcode 26 for Icon Composer
         if: runner.os == 'macOS'
         shell: bash

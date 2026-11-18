@@ -33,9 +33,9 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-15
+          - os: macos-26
             target: aarch64-apple-darwin
-          - os: macos-15-intel
+          - os: macos-26-intel
             target: x86_64-apple-darwin
           - os: windows-2022
             target: i686-pc-windows-msvc
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # Both macOS 15 runner images list this version; their default is Xcode 16.4.
+      # Both macOS 26 images include this Xcode; do not rely on image defaults.
       - name: Select Xcode 26 for Icon Composer
         if: runner.os == 'macOS'
         shell: bash

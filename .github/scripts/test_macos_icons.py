@@ -11,6 +11,9 @@ import macos_icons as icons
 
 class MacIconTests(unittest.TestCase):
     def setUp(self):
+        host = patch.object(icons.platform, "mac_ver", return_value=("26.2", ("", "", ""), "arm64"))
+        host.start()
+        self.addCleanup(host.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -78,6 +81,25 @@ class MacIconTests(unittest.TestCase):
             self.assertFalse((self.resources / "Assets.car").exists())
             self.assertEqual(self.document.read_bytes(), self.original)
 
+    def test_incompatible_or_unknown_host_is_rejected_before_starting_tools(self):
+        for host in ("15.7.9", "14.8", "", "unknown", "26.bad"):
+            with self.subTest(host=host), patch.object(icons.platform, "mac_ver", return_value=(host, (), "")), \
+                    patch.object(icons.subprocess, "run") as run:
+                with self.assertRaisesRegex(ValueError, "macOS 26\\+ host"):
+                    icons.compile_icon(self.root, self.resources, self.info)
+                run.assert_not_called()
+            self.assertNotIn("CFBundleIconName", self.info)
+            self.assertFalse((self.resources / "Assets.car").exists())
+            self.assertEqual(self.document.read_bytes(), self.original)
+
+    def test_supported_hosts_keep_bundled_runtime_and_legacy_deployment_target(self):
+        for host, machine in (("26.0", "arm64"), ("26.6.1", "x86_64"), ("27.0", "arm64")):
+            with self.subTest(host=host, machine=machine), \
+                    patch.object(icons.platform, "mac_ver", return_value=(host, (), machine)), \
+                    patch.object(icons.subprocess, "run", side_effect=self.compiler):
+                icons.compile_icon(self.root, self.resources, self.info)
+                icons.verify_icon(self.resources, self.info)
+
     def test_zero_exit_with_empty_metadata_is_not_success(self):
         def empty(args, **kwargs):
             result = self.compiler(args, **kwargs)
@@ -99,6 +121,11 @@ class MacIconTests(unittest.TestCase):
             self.assertIn('DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer', source)
             self.assertIn('if: runner.os == \'macOS\'', source[selection:selection + 600])
             self.assertIn('macos_icons.py --check-toolchain', source[selection:selection + 600])
+            self.assertIn('- os: macos-26\n            target: aarch64-apple-darwin', source)
+            self.assertNotIn('- os: macos-15\n', source)
+            self.assertNotIn('- os: macos-15-intel\n', source)
+        distribution = (workflows / "distribution.yml").read_text()
+        self.assertIn('- os: macos-26-intel\n            target: x86_64-apple-darwin', distribution)
         self.assertEqual(self.document.read_bytes(), self.original)
         self.assertEqual((self.resources / "icon.icns").read_bytes(), b"legacy")
         self.assertFalse((self.resources / "icon-info.plist").exists())

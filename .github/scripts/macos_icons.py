@@ -1,11 +1,13 @@
 """Compile Icon Composer assets at packaging time; never edit source documents.
 
-Requires Xcode 26+ (Command Line Tools and ictool PNG exports are not sufficient).
+Requires macOS 26+ and Xcode 26+ (Command Line Tools and ictool PNG exports are
+not sufficient).
 actool owns the icon schema and emitted Info.plist metadata. See Apple's Creating
 Your App Icon Using Icon Composer and the actool(1) --output-partial-info-plist
 contract. A missing compiler/asset is an error, not a silent legacy-only package.
 """
 from pathlib import Path
+import platform
 import plistlib
 import re
 import shutil
@@ -14,7 +16,15 @@ import tempfile
 
 
 def check_toolchain():
-    """Reject old actool versions that can succeed without compiling .icon input."""
+    """Reject incompatible hosts and tools before starting the asset runtime."""
+    host = platform.mac_ver()[0]
+    print(f"Icon Composer host macOS: {host or 'unknown'}", flush=True)
+    # Xcode 26.3's bundled asset runtime can crash with missing CoreMedia /
+    # MediaToolbox symbols on macOS 15 even though actool --version succeeds.
+    # Keep the bundled-runtime mode, but require the matching OS generation.
+    if not re.fullmatch(r"\d+(?:\.\d+)*", host) or int(host.split(".")[0]) < 26:
+        raise ValueError("Icon Composer packaging requires a macOS 26+ host; use macos-26 or macos-26-intel")
+
     def query(args):
         return subprocess.run(args, check=True, capture_output=True, timeout=30).stdout
 
@@ -45,7 +55,7 @@ def compile_icon(root, resources, info):
         subprocess.run([
             "xcrun", "actool", str(source), "--compile", str(output),
             "--output-format", "human-readable-text", "--notices", "--warnings", "--errors",
-            # Use Xcode's bundled asset runtime even when the host is macOS 15.
+            # Use bundled frameworks for reproducible output on supported hosts.
             "--lightweight-asset-runtime-mode", "enabled",
             "--app-icon", source.stem, "--platform", "macosx",
             "--include-all-app-icons", "--enable-on-demand-resources", "NO",
