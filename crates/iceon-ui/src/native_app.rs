@@ -8,7 +8,7 @@ const APP_ICON: &[u8] = include_bytes!("../../../assets/icons/icon.icns");
 
 #[cfg(any(target_os = "macos", test))]
 const APP_ICON_FOREGROUND: &[u8] =
-    include_bytes!("../../../assets/icons/iceon.icon/Assets/iceon-transparent 2.png");
+    include_bytes!("../../../assets/icons/iceon.icon/Assets/transparent.png");
 
 /// Install the application/Dock icon for unbundled development runs as well as
 /// packaged runs. Does not change activation policy, process identity, or menus.

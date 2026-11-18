@@ -6,8 +6,8 @@
     {
       "layers" : [
         {
-          "image-name" : "iceon-transparent 2.png",
-          "name" : "iceon-transparent 2"
+          "image-name" : "transparent.png",
+          "name" : "iceon-transparent"
         }
       ],
       "shadow" : {
