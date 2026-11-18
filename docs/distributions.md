@@ -5,6 +5,13 @@ release workflow, asset/signature contract, tags, and existing release are uncha
 AUR is intentionally skipped. Developer ID signing and notarization are excluded;
 macOS packages retain ad-hoc integrity signatures needed by the native app.
 
+macOS packaging requires Xcode 26 or newer with `xcrun actool` available. Both
+packagers compile `assets/icons/iceon.icon` into `Assets.car` and register its
+compiler-generated icon metadata, retaining the ICNS fallback for older systems.
+Bundled apps leave icon rendering to macOS so Default, Dark, Clear, and Tinted
+appearances can follow the system setting. Unbundled `cargo run` uses a static
+ICNS fallback; it cannot validate Icon Composer appearance switching.
+
 ## Manual workflow
 
 After these changes are reviewed and pushed, run **Distribution preparation**

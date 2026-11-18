@@ -56,6 +56,7 @@ struct Probe {
     sidebar_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     toggle_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     expanded_height: Option<Pixels>,
+    collapsed_height: Option<Pixels>,
     expanded_width: Option<Pixels>,
     initial_operation: u64,
     _fixture: Rc<Fixture>,
@@ -89,6 +90,7 @@ impl Probe {
             sidebar_bounds: Rc::default(),
             toggle_bounds: Rc::default(),
             expanded_height: None,
+            collapsed_height: None,
             expanded_width: None,
             initial_operation,
             _fixture: fixture,
@@ -149,38 +151,37 @@ impl Probe {
         match stage {
             0 => {
                 require(
-                    !rail && group.size.height > px(70.),
-                    "default_open did not expose both children",
+                    !rail && group.size.height < px(70.),
+                    "parent must start collapsed without exposing children",
                 )?;
-                self.expanded_height = Some(group.size.height);
+                self.collapsed_height = Some(group.size.height);
                 self.expanded_width = Some(sidebar.size.width);
-                // The real kit caret is at the right end of the 28px parent row.
-                click(
-                    window,
-                    cx,
-                    point(group.right() - px(18.), group.top() + px(26.)),
-                );
-            }
-            1 => {
-                require(
-                    !rail && group.size.height < self.expanded_height.unwrap() - px(30.),
-                    "caret failed to collapse children",
-                )?;
-                // Exercise the parent row's click_to_toggle, independently of caret.
                 click(
                     window,
                     cx,
                     point(group.left() + px(50.), group.top() + px(26.)),
                 );
             }
+            1 => {
+                require(
+                    !rail && group.size.height > self.collapsed_height.unwrap() + px(30.),
+                    "parent row failed to expose both children",
+                )?;
+                self.expanded_height = Some(group.size.height);
+                click(
+                    window,
+                    cx,
+                    point(group.right() - px(18.), group.top() + px(26.)),
+                );
+            }
             2 => {
                 require(
-                    group.size.height == self.expanded_height.unwrap(),
-                    "parent row failed to restore children",
+                    !rail && group.size.height == self.collapsed_height.unwrap(),
+                    "caret failed to collapse children",
                 )?;
                 click(window, cx, toggle.center());
             }
-            3 => {
+            3 | 5 => {
                 require(
                     rail && sidebar.size.width == px(crate::cluster_view::SIDEBAR_RAIL_WIDTH),
                     "toggle failed to produce the shared 48px icon rail",
@@ -190,20 +191,29 @@ impl Probe {
                     "rail did not shrink the actual layout",
                 )?;
                 require(
-                    group.size.height > px(45.),
-                    "rail lost its direct destination rows",
+                    group.size.height < px(55.),
+                    "rail must contain one parent, not flattened child destinations",
                 )?;
-                click(window, cx, toggle.center());
+                if stage == 3 {
+                    // The visible parent icon must open the actual tree. The kit
+                    // otherwise hides children in collapsed mode (no dropdown).
+                    click(window, cx, group.center());
+                } else {
+                    click(window, cx, toggle.center());
+                }
             }
-            4 => {
+            4 | 6 => {
                 require(
                     !rail && sidebar.size.width == self.expanded_width.unwrap(),
-                    "toggle failed to restore expanded width",
+                    "parent activation/toggle failed to restore expanded width",
                 )?;
                 require(
                     group.size.height == self.expanded_height.unwrap(),
-                    "returning from rail lost expanded children",
+                    "rail parent did not expose children or retain tree expansion",
                 )?;
+                if stage == 4 {
+                    click(window, cx, toggle.center());
+                }
             }
             _ => return Err("unknown probe stage".into()),
         }
@@ -336,7 +346,7 @@ pub fn run() {
         }).detach();
         cx.on_window_closed(|cx, _| { if cx.windows().is_empty() { cx.quit(); } }).detach();
         cx.spawn(async move |cx| {
-            for stage in 0..5 {
+            for stage in 0..7 {
                 cx.background_executor().timer(Duration::from_millis(350)).await;
                 let checked = handle.update(cx, |_, window, cx| {
                     window.draw(cx).clear(cx);
@@ -347,8 +357,8 @@ pub fn run() {
                         cx.quit();
                         return false;
                     }
-                    if stage == 4 {
-                        println!("PASS sidebar_probe: real native submenu caret collapse / parent-row expand; expanded -> 48px icon rail -> expanded; measured child layout restored; no session, resource visibility, or shell");
+                    if stage == 6 {
+                        println!("PASS sidebar_probe: initially collapsed -> parent-row open -> caret collapse -> single-parent 48px rail -> parent activation opens tree; rail roundtrip retains measured child layout; no session, resource visibility, or shell");
                         *result.borrow_mut() = Some(Ok(()));
                         cx.quit();
                     }

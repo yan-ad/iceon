@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Native 0.1.6 packaging and fail-closed publication (Python 3.11+, stdlib)."""
+from macos_icons import compile_icon, verify_icon
+
 import argparse
 import base64
 from datetime import datetime, timezone
@@ -152,6 +154,7 @@ def verify_bundle(app):
     require(exe.stat().st_mode & 0o111, "Bundle executable lost permissions")
     if "CFBundleIconFile" in info:
         require((app / "Contents/Resources" / info["CFBundleIconFile"]).is_file(), "Missing bundle icon")
+    verify_icon(app / "Contents/Resources", info)
     run("codesign", "--verify", "--deep", "--strict", str(app))
     require("Signature=adhoc" in subprocess.run(["codesign", "-dv", str(app)], capture_output=True, text=True, check=True).stderr, "Expected ad-hoc signature")
 
@@ -188,6 +191,7 @@ def package(root, out, platform):
         if icon.is_file():
             shutil.copy2(icon, app / "Contents/Resources/icon.icns")
             info["CFBundleIconFile"] = "icon.icns"
+        compile_icon(root, app / "Contents/Resources", info)
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         run("codesign", "--force", "--sign", "-", str(app))
         verify_bundle(app)

@@ -6,6 +6,8 @@ Python 3.11+, stdlib. `build --target TRIPLE` invokes locked Cargo; `package
 binary. No publishing, update feeds, credentials, Developer ID or notarization.
 macOS retains mandatory ad-hoc integrity signing (codesign --sign -).
 """
+from macos_icons import compile_icon, verify_icon
+
 import argparse
 from dataclasses import dataclass
 import os
@@ -195,7 +197,9 @@ def package_mac(root, stage, out, exe, target, version, stem):
                 CFBundleIconFile="icon.icns", NSHighResolutionCapable=True,
                 CFBundleURLTypes=[dict(CFBundleURLName="ad.yan.iceon.actions",
                                       CFBundleTypeRole="Viewer", CFBundleURLSchemes=["iceon"])])
+    compile_icon(root, contents / "Resources", info)
     (contents / "Info.plist").write_bytes(plistlib.dumps(info))
+    verify_icon(contents / "Resources", info)
     # Integrity only, required by native ARM64; never Developer ID or notarization.
     run("codesign", "--force", "--sign", "-", app)
     run("codesign", "--verify", "--deep", "--strict", app)

@@ -223,6 +223,11 @@ class NativeReleaseTests(unittest.TestCase):
         exe.chmod(0o755)
         metadata = dict(CFBundleIdentifier="ad.yan.iceon", CFBundleExecutable="iceon", CFBundleVersion=n.VERSION, CFBundleShortVersionString=n.VERSION, CFBundlePackageType="APPL")
         metadata["CFBundleURLTypes"] = n.mac_url_types()
+        metadata.update(CFBundleIconName="iceon", CFBundleIconFile="icon.icns")
+        resources = app / "Contents/Resources"
+        resources.mkdir()
+        (resources / "Assets.car").write_bytes(b"compiled-icon")
+        (resources / "icon.icns").write_bytes(b"legacy-icon")
         info = app / "Contents/Info.plist"
         info.write_bytes(plistlib.dumps(metadata))
         with patch.object(n, "run"), patch.object(n.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stderr="Signature=adhoc\n")):

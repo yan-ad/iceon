@@ -66,24 +66,66 @@ pub(crate) fn section_asset_icon(section: &str) -> AssetIconName {
     }
 }
 
-fn section_icon(section: &str) -> Icon {
-    Icon::new(section_asset_icon(section))
+/// Children are text-only. Custom parents are also text-only in the tree,
+/// but always have a visible, named fallback affordance in the icon rail.
+#[derive(Clone, Copy)]
+enum RowKind<'a> {
+    Leaf(&'a str),
+    Child,
+    Parent(&'a str),
+    ApiGroup,
+}
+fn row_asset_icon(kind: RowKind<'_>, rail: bool) -> Option<AssetIconName> {
+    use AssetIconName::*;
+    match kind {
+        RowKind::Leaf(section) => Some(section_asset_icon(section)),
+        RowKind::Child => None,
+        RowKind::ApiGroup => rail.then_some(Puzzle),
+        RowKind::Parent("custom-resources") => rail.then_some(Puzzle),
+        RowKind::Parent(section) => Some(match section {
+            "workloads" => Layers,
+            "config" => SlidersHorizontal,
+            "network" => Network,
+            "storage" => HardDrive,
+            "helm" => Package,
+            "access-control" => Shield,
+            _ => Puzzle,
+        }),
+    }
 }
 
-/// Standalone pages have no heading; parents use the kit's native submenu caret.
-/// In rail mode expose destinations directly instead of hiding them in submenus.
+fn parent_item(label: SharedString, children: Vec<SidebarMenuItem>) -> SidebarMenuItem {
+    // Selection must never implicitly open a standard or discovered API group.
+    SidebarMenuItem::new(label.clone())
+        .accessibility_label(label)
+        .default_open(false)
+        .click_to_toggle(true)
+        .children(children)
+}
+
+/// The pinned kit hides submenus in rail mode; it does not provide an automatic
+/// dropdown. Activating a rail parent restores the tree and opens that parent.
 #[derive(Clone)]
 struct NavigationGroup {
+    section: &'static str,
     label: SharedString,
     items: Vec<SidebarMenuItem>,
     collapsed: bool,
+    rail_activate: SidebarClickHandler,
 }
 impl NavigationGroup {
-    fn new(label: impl Into<SharedString>, items: Vec<SidebarMenuItem>) -> Self {
+    fn new(
+        section: &'static str,
+        label: impl Into<SharedString>,
+        items: Vec<SidebarMenuItem>,
+        rail_activate: SidebarClickHandler,
+    ) -> Self {
         Self {
+            section,
             label: label.into(),
             items,
             collapsed: false,
+            rail_activate,
         }
     }
 }
@@ -104,22 +146,27 @@ impl SidebarItem for NavigationGroup {
         cx: &mut App,
     ) -> impl IntoElement {
         let id = id.into();
-        let menu = if self.label.is_empty() || self.collapsed {
+        let menu = if self.label.is_empty() {
             SidebarMenu::new().children(self.items)
         } else {
+            let rail = self.collapsed;
+            let handler = self.rail_activate;
             SidebarMenu::new().child(
-                SidebarMenuItem::new(self.label.clone())
-                    .accessibility_label(self.label)
-                    .default_open(true)
-                    .click_to_toggle(true)
-                    .children(self.items),
+                parent_item(self.label, self.items)
+                    .when_some(
+                        row_asset_icon(RowKind::Parent(self.section), rail),
+                        |item, icon| item.icon(Icon::new(icon)),
+                    )
+                    .click_to_open(rail)
+                    .on_click(move |event, window, cx| {
+                        if rail {
+                            handler(event, window, cx);
+                        }
+                    }),
             )
         };
-        // Keep parent expansion state separate from rail rows' indexed state.
-        let id = SharedString::from(format!(
-            "{id}-{}",
-            if self.collapsed { "rail" } else { "tree" }
-        ));
+        // Share the parent's keyed expansion state across tree and rail. The
+        // kit's click_to_open sets it before the rail handler restores the tree.
         menu.collapsed(self.collapsed).render(id, window, cx)
     }
 }
@@ -185,7 +232,7 @@ impl IceonApp {
                 resources.push(menu_item(
                     format!("page-{group_id}"),
                     group.label,
-                    Some(section_icon(group_id)),
+                    row_asset_icon(RowKind::Leaf(group_id), false).map(Icon::new),
                     active == group.default_child,
                     None,
                     cx.listener(move |app, _, window, cx| {
@@ -212,7 +259,7 @@ impl IceonApp {
                             menu_item(
                                 format!("child-{destination}"),
                                 child.label,
-                                Some(section_icon(destination)),
+                                row_asset_icon(RowKind::Child, false).map(Icon::new),
                                 active == destination,
                                 None,
                                 cx.listener(move |app, _, window, cx| {
@@ -262,7 +309,7 @@ impl IceonApp {
                             children.push(menu_item(
                                 format!("crd-nav-{}", definition.name),
                                 label,
-                                Some(section_icon("custom-resources")),
+                                row_asset_icon(RowKind::Child, false).map(Icon::new),
                                 selected,
                                 None,
                                 cx.listener(move |app, _, window, cx| {
@@ -278,22 +325,14 @@ impl IceonApp {
                                 }),
                             ));
                         }
-                        if self.sidebar_collapsed {
-                            resources.extend(children);
-                        } else {
-                            resources.push(
-                                SidebarMenuItem::new(api_group.clone())
-                                    .accessibility_label(api_group.clone())
-                                    .icon(crate::brand_icons::api_group_icon(&api_group))
-                                    .active(contains_active)
-                                    .default_open(
-                                        contains_active
-                                            || self.expanded_custom_groups.contains(&api_group),
-                                    )
-                                    .click_to_toggle(true)
-                                    .children(children),
-                            );
-                        }
+                        resources.push(
+                            parent_item(api_group.into(), children)
+                                .when_some(
+                                    row_asset_icon(RowKind::ApiGroup, false),
+                                    |item, icon| item.icon(Icon::new(icon)),
+                                )
+                                .active(contains_active),
+                        );
                     }
                     if self.access_ready()
                         && self.route_allowed("custom-resource-definitions")
@@ -303,7 +342,7 @@ impl IceonApp {
                             menu_item(
                                 "crd-loading",
                                 "Discovering resource types…",
-                                Some(section_icon("custom-resources")),
+                                row_asset_icon(RowKind::Child, false).map(Icon::new),
                                 false,
                                 None,
                                 |_, _, _| {},
@@ -320,7 +359,7 @@ impl IceonApp {
                             menu_item(
                                 "crd-retry",
                                 "Discovery failed / incomplete · Retry",
-                                Some(section_icon("custom-resources")),
+                                row_asset_icon(RowKind::Child, false).map(Icon::new),
                                 false,
                                 None,
                                 cx.listener(|app, _, window, cx| {
@@ -336,8 +375,13 @@ impl IceonApp {
                 continue;
             }
             groups.push(NavigationGroup::new(
+                group_id,
                 if leaf { "" } else { group.label },
                 resources,
+                Rc::new(cx.listener(|app, _, _, cx| {
+                    app.sidebar_collapsed = false;
+                    cx.notify();
+                })),
             ));
         }
 
@@ -352,25 +396,10 @@ impl IceonApp {
                         let cid = cluster_id.to_owned();
                         let destination = format!("ext:{}", item.id);
                         let selected = active == &destination;
-                        let icon_name = match item.icon {
-                            Some("database") => AssetIconName::Database,
-                            Some("network") => AssetIconName::Network,
-                            Some("key") => AssetIconName::KeyRound,
-                            Some("layers") => AssetIconName::Layers,
-                            Some("archive") => AssetIconName::Archive,
-                            Some("server") => AssetIconName::Server,
-                            Some("cpu") => AssetIconName::Container,
-                            Some("shield") => AssetIconName::Shield,
-                            Some("box") => AssetIconName::Box,
-                            Some("link") => AssetIconName::Link,
-                            Some("package") => AssetIconName::Package,
-                            Some("git-pull-request") => AssetIconName::PackageCheck,
-                            _ => AssetIconName::Puzzle,
-                        };
                         ext_resources.push(menu_item(
                             format!("ext-nav-{}", item.id),
                             item.title,
-                            Some(Icon::new(icon_name)),
+                            row_asset_icon(RowKind::Child, false).map(Icon::new),
                             selected,
                             None,
                             cx.listener(move |app, _, window, cx| {
@@ -389,7 +418,15 @@ impl IceonApp {
                 }
             }
             if !ext_resources.is_empty() {
-                groups.push(NavigationGroup::new("Extensions", ext_resources));
+                groups.push(NavigationGroup::new(
+                    "extensions",
+                    "Extensions",
+                    ext_resources,
+                    Rc::new(cx.listener(|app, _, _, cx| {
+                        app.sidebar_collapsed = false;
+                        cx.notify();
+                    })),
+                ));
             }
         }
 
@@ -407,6 +444,27 @@ impl IceonApp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn child_and_custom_tree_rows_are_iconless_but_rail_parents_are_visible() {
+        use super::{RowKind, row_asset_icon};
+        for rail in [false, true] {
+            assert!(row_asset_icon(RowKind::Child, rail).is_none());
+            for group in crate::navigation::CLUSTER_SECTIONS {
+                if group.children.is_empty() {
+                    assert!(row_asset_icon(RowKind::Leaf(group.id), rail).is_some());
+                } else if group.id != "custom-resources" {
+                    let icon = row_asset_icon(RowKind::Parent(group.id), rail).unwrap();
+                    assert_ne!(icon, gpui_kit_assets::IconName::Square);
+                }
+            }
+        }
+        for kind in [RowKind::Parent("custom-resources"), RowKind::ApiGroup] {
+            assert!(row_asset_icon(kind, false).is_none());
+            assert!(row_asset_icon(kind, true).is_some());
+        }
+        assert!(row_asset_icon(RowKind::Parent("extensions"), true).is_some());
+    }
+
     #[test]
     fn standard_sidebar_destinations_have_distinct_icons() {
         let mut icons = std::collections::HashMap::new();

@@ -3,9 +3,7 @@
 //! Provides system accent colors on macOS (via NSColor controlAccentColor) and
 //! Windows (via UISettings.GetColorValue(UIColorType.Accent)), falling back to
 //! Iceon's default brand blue on Linux and unsupported environments.
-//! Also synchronizes macOS `.icon` package gradient and dynamic Dock icon.
-
-use std::path::Path;
+//! App icon appearances are owned by macOS, independently of the UI accent.
 
 #[cfg(target_os = "macos")]
 pub(crate) struct SystemAccentObserver {
@@ -73,66 +71,6 @@ pub(crate) fn current_accent_color() -> Option<u32> {
     }
 }
 
-/// Retrieve the active operating system accent color in Display P3 color space as `(r, g, b)`.
-pub(crate) fn current_accent_display_p3() -> Option<(f64, f64, f64)> {
-    #[cfg(target_os = "macos")]
-    {
-        use objc2_app_kit::{NSColor, NSColorSpace};
-        let color = NSColor::controlAccentColor();
-        let p3 = NSColorSpace::displayP3ColorSpace();
-        let p3_color = color.colorUsingColorSpace(&p3)?;
-        Some((
-            p3_color.redComponent(),
-            p3_color.greenComponent(),
-            p3_color.blueComponent(),
-        ))
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        current_accent_color().map(|rgb| {
-            let r = ((rgb >> 16) & 0xff) as f64 / 255.0;
-            let g = ((rgb >> 8) & 0xff) as f64 / 255.0;
-            let b = (rgb & 0xff) as f64 / 255.0;
-            (r, g, b)
-        })
-    }
-}
-
-/// Update an `.icon` package's `icon.json` fill automatic-gradient with Display P3 values.
-pub(crate) fn update_icon_json(path: &Path, r: f64, g: f64, b: f64) -> Result<(), std::io::Error> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let content = std::fs::read_to_string(path)?;
-    let gradient_line =
-        format!("\"automatic-gradient\" : \"display-p3:{r:.5},{g:.5},{b:.5},1.00000\"");
-    let mut updated_lines = Vec::new();
-    for line in content.lines() {
-        if line.contains("\"automatic-gradient\"") {
-            let indent = line.find('"').unwrap_or(0);
-            let spaces = " ".repeat(indent);
-            updated_lines.push(format!("{spaces}{gradient_line}"));
-        } else {
-            updated_lines.push(line.to_string());
-        }
-    }
-    let updated = updated_lines.join("\n") + "\n";
-    std::fs::write(path, updated)
-}
-
-/// Synchronize known macOS `.icon` directories (`assets/icons/iceon.icon` and user download path).
-pub(crate) fn sync_icon_packages(r: f64, g: f64, b: f64) {
-    let repo_icon =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/icons/iceon.icon/icon.json");
-    let _ = update_icon_json(&repo_icon, r, g, b);
-
-    if let Some(home) = iceon_core::runtime::home_dir() {
-        let downloads_icon = home.join("Downloads/iceon.icon/icon.json");
-        let _ = update_icon_json(&downloads_icon, r, g, b);
-    }
-}
-
 /// Register a native listener for OS accent color changes.
 pub(crate) fn watch_system_accent<F: Fn() + Send + Sync + 'static>(
     callback: F,
@@ -189,11 +127,6 @@ impl gpui_kit::Global for GlobalSystemAccent {}
 
 /// Initialize system accent integration and real-time change listener.
 pub(crate) fn init(cx: &mut gpui_kit::App) {
-    // Initial sync of the .icon package to match system accent
-    if let Some((r, g, b)) = current_accent_display_p3() {
-        sync_icon_packages(r, g, b);
-    }
-
     use futures::StreamExt as _;
     let (sender, mut receiver) = futures::channel::mpsc::unbounded::<()>();
 
@@ -204,13 +137,6 @@ pub(crate) fn init(cx: &mut gpui_kit::App) {
     cx.spawn(async move |cx| {
         while receiver.next().await.is_some() {
             cx.update(|cx| {
-                if let Some((r, g, b)) = current_accent_display_p3() {
-                    sync_icon_packages(r, g, b);
-                }
-                #[cfg(target_os = "macos")]
-                if let Some(accent) = current_accent_color() {
-                    crate::native_menu::native_app::update_dock_icon(accent);
-                }
                 crate::shell_theme::apply_current(cx);
                 cx.refresh_windows();
             });
@@ -235,53 +161,6 @@ mod tests {
                 "accent color should be standard 24-bit RGB"
             );
         }
-    }
-
-    #[test]
-    fn current_accent_display_p3_is_normalized() {
-        if let Some((r, g, b)) = current_accent_display_p3() {
-            assert!((0.0..=1.0).contains(&r), "r component in bounds: {r}");
-            assert!((0.0..=1.0).contains(&g), "g component in bounds: {g}");
-            assert!((0.0..=1.0).contains(&b), "b component in bounds: {b}");
-        }
-    }
-
-    #[test]
-    fn update_icon_json_preserves_structure() {
-        let dir = std::env::temp_dir().join(format!("iceon-icon-test-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let icon_file = dir.join("icon.json");
-        let initial_json = r#"{
-  "fill" : {
-    "automatic-gradient" : "display-p3:0.05490,0.28627,0.72157,1.00000"
-  },
-  "groups" : [
-    {
-      "layers" : [
-        {
-          "image-name" : "iceon-transparent 2.png",
-          "name" : "iceon-transparent 2"
-        }
-      ]
-    }
-  ]
-}"#;
-        std::fs::write(&icon_file, initial_json).unwrap();
-
-        update_icon_json(&icon_file, 0.96863, 0.30980, 0.61961).unwrap();
-        let updated = std::fs::read_to_string(&icon_file).unwrap();
-
-        assert!(
-            updated.contains(
-                "\"automatic-gradient\" : \"display-p3:0.96863,0.30980,0.61961,1.00000\""
-            ),
-            "updated json contains new gradient: {updated}"
-        );
-        assert!(
-            updated.contains("\"image-name\" : \"iceon-transparent 2.png\""),
-            "structure preserved"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -356,20 +235,5 @@ mod tests {
             colors.secondary_active,
             gpui_kit::Hsla::from(gpui_kit::rgb(custom_color)).alpha(1.0)
         );
-    }
-
-    #[test]
-    fn sync_icon_packages_updates_actual_files() {
-        if let Some((r, g, b)) = current_accent_display_p3() {
-            sync_icon_packages(r, g, b);
-            let repo_icon = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../assets/icons/iceon.icon/icon.json");
-            let content = std::fs::read_to_string(repo_icon).unwrap();
-            let expected_gradient = format!("display-p3:{r:.5},{g:.5},{b:.5},1.00000");
-            assert!(
-                content.contains(&expected_gradient),
-                "expected gradient {expected_gradient} in {content}"
-            );
-        }
     }
 }
