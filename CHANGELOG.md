@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.8
+
+- Fix preference-store conflicts when changing terminal, editor, or application
+  fonts after another preference writer has committed changes.
+- Apply individual Settings changes transactionally to the latest persisted
+  preferences, preserving unrelated concurrent changes and integration rollback.
+- Prevent delayed background-import completions from reverting newer font and
+  preference state in the main window or Settings.
+- Add isolated regression coverage for stale revisions, concurrent preference
+  changes, validation failures, and persistence/integration rollback.
+
 ## 0.1.7
 
 - Add native extension foundations and built-in extension navigation, a marketplace,

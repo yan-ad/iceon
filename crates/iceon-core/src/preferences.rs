@@ -425,6 +425,38 @@ impl PreferencesEngine {
         integration: &mut impl app_integration::AppIntegration,
     ) -> std::result::Result<PreferencesSnapshot, ApplyPreferencesError> {
         validate(&request.preferences).map_err(ApplyPreferencesError::Store)?;
+        self.update_with_app_integration(
+            Some(request.revision),
+            |_| request.preferences,
+            integration,
+        )
+    }
+
+    /// Apply a narrow user action to the latest persisted preferences, not a UI
+    /// cache. Reading, mutation, validation and commit share one write transaction;
+    /// no stale full-document retry can overwrite another writer's changes.
+    /// Explicit full-document saves still require their optimistic revision.
+    pub fn mutate_with_app_integration(
+        &self,
+        mutate: impl FnOnce(&mut Preferences),
+        integration: &mut impl app_integration::AppIntegration,
+    ) -> std::result::Result<PreferencesSnapshot, ApplyPreferencesError> {
+        self.update_with_app_integration(
+            None,
+            |mut preferences| {
+                mutate(&mut preferences);
+                preferences
+            },
+            integration,
+        )
+    }
+
+    fn update_with_app_integration(
+        &self,
+        expected_revision: Option<u64>,
+        update: impl FnOnce(Preferences) -> Preferences,
+        integration: &mut impl app_integration::AppIntegration,
+    ) -> std::result::Result<PreferencesSnapshot, ApplyPreferencesError> {
         let mut conn = self
             .connection
             .lock()
@@ -439,38 +471,42 @@ impl PreferencesEngine {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreUnavailable))?;
-        if revision as u64 != request.revision {
+        if expected_revision.is_some_and(|expected| revision as u64 != expected) {
             return Err(ApplyPreferencesError::Store(PreferencesError::Conflict));
         }
         let previous: Preferences = decode_preferences(&payload)
             .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreCorrupt))?;
+        validate(&previous)
+            .map_err(|_| ApplyPreferencesError::Store(PreferencesError::StoreCorrupt))?;
+        let preferences = update(previous.clone());
+        validate(&preferences).map_err(ApplyPreferencesError::Store)?;
         let next_revision = revision.checked_add(1).ok_or(ApplyPreferencesError::Store(
             PreferencesError::StoreUnavailable,
         ))?;
-        let json = serde_json::to_string(&request.preferences)
+        let json = serde_json::to_string(&preferences)
             .map_err(|_| ApplyPreferencesError::Store(PreferencesError::InvalidInput))?;
-        integration.apply(&previous.app, &request.preferences.app)?;
+        integration.apply(&previous.app, &preferences.app)?;
         let store_result = (|| {
             tx.execute(
                 "UPDATE preferences_store SET revision = ?, payload = ? WHERE singleton = 1",
                 params![next_revision, json],
             )
             .map_err(|_| PreferencesError::StoreUnavailable)?;
-            if !request.preferences.app.restore_last_page {
+            if !preferences.app.restore_last_page {
                 tx.execute("DELETE FROM route_history", [])
                     .map_err(|_| PreferencesError::StoreUnavailable)?;
             }
             tx.commit().map_err(|_| PreferencesError::StoreUnavailable)
         })();
         if let Err(store) = store_result {
-            return match integration.apply(&request.preferences.app, &previous.app) {
+            return match integration.apply(&preferences.app, &previous.app) {
                 Ok(()) => Err(ApplyPreferencesError::Store(store)),
                 Err(rollback) => Err(ApplyPreferencesError::Rollback { store, rollback }),
             };
         }
         Ok(PreferencesSnapshot {
             revision: next_revision as u64,
-            preferences: request.preferences,
+            preferences,
         })
     }
     pub fn route_history_get(&self) -> Result<Option<crate::route_history::SavedRoute>> {

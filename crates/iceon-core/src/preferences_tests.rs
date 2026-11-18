@@ -379,3 +379,156 @@ fn ui_font_defaults_migrate_and_custom_fonts_validate() {
         assert_eq!(validate(&prefs), Err(PreferencesError::InvalidInput));
     }
 }
+
+#[derive(Default)]
+struct MutationIntegration {
+    calls: usize,
+    fail: bool,
+}
+
+impl app_integration::AppIntegration for MutationIntegration {
+    fn apply(
+        &mut self,
+        _: &AppPreferences,
+        _: &AppPreferences,
+    ) -> std::result::Result<(), app_integration::IntegrationError> {
+        self.calls += 1;
+        if self.fail {
+            return Err(app_integration::IntegrationError::Unsupported("test"));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn font_actions_preserve_other_writers_despite_stale_main_and_global_caches() {
+    let dir = tempdir().unwrap();
+    let engine = PreferencesEngine::new(dir.path().into()).unwrap();
+    let stale_main = engine.snapshot().unwrap();
+    let stale_global = stale_main.clone();
+    // A separate engine models another writer, including a background config
+    // import whose UI completion has not yet refreshed either cache.
+    let other = PreferencesEngine::new(dir.path().into()).unwrap();
+    let mut concurrent = stale_main.preferences.clone();
+    concurrent
+        .kubernetes
+        .kubeconfig_sync_paths
+        .push("/fixture/configs".into());
+    concurrent.app.restore_last_page = true;
+    concurrent.app.timezone = "UTC".into();
+    concurrent.proxy.https_proxy = "https://proxy.example.com".into();
+    concurrent.editor.tab_size = 8;
+    let saved = other
+        .save(SavePreferencesRequest {
+            revision: stale_main.revision,
+            preferences: concurrent.clone(),
+        })
+        .unwrap();
+    let mut integration = MutationIntegration::default();
+    let mut stale_font = stale_global.preferences.clone();
+    stale_font.app.font_family = "Fixture Sans".into();
+    assert!(matches!(
+        engine.save_with_app_integration(
+            SavePreferencesRequest {
+                revision: stale_global.revision,
+                preferences: stale_font,
+            },
+            &mut integration
+        ),
+        Err(ApplyPreferencesError::Store(PreferencesError::Conflict))
+    ));
+    assert_eq!(integration.calls, 0);
+    let ui = engine
+        .mutate_with_app_integration(
+            |p| p.app.font_family = "Fixture Sans".into(),
+            &mut integration,
+        )
+        .unwrap();
+    let editor = engine
+        .mutate_with_app_integration(
+            |p| p.editor.font_family = "Fixture Mono".into(),
+            &mut integration,
+        )
+        .unwrap();
+    let terminal = engine
+        .mutate_with_app_integration(|p| p.terminal.font_size = 18, &mut integration)
+        .unwrap();
+    concurrent.app.font_family = "Fixture Sans".into();
+    concurrent.editor.font_family = "Fixture Mono".into();
+    concurrent.terminal.font_size = 18;
+    assert_eq!(ui.revision, saved.revision + 1);
+    assert_eq!(editor.revision, ui.revision + 1);
+    assert_eq!(terminal.revision, editor.revision + 1);
+    assert_eq!(terminal.preferences, concurrent);
+    assert_eq!(other.snapshot().unwrap(), terminal);
+    // Full stale writes remain conflicts, even after successful narrow actions.
+    assert_eq!(
+        engine.save(SavePreferencesRequest {
+            revision: stale_main.revision,
+            preferences: stale_main.preferences,
+        }),
+        Err(PreferencesError::Conflict)
+    );
+}
+
+#[test]
+fn narrow_mutation_errors_leave_persisted_preferences_unchanged() {
+    let dir = tempdir().unwrap();
+    let engine = PreferencesEngine::new(dir.path().into()).unwrap();
+    let original = engine.snapshot().unwrap();
+    let mut integration = MutationIntegration::default();
+    assert!(matches!(
+        engine.mutate_with_app_integration(|p| p.editor.font_size = 0, &mut integration),
+        Err(ApplyPreferencesError::Store(PreferencesError::InvalidInput))
+    ));
+    assert_eq!(integration.calls, 0);
+    assert_eq!(engine.snapshot().unwrap(), original);
+    integration.fail = true;
+    assert!(matches!(
+        engine.mutate_with_app_integration(
+            |p| p.app.font_family = "Fixture Sans".into(),
+            &mut integration
+        ),
+        Err(ApplyPreferencesError::Integration(_))
+    ));
+    assert_eq!(engine.snapshot().unwrap(), original);
+    integration.fail = false;
+    engine.connection.lock().unwrap().execute_batch("CREATE TRIGGER fail_mutation BEFORE UPDATE ON preferences_store BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+    let calls = integration.calls;
+    assert!(matches!(
+        engine.mutate_with_app_integration(
+            |p| p.app.font_family = "Fixture Sans".into(),
+            &mut integration
+        ),
+        Err(ApplyPreferencesError::Store(
+            PreferencesError::StoreUnavailable
+        ))
+    ));
+    assert_eq!(
+        integration.calls,
+        calls + 2,
+        "failed commit rolls back integration"
+    );
+    assert_eq!(engine.snapshot().unwrap(), original);
+}
+
+#[test]
+fn narrow_mutation_does_not_replace_corrupt_persisted_preferences() {
+    let dir = tempdir().unwrap();
+    let engine = PreferencesEngine::new(dir.path().into()).unwrap();
+    engine
+        .connection
+        .lock()
+        .unwrap()
+        .execute("UPDATE preferences_store SET payload = ?", params!["{}"])
+        .unwrap();
+    let mut integration = MutationIntegration::default();
+    assert!(matches!(
+        engine.mutate_with_app_integration(
+            |_| panic!("must not mutate corrupt data"),
+            &mut integration
+        ),
+        Err(ApplyPreferencesError::Store(PreferencesError::StoreCorrupt))
+    ));
+    assert_eq!(integration.calls, 0);
+}

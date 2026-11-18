@@ -2,20 +2,20 @@ name: Native stable release
 
 on:
   push:
-    tags: ['0.1.7']
+    tags: ['0.1.8']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing immutable tag at this workflow commit (exactly 0.1.7)'
+        description: 'Existing immutable tag at this workflow commit (exactly 0.1.8)'
         required: true
         type: string
-        default: '0.1.7'
+        default: '0.1.8'
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-release-0.1.7
+  group: native-release-0.1.8
   cancel-in-progress: false
 
 env:

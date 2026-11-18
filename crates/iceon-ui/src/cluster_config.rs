@@ -214,13 +214,22 @@ impl AddConfigDialog {
                     Ok(Ok((snapshot, saved))) => {
                         let _ = this.owner.update(cx, |app, cx| {
                             if let Some(saved) = saved {
-                                app.preferences_revision = saved.revision;
-                                app.preferences_draft = saved.preferences.clone();
+                                // A settings action may have committed while the
+                                // import worker's completion was queued.
+                                crate::preferences_view::accept_preferences_snapshot(
+                                    &mut app.preferences_revision,
+                                    &mut app.preferences_draft,
+                                    &saved,
+                                );
                                 if cx.has_global::<crate::preferences_view::GlobalPreferencesState>() {
                                     cx.update_global::<crate::preferences_view::GlobalPreferencesState, _>(|global, _| {
-                                        global.revision = saved.revision;
-                                        global.preferences = saved.preferences;
-                                        global.error = None;
+                                        if crate::preferences_view::accept_preferences_snapshot(
+                                            &mut global.revision,
+                                            &mut global.preferences,
+                                            &saved,
+                                        ) {
+                                            global.error = None;
+                                        }
                                     });
                                 }
                             }

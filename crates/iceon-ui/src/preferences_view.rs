@@ -21,7 +21,7 @@ use crate::IceonApp;
 #[path = "kubernetes_preferences.rs"]
 mod kubernetes_preferences;
 use iceon_core::preferences::{
-    AppTheme, LineNumbers, MinimapSide, Preferences, PreferencesEngine, SavePreferencesRequest,
+    AppTheme, LineNumbers, MinimapSide, Preferences, PreferencesEngine, PreferencesSnapshot,
     TerminalTheme,
 };
 
@@ -83,6 +83,35 @@ pub(crate) fn set_zed_icon_theme(cx: &mut App, id: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::{PREFERENCE_SECTIONS, SelectItem as _, TimezoneChoice, timezone_choices};
+
+    #[test]
+    fn delayed_import_snapshot_cannot_revert_newer_main_or_global_font_state() {
+        use iceon_core::preferences::{Preferences, PreferencesSnapshot};
+        let delayed = PreferencesSnapshot {
+            revision: 2,
+            preferences: Preferences::default(),
+        };
+        let mut newest = delayed.clone();
+        newest.revision = 3;
+        newest.preferences.app.font_family = "Fixture Sans".into();
+        newest.preferences.editor.font_size = 18;
+        for _cache in ["main", "global"] {
+            let mut revision = 1;
+            let mut preferences = Preferences::default();
+            assert!(super::accept_preferences_snapshot(
+                &mut revision,
+                &mut preferences,
+                &newest,
+            ));
+            assert!(!super::accept_preferences_snapshot(
+                &mut revision,
+                &mut preferences,
+                &delayed,
+            ));
+            assert_eq!(revision, newest.revision);
+            assert_eq!(preferences, newest.preferences);
+        }
+    }
 
     #[test]
     fn preferences_navigation_has_only_the_requested_sections_in_order() {
@@ -239,6 +268,21 @@ pub(crate) struct GlobalPreferencesState {
 
 impl Global for GlobalPreferencesState {}
 
+/// Worker completions may arrive after a newer settings action. Cache updates
+/// must never move backwards, even though the underlying store is serialized.
+pub(crate) fn accept_preferences_snapshot(
+    revision: &mut u64,
+    preferences: &mut Preferences,
+    snapshot: &PreferencesSnapshot,
+) -> bool {
+    if snapshot.revision < *revision {
+        return false;
+    }
+    *revision = snapshot.revision;
+    *preferences = snapshot.preferences.clone();
+    true
+}
+
 pub(crate) fn current_prefs(cx: &App) -> Preferences {
     cx.try_global::<GlobalPreferencesState>()
         .map(|s| s.preferences.clone())
@@ -302,16 +346,15 @@ pub(crate) fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferen
                 state.preferences.app.zed_theme.clone(),
             );
             let prev_icon = state.preferences.app.zed_icon_theme.clone();
-            let mut next = state.preferences.clone();
-            mutate(&mut next);
-            if next.app.timezone.trim().is_empty() {
-                next.app.timezone = "system".into();
-            }
-
-            let res = state.engine.save_with_app_integration(
-                SavePreferencesRequest {
-                    revision: state.revision,
-                    preferences: next,
+            // Global/main caches can lag behind background imports or another
+            // preferences writer. Persist only this action against the latest
+            // document inside the engine transaction, never retry a stale draft.
+            let res = state.engine.mutate_with_app_integration(
+                |next| {
+                    mutate(next);
+                    if next.app.timezone.trim().is_empty() {
+                        next.app.timezone = "system".into();
+                    }
                 },
                 &mut RuntimeAppIntegration,
             );
@@ -357,10 +400,15 @@ pub(crate) fn mutate_preferences(cx: &mut App, mutate: impl FnOnce(&mut Preferen
 
     if let Some(snapshot) = snapshot_result {
         let _ = main_app.update(cx, |app, cx| {
-            app.preferences_revision = snapshot.revision;
             let discovery_changed =
                 app.preferences_draft.kubernetes != snapshot.preferences.kubernetes;
-            app.preferences_draft = snapshot.preferences;
+            if !accept_preferences_snapshot(
+                &mut app.preferences_revision,
+                &mut app.preferences_draft,
+                &snapshot,
+            ) {
+                return;
+            }
             if discovery_changed {
                 app.refresh_catalog(cx);
             }

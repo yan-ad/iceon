@@ -3144,14 +3144,14 @@ dependencies = [
 
 [[package]]
 name = "iceon-app"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "iceon-ui",
 ]
 
 [[package]]
 name = "iceon-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3201,7 +3201,7 @@ dependencies = [
 
 [[package]]
 name = "iceon-extension"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "serde",
  "serde_json",
@@ -3209,7 +3209,7 @@ dependencies = [
 
 [[package]]
 name = "iceon-ui"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "block2 0.6.2",
  "futures",
@@ -3228,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "iceon-xtask"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "base64 0.22.1",
  "minisign",
