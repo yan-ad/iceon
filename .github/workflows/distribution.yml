@@ -52,6 +52,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # Both macOS 15 runner images list this version; their default is Xcode 16.4.
+      - name: Select Xcode 26 for Icon Composer
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
+          test -d "$DEVELOPER_DIR"
+          echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          python .github/scripts/macos_icons.py --check-toolchain
       - uses: ./.github/actions/linux-build-deps
         if: runner.os == 'Linux'
       - uses: dtolnay/rust-toolchain@stable

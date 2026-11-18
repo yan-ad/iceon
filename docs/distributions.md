@@ -12,6 +12,46 @@ Bundled apps leave icon rendering to macOS so Default, Dark, Clear, and Tinted
 appearances can follow the system setting. Unbundled `cargo run` uses a static
 ICNS fallback; it cannot validate Icon Composer appearance switching.
 
+### Icon Composer toolchain and diagnostics
+
+The release and distribution macOS build jobs explicitly set
+`DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer` before compiling
+Rust or packaging. The official [ARM64 macOS 15 image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-arm64-Readme.md#xcode)
+and [Intel macOS 15 image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md#xcode)
+list that installation while still marking Xcode 16.4 as the default. Do not rely
+on the runner label to select Xcode. A missing pinned installation fails the job;
+it does not fall back to an older compiler.
+
+For a local full Xcode installation, set `DEVELOPER_DIR` explicitly and run:
+
+```sh
+python3 .github/scripts/macos_icons.py --check-toolchain
+```
+
+The same preflight runs on every icon compilation and reports the resolved
+`actool` path, Xcode version/build, and actool bundle version. It requires Xcode
+26+ and actool bundle version 24127+ (the shipping Xcode 26.0 compiler). Old tools
+can return success for `.icon` input while producing only a partial plist; success
+alone therefore never bypasses the required primary-icon metadata and nonempty
+`Assets.car` checks.
+
+The standalone invocation includes `--include-all-app-icons` and
+`--lightweight-asset-runtime-mode enabled`. The latter uses Xcode's bundled asset
+runtime on macOS 15. See the standalone `.icon` invocation in
+[Godot's macOS exporter](https://github.com/godotengine/godot/blob/master/platform/macos/export/export_plugin.cpp)
+and the runtime/version explanation in
+[Chromium's icon compiler](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/tools/mac/icons/compile_car.py).
+Chromium's undocumented `--enable-icon-stack-fallback-generation=disabled`
+workaround is for pairing `.icon` input with existing `.xcassets` bitmaps; Iceon
+does not supply that catalog and does not use that workaround. The existing
+macOS 11.0 deployment target and separately packaged ICNS fallback remain intact;
+the build-tool requirement does not raise the application's minimum OS version.
+Apple's [Icon Composer documentation](https://developer.apple.com/documentation/xcode/creating-your-app-icon-using-icon-composer)
+describes the layered file and app-icon naming contract, not these standalone CLI
+flags. Mocked helper tests verify command construction and fail-closed behavior;
+actual compilation and appearance switching still require supported Xcode and
+macOS respectively.
+
 ## Manual workflow
 
 After these changes are reviewed and pushed, run **Distribution preparation**

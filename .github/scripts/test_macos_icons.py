@@ -25,11 +25,25 @@ class MacIconTests(unittest.TestCase):
         self.info = {"CFBundleIconFile": "icon.icns", "CFBundleIdentifier": "ad.yan.iceon"}
 
     def compiler(self, args, **kwargs):
+        if args == ["xcrun", "--find", "actool"]:
+            return subprocess.CompletedProcess(args, 0, b"/Applications/Xcode_26.3.app/Contents/Developer/usr/bin/actool\n")
+        if args == ["xcrun", "xcodebuild", "-version"]:
+            return subprocess.CompletedProcess(args, 0, b"Xcode 26.3\nBuild version 17C529\n")
+        if args == ["xcrun", "actool", "--output-format=xml1", "--version"]:
+            return subprocess.CompletedProcess(args, 0, plistlib.dumps({
+                "com.apple.actool.version": {"bundle-version": "24127"}}))
         self.assertEqual(args[:2], ["xcrun", "actool"])
-        self.assertIn(str(self.source), args)
-        self.assertEqual(args[args.index("--platform") + 1], "macosx")
-        self.assertEqual(args[args.index("--app-icon") + 1], "iceon")
         output = Path(args[args.index("--compile") + 1])
+        self.assertEqual(args, [
+            "xcrun", "actool", str(self.source), "--compile", str(output),
+            "--output-format", "human-readable-text", "--notices", "--warnings", "--errors",
+            "--lightweight-asset-runtime-mode", "enabled",
+            "--app-icon", "iceon", "--platform", "macosx",
+            "--include-all-app-icons", "--enable-on-demand-resources", "NO",
+            "--target-device", "mac", "--minimum-deployment-target", "11.0",
+            "--output-partial-info-plist", str(output / "icon-info.plist"),
+        ])
+        self.assertEqual(kwargs, {"check": True, "timeout": 300})
         (output / "Assets.car").write_bytes(b"compiled-appearance-asset")
         partial = Path(args[args.index("--output-partial-info-plist") + 1])
         partial.write_bytes(plistlib.dumps({"CFBundleIconName": "iceon", "CFBundleIconFile": "iceon.icns"}))
@@ -39,6 +53,52 @@ class MacIconTests(unittest.TestCase):
             icons.compile_icon(self.root, self.resources, self.info)
         icons.verify_icon(self.resources, self.info)
         self.assertEqual(self.info["CFBundleIdentifier"], "ad.yan.iceon")
+
+    def test_unsupported_or_unknown_toolchain_is_rejected_before_compilation(self):
+        cases = [
+            (b"Xcode 16.4\nBuild version 16F6\n", "24127", "Xcode 26"),
+            (b"unrecognized version", "24127", "Xcode 26"),
+            (b"Xcode 26.0\nBuild version 17A324\n", "24000", "24127"),
+            (b"Xcode 26.0\nBuild version 17A324\n", "unknown", "Cannot determine"),
+            (b"Xcode 26.0\nBuild version 17A324\n", None, "Cannot determine"),
+        ]
+        for xcode, version, message in cases:
+            def tool(args, **kwargs):
+                self.assertNotIn("--compile", args)
+                if "xcodebuild" in args:
+                    return subprocess.CompletedProcess(args, 0, xcode)
+                if "--version" in args:
+                    metadata = {} if version is None else {"bundle-version": version}
+                    return subprocess.CompletedProcess(args, 0, plistlib.dumps({"com.apple.actool.version": metadata}))
+                return self.compiler(args, **kwargs)
+            with self.subTest(version=version, xcode=xcode), patch.object(icons.subprocess, "run", side_effect=tool):
+                with self.assertRaisesRegex(ValueError, message):
+                    icons.compile_icon(self.root, self.resources, self.info)
+            self.assertNotIn("CFBundleIconName", self.info)
+            self.assertFalse((self.resources / "Assets.car").exists())
+            self.assertEqual(self.document.read_bytes(), self.original)
+
+    def test_zero_exit_with_empty_metadata_is_not_success(self):
+        def empty(args, **kwargs):
+            result = self.compiler(args, **kwargs)
+            if "--compile" not in args:
+                return result
+            Path(args[args.index("--output-partial-info-plist") + 1]).write_bytes(plistlib.dumps({}))
+            (Path(args[args.index("--compile") + 1]) / "Assets.car").unlink()
+        with patch.object(icons.subprocess, "run", side_effect=empty):
+            with self.assertRaisesRegex(ValueError, "primary Icon Composer"):
+                icons.compile_icon(self.root, self.resources, self.info)
+        self.assertNotIn("CFBundleIconName", self.info)
+
+    def test_mac_workflows_select_supported_xcode_before_building(self):
+        workflows = Path(__file__).parents[1] / "workflows"
+        for filename, build_step in (("release.yml", "Build native app"), ("distribution.yml", "Check target")):
+            source = (workflows / filename).read_text()
+            selection = source.index("- name: Select Xcode 26 for Icon Composer")
+            self.assertLess(selection, source.index("- name: " + build_step))
+            self.assertIn('DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer', source)
+            self.assertIn('if: runner.os == \'macOS\'', source[selection:selection + 600])
+            self.assertIn('macos_icons.py --check-toolchain', source[selection:selection + 600])
         self.assertEqual(self.document.read_bytes(), self.original)
         self.assertEqual((self.resources / "icon.icns").read_bytes(), b"legacy")
         self.assertFalse((self.resources / "icon-info.plist").exists())
@@ -51,13 +111,19 @@ class MacIconTests(unittest.TestCase):
         self.assertEqual(self.document.read_bytes(), self.original)
 
     def test_failed_compile_propagates(self):
-        with patch.object(icons.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "actool")):
+        def failed(args, **kwargs):
+            if "--compile" in args:
+                raise subprocess.CalledProcessError(1, "actool")
+            return self.compiler(args, **kwargs)
+        with patch.object(icons.subprocess, "run", side_effect=failed):
             with self.assertRaises(subprocess.CalledProcessError):
                 icons.compile_icon(self.root, self.resources, self.info)
 
     def test_missing_compiled_catalog_is_rejected(self):
         def missing(args, **kwargs):
-            self.compiler(args, **kwargs)
+            result = self.compiler(args, **kwargs)
+            if "--compile" not in args:
+                return result
             (Path(args[args.index("--compile") + 1]) / "Assets.car").unlink()
         with patch.object(icons.subprocess, "run", side_effect=missing):
             with self.assertRaisesRegex(ValueError, "Assets.car"):
@@ -65,7 +131,9 @@ class MacIconTests(unittest.TestCase):
 
     def test_identity_metadata_cannot_be_overwritten(self):
         def invalid(args, **kwargs):
-            self.compiler(args, **kwargs)
+            result = self.compiler(args, **kwargs)
+            if "--compile" not in args:
+                return result
             Path(args[args.index("--output-partial-info-plist") + 1]).write_bytes(
                 plistlib.dumps({"CFBundleIconName": "iceon", "CFBundleIdentifier": "other"}))
         with patch.object(icons.subprocess, "run", side_effect=invalid):

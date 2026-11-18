@@ -7,21 +7,48 @@ contract. A missing compiler/asset is an error, not a silent legacy-only package
 """
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import tempfile
+
+
+def check_toolchain():
+    """Reject old actool versions that can succeed without compiling .icon input."""
+    def query(args):
+        return subprocess.run(args, check=True, capture_output=True, timeout=30).stdout
+
+    compiler = query(["xcrun", "--find", "actool"]).decode().strip()
+    xcode = query(["xcrun", "xcodebuild", "-version"]).decode().strip()
+    print(f"Icon Composer toolchain: {compiler}\n{xcode}", flush=True)
+    match = re.search(r"^Xcode (\d+)(?:\.|$)", xcode, re.MULTILINE)
+    if not match or int(match[1]) < 26:
+        raise ValueError("Icon Composer requires Xcode 26+; select a full Xcode with DEVELOPER_DIR")
+    version_info = plistlib.loads(query(["xcrun", "actool", "--output-format=xml1", "--version"]))
+    version = version_info.get("com.apple.actool.version", {}).get("bundle-version", "")
+    print(f"Icon Composer actool bundle-version: {version}", flush=True)
+    # 24127 is the shipping Xcode 26.0 actool, not Xcode's marketing version.
+    if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+)*", version):
+        raise ValueError("Cannot determine actool bundle-version; Xcode 26+ is required")
+    if tuple(map(int, version.split("."))) < (24127,):
+        raise ValueError(f"Icon Composer requires actool 24127+ (Xcode 26+); found {version}")
 
 
 def compile_icon(root, resources, info):
     source = Path(root) / "assets/icons/iceon.icon"
     if not (source / "icon.json").is_file():
         raise ValueError("Missing Icon Composer document")
+    check_toolchain()
     with tempfile.TemporaryDirectory(prefix="iceon-icons-") as temporary:
         output = Path(temporary)
         partial = output / "icon-info.plist"
         subprocess.run([
             "xcrun", "actool", str(source), "--compile", str(output),
+            "--output-format", "human-readable-text", "--notices", "--warnings", "--errors",
+            # Use Xcode's bundled asset runtime even when the host is macOS 15.
+            "--lightweight-asset-runtime-mode", "enabled",
             "--app-icon", source.stem, "--platform", "macosx",
+            "--include-all-app-icons", "--enable-on-demand-resources", "NO",
             "--target-device", "mac", "--minimum-deployment-target", "11.0",
             "--output-partial-info-plist", str(partial),
         ], check=True, timeout=300)
@@ -57,3 +84,12 @@ def verify_icon(resources, info):
         raise ValueError("Missing or invalid fallback icon registration")
     if not (resources / fallback).is_file():
         raise ValueError("Missing fallback icon file")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check-toolchain", action="store_true", required=True)
+    parser.parse_args()
+    check_toolchain()
