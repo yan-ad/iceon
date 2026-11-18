@@ -66,8 +66,8 @@ pub(crate) fn section_asset_icon(section: &str) -> AssetIconName {
     }
 }
 
-/// Children are text-only. Custom parents are also text-only in the tree,
-/// but always have a visible, named fallback affordance in the icon rail.
+/// Children and API groups are text-only in the tree. Section parents have
+/// icons, including Custom Resources; API groups use a fallback in the rail.
 #[derive(Clone, Copy)]
 enum RowKind<'a> {
     Leaf(&'a str),
@@ -81,7 +81,7 @@ fn row_asset_icon(kind: RowKind<'_>, rail: bool) -> Option<AssetIconName> {
         RowKind::Leaf(section) => Some(section_asset_icon(section)),
         RowKind::Child => None,
         RowKind::ApiGroup => rail.then_some(Puzzle),
-        RowKind::Parent("custom-resources") => rail.then_some(Puzzle),
+        RowKind::Parent("custom-resources") => Some(Puzzle),
         RowKind::Parent(section) => Some(match section {
             "workloads" => Layers,
             "config" => SlidersHorizontal,
@@ -445,23 +445,27 @@ impl IceonApp {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn child_and_custom_tree_rows_are_iconless_but_rail_parents_are_visible() {
+    fn children_are_iconless_and_section_parents_have_icons_in_both_modes() {
         use super::{RowKind, row_asset_icon};
         for rail in [false, true] {
             assert!(row_asset_icon(RowKind::Child, rail).is_none());
             for group in crate::navigation::CLUSTER_SECTIONS {
                 if group.children.is_empty() {
                     assert!(row_asset_icon(RowKind::Leaf(group.id), rail).is_some());
-                } else if group.id != "custom-resources" {
+                } else {
                     let icon = row_asset_icon(RowKind::Parent(group.id), rail).unwrap();
                     assert_ne!(icon, gpui_kit_assets::IconName::Square);
                 }
             }
         }
-        for kind in [RowKind::Parent("custom-resources"), RowKind::ApiGroup] {
-            assert!(row_asset_icon(kind, false).is_none());
-            assert!(row_asset_icon(kind, true).is_some());
+        for rail in [false, true] {
+            assert_eq!(
+                row_asset_icon(RowKind::Parent("custom-resources"), rail),
+                Some(gpui_kit_assets::IconName::Puzzle)
+            );
         }
+        assert!(row_asset_icon(RowKind::ApiGroup, false).is_none());
+        assert!(row_asset_icon(RowKind::ApiGroup, true).is_some());
         assert!(row_asset_icon(RowKind::Parent("extensions"), true).is_some());
     }
 
