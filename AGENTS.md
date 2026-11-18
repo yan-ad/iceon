@@ -128,6 +128,7 @@ cargo build --locked -p iceon-app
 
 - Tests **MUST** cover changed behavior and relevant failure/disabled/stale-state cases, not only implementation details.
 - UI interaction changes **SHOULD** be exercised through existing offline native probes or a focused fixture. Prefer fixtures over live clusters, real credentials, or production services.
+- `cargo run --locked -p iceon-app -- --sidebar-probe` (debug builds) exercises production sidebar parent/caret expansion and icon-rail toggling with isolated offline extension fixtures, without a cluster session.
 - Probe output **MUST** contain its explicit success marker before it is reported as passing. A zero exit code alone is not sufficient when callbacks can fail silently.
 - Failing tests **MUST NOT** be deleted, weakened, skipped, or repeatedly rerun until green without investigating the cause. Report unresolved intermittent failures.
 - Documentation-only changes **MAY** use focused document/diff validation instead of compiling unchanged code. State what was checked.

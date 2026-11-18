@@ -127,13 +127,8 @@ fn guide_visible(cluster_route: bool, connected: bool, access_blocked: bool) -> 
     cluster_route && (!connected || access_blocked)
 }
 
-fn sidebar_visible(
-    cluster_route: bool,
-    guide: bool,
-    collapsed: bool,
-    cluster_collapsed: bool,
-) -> bool {
-    cluster_route && !guide && !collapsed && !cluster_collapsed
+fn sidebar_visible(cluster_route: bool, guide: bool, cluster_collapsed: bool) -> bool {
+    cluster_route && !guide && !cluster_collapsed
 }
 
 fn diagnostic_summary(
@@ -315,9 +310,14 @@ impl IceonApp {
         sidebar_visible(
             matches!(self.history.current(), Route::Cluster { .. }),
             self.connection_guide_visible(),
-            self.sidebar_collapsed,
             self.cluster_sidebar_collapsed,
         )
+    }
+
+    /// Actual shell split; collapsed navigation remains a visible icon rail.
+    pub(crate) fn effective_sidebar_width(&self) -> f32 {
+        self.navigation_widths
+            .effective_sidebar_width(self.cluster_sidebar_open(), self.sidebar_collapsed)
     }
 
     pub(crate) fn record_connection_failure(
@@ -673,18 +673,25 @@ mod tests {
         assert!(guide_visible(true, false, false));
         assert!(guide_visible(true, true, true));
         assert!(!guide_visible(true, true, false));
-        for collapsed in [false, true] {
-            for cluster_collapsed in [false, true] {
-                let saved = (collapsed, cluster_collapsed);
-                assert!(!sidebar_visible(true, true, collapsed, cluster_collapsed));
-                assert_eq!(
-                    sidebar_visible(true, false, collapsed, cluster_collapsed),
-                    !collapsed && !cluster_collapsed
-                );
-                assert_eq!(saved, (collapsed, cluster_collapsed));
+        let widths = crate::cluster_view::NavigationWidths::default();
+        for cluster_route in [false, true] {
+            for guide in [false, true] {
+                for collapsed in [false, true] {
+                    for cluster_collapsed in [false, true] {
+                        let visible = sidebar_visible(cluster_route, guide, cluster_collapsed);
+                        assert_eq!(visible, cluster_route && !guide && !cluster_collapsed);
+                        let expected = if !visible {
+                            0.0
+                        } else if collapsed {
+                            48.0
+                        } else {
+                            widths.sidebar_width()
+                        };
+                        assert_eq!(widths.effective_sidebar_width(visible, collapsed), expected);
+                    }
+                }
             }
         }
-        assert!(!sidebar_visible(false, false, false, false));
     }
 
     #[::core::prelude::v1::test]

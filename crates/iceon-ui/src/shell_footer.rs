@@ -62,7 +62,7 @@ impl IceonApp {
             .text_color(cx.theme().sidebar_foreground)
             .child(
                 crate::shell_theme::chrome_background(
-                    sidebar_open.then_some(self.navigation_widths.sidebar_width()),
+                    sidebar_open.then_some(self.effective_sidebar_width()),
                     cx,
                 )
                 // The absolute material layer must not paint over the top
@@ -74,10 +74,14 @@ impl IceonApp {
                     .relative()
                     .h_full()
                     .when(sidebar_open, |controls| {
-                        controls
-                            .w(px(self.navigation_widths.sidebar_width()))
-                            .border_r_1()
-                            .border_color(cx.theme().sidebar_border)
+                        controls.w(px(self.navigation_widths.sidebar_width())).when(
+                            !self.sidebar_collapsed,
+                            |controls| {
+                                controls
+                                    .border_r_1()
+                                    .border_color(cx.theme().sidebar_border)
+                            },
+                        )
                     })
                     .flex_shrink_0()
                     .px_2()

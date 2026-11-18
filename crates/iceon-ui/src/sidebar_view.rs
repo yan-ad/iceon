@@ -70,18 +70,19 @@ fn section_icon(section: &str) -> Icon {
     Icon::new(section_asset_icon(section))
 }
 
-/// Unlike SidebarGroup, standalone navigation menus reserve no empty heading slot.
+/// Standalone pages have no heading; parents use the kit's native submenu caret.
+/// In rail mode expose destinations directly instead of hiding them in submenus.
 #[derive(Clone)]
 struct NavigationGroup {
     label: SharedString,
-    menu: SidebarMenu,
+    items: Vec<SidebarMenuItem>,
     collapsed: bool,
 }
 impl NavigationGroup {
-    fn new(label: impl Into<SharedString>, menu: SidebarMenu) -> Self {
+    fn new(label: impl Into<SharedString>, items: Vec<SidebarMenuItem>) -> Self {
         Self {
             label: label.into(),
-            menu,
+            items,
             collapsed: false,
         }
     }
@@ -103,21 +104,23 @@ impl SidebarItem for NavigationGroup {
         cx: &mut App,
     ) -> impl IntoElement {
         let id = id.into();
-        gpui_kit::component::v_flex()
-            .gap_1()
-            .when(!self.label.is_empty() && !self.collapsed, |group| {
-                group.child(
-                    div()
-                        .px_2()
-                        .pt_2()
-                        .pb_1()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(cx.theme().muted_foreground)
-                        .child(self.label.clone()),
-                )
-            })
-            .child(self.menu.collapsed(self.collapsed).render(id, window, cx))
+        let menu = if self.label.is_empty() || self.collapsed {
+            SidebarMenu::new().children(self.items)
+        } else {
+            SidebarMenu::new().child(
+                SidebarMenuItem::new(self.label.clone())
+                    .accessibility_label(self.label)
+                    .default_open(true)
+                    .click_to_toggle(true)
+                    .children(self.items),
+            )
+        };
+        // Keep parent expansion state separate from rail rows' indexed state.
+        let id = SharedString::from(format!(
+            "{id}-{}",
+            if self.collapsed { "rail" } else { "tree" }
+        ));
+        menu.collapsed(self.collapsed).render(id, window, cx)
     }
 }
 
@@ -246,66 +249,50 @@ impl IceonApp {
                         let contains_active = definitions
                             .iter()
                             .any(|definition| *active == format!("crd:{}", definition.name));
-                        let expanded = self.expanded_custom_groups.contains(&api_group);
-                        let toggle = api_group.clone();
-                        resources.push(
-                            menu_item(
-                                format!("crd-group-{api_group}"),
-                                api_group.clone(),
-                                Some(crate::brand_icons::api_group_icon(&api_group)),
-                                contains_active,
-                                Some(if expanded {
-                                    IconName::ChevronDown
-                                } else {
-                                    IconName::ChevronRight
-                                }),
-                                cx.listener(move |app, _, _, cx| {
-                                    if let Some(index) = app
-                                        .expanded_custom_groups
-                                        .iter()
-                                        .position(|group| group == &toggle)
-                                    {
-                                        app.expanded_custom_groups.remove(index);
-                                    } else {
-                                        app.expanded_custom_groups.push(toggle.clone());
-                                    }
-                                    cx.notify();
-                                }),
-                            )
-                            .pl(px(32.0)),
-                        );
-                        if expanded {
-                            for definition in definitions {
-                                let cid = cluster_id.to_owned();
-                                let destination = format!("crd:{}", definition.name);
-                                let selected = *active == destination;
-                                let label = definition
-                                    .columns
-                                    .get("kind")
-                                    .cloned()
-                                    .unwrap_or_else(|| definition.name.clone());
-                                resources.push(
-                                    menu_item(
-                                        format!("crd-nav-{}", definition.name),
-                                        label,
-                                        None,
-                                        selected,
-                                        None,
-                                        cx.listener(move |app, _, window, cx| {
-                                            app.navigate(
-                                                Route::Cluster {
-                                                    cluster_id: cid.clone(),
-                                                    section: destination.clone(),
-                                                },
-                                                true,
-                                                window,
-                                                cx,
-                                            )
-                                        }),
+                        let mut children = Vec::new();
+                        for definition in definitions {
+                            let cid = cluster_id.to_owned();
+                            let destination = format!("crd:{}", definition.name);
+                            let selected = *active == destination;
+                            let label = definition
+                                .columns
+                                .get("kind")
+                                .cloned()
+                                .unwrap_or_else(|| definition.name.clone());
+                            children.push(menu_item(
+                                format!("crd-nav-{}", definition.name),
+                                label,
+                                Some(section_icon("custom-resources")),
+                                selected,
+                                None,
+                                cx.listener(move |app, _, window, cx| {
+                                    app.navigate(
+                                        Route::Cluster {
+                                            cluster_id: cid.clone(),
+                                            section: destination.clone(),
+                                        },
+                                        true,
+                                        window,
+                                        cx,
                                     )
-                                    .pl(px(48.0)),
-                                );
-                            }
+                                }),
+                            ));
+                        }
+                        if self.sidebar_collapsed {
+                            resources.extend(children);
+                        } else {
+                            resources.push(
+                                SidebarMenuItem::new(api_group.clone())
+                                    .accessibility_label(api_group.clone())
+                                    .icon(crate::brand_icons::api_group_icon(&api_group))
+                                    .active(contains_active)
+                                    .default_open(
+                                        contains_active
+                                            || self.expanded_custom_groups.contains(&api_group),
+                                    )
+                                    .click_to_toggle(true)
+                                    .children(children),
+                            );
                         }
                     }
                     if self.access_ready()
@@ -316,12 +303,13 @@ impl IceonApp {
                             menu_item(
                                 "crd-loading",
                                 "Discovering resource types…",
-                                None,
+                                Some(section_icon("custom-resources")),
                                 false,
                                 None,
                                 |_, _, _| {},
                             )
-                            .pl(px(32.0)),
+                            .disable(true)
+                            .when(!self.sidebar_collapsed, |item| item.pl(px(32.0))),
                         );
                     }
                     if self.access_ready()
@@ -332,14 +320,14 @@ impl IceonApp {
                             menu_item(
                                 "crd-retry",
                                 "Discovery failed / incomplete · Retry",
-                                None,
+                                Some(section_icon("custom-resources")),
                                 false,
                                 None,
                                 cx.listener(|app, _, window, cx| {
                                     app.discover_custom_resources(window, cx)
                                 }),
                             )
-                            .pl(px(32.0)),
+                            .when(!self.sidebar_collapsed, |item| item.pl(px(32.0))),
                         );
                     }
                 }
@@ -349,7 +337,7 @@ impl IceonApp {
             }
             groups.push(NavigationGroup::new(
                 if leaf { "" } else { group.label },
-                SidebarMenu::new().children(resources),
+                resources,
             ));
         }
 
@@ -401,10 +389,7 @@ impl IceonApp {
                 }
             }
             if !ext_resources.is_empty() {
-                groups.push(NavigationGroup::new(
-                    "Extensions",
-                    SidebarMenu::new().children(ext_resources),
-                ));
+                groups.push(NavigationGroup::new("Extensions", ext_resources));
             }
         }
 
@@ -414,7 +399,8 @@ impl IceonApp {
         .w_full()
         .border_r_1()
         .border_color(cx.theme().sidebar_border)
-        .collapsible(false)
+        .collapsible(true)
+        .collapsed(self.sidebar_collapsed)
         .children(groups)
     }
 }

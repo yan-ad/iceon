@@ -70,7 +70,11 @@ pub mod secrets_view;
 mod shell_footer;
 mod shell_header;
 mod shell_theme;
+#[cfg(debug_assertions)]
+mod sidebar_probe;
 mod sidebar_view;
+#[cfg(debug_assertions)]
+pub use sidebar_probe::run as run_sidebar_probe;
 pub(crate) mod system_accent;
 mod terminal_surface;
 mod tray;

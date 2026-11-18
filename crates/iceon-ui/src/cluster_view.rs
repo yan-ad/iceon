@@ -21,6 +21,8 @@ use gpui_kit::component::{
 
 // Kept independently of the route/drawer lifecycle, so toggling either panel
 // never discards the last chosen size. The file contains geometry only.
+// Matches private COLLAPSED_WIDTH in gpui-component 0.9.0/src/sidebar/mod.rs.
+pub(crate) const SIDEBAR_RAIL_WIDTH: f32 = 48.0;
 pub(crate) const SIDEBAR_MIN_WIDTH: f32 = 224.0;
 pub(crate) const INSPECTOR_MIN_WIDTH: f32 = 360.0;
 
@@ -52,6 +54,16 @@ impl NavigationWidths {
     pub(crate) fn sidebar_width(&self) -> f32 {
         self.sidebar
     }
+    pub(crate) fn effective_sidebar_width(&self, visible: bool, collapsed: bool) -> f32 {
+        if !visible {
+            0.0
+        } else if collapsed {
+            SIDEBAR_RAIL_WIDTH
+        } else {
+            self.sidebar
+        }
+    }
+
     fn path() -> std::path::PathBuf {
         iceon_core::runtime::app_data_dir().join("navigation-widths")
     }
@@ -111,6 +123,18 @@ impl Render for ResizeNavigation {
 #[cfg(test)]
 mod navigation_width_tests {
     use super::{NavigationWidths, SIDEBAR_MIN_WIDTH};
+
+    #[test]
+    fn rail_and_hidden_widths_preserve_expanded_geometry() {
+        let widths = NavigationWidths::parse("310 480").unwrap();
+        assert_eq!(widths.effective_sidebar_width(true, true), 48.0);
+        for collapsed in [false, true] {
+            assert_eq!(widths.effective_sidebar_width(false, collapsed), 0.0);
+        }
+        assert_eq!(widths.effective_sidebar_width(true, false), 310.0);
+        assert_eq!(widths.sidebar_width(), 310.0);
+        assert!(!widths.dirty);
+    }
 
     #[test]
     fn persisted_widths_round_trip_and_clamp_to_accessible_ranges() {
@@ -2304,6 +2328,10 @@ impl IceonApp {
             .on_drag_move(cx.listener(
                 move |this, event: &DragMoveEvent<ResizeNavigation>, _, cx| {
                     let sidebar = event.drag(cx).sidebar;
+                    // A drag started before collapse/navigation must not alter saved geometry.
+                    if sidebar && (!this.cluster_sidebar_open() || this.sidebar_collapsed) {
+                        return;
+                    }
                     let requested: f32 = if sidebar {
                         (event.event.position.x - event.bounds.left()).into()
                     } else {
@@ -2313,8 +2341,8 @@ impl IceonApp {
                     let total: f32 = event.bounds.size.width.into();
                     let other = if sidebar && inspector_open {
                         this.navigation_widths.inspector
-                    } else if !sidebar && sidebar_open {
-                        this.navigation_widths.sidebar
+                    } else if !sidebar {
+                        this.effective_sidebar_width()
                     } else {
                         0.0
                     };
@@ -2355,25 +2383,33 @@ impl IceonApp {
                 row.child(
                     div()
                         .relative()
-                        .w(px(self.navigation_widths.sidebar))
-                        .min_w(px(SIDEBAR_MIN_WIDTH))
+                        .w(px(self.effective_sidebar_width()))
+                        .min_w(px(self.effective_sidebar_width()))
                         .h_full()
                         .flex_shrink_0()
                         .child(self.render_cluster_sidebar(&cluster_id, cx))
-                        .child(
-                            resize_handle("resource-sidebar-resize", Axis::Horizontal)
-                                .inside(HandleEdge::Trailing)
-                                .with_appearance(Rc::new(|_, _, _| Some(div().into_any_element())))
-                                .on_drag(ResizeNavigation { sidebar: true }, |drag, _, _, cx| {
-                                    cx.new(|_| drag.clone())
-                                })
-                                .on_double_click(cx.listener(|this, _, _, cx| {
-                                    this.navigation_widths.sidebar = 252.0;
-                                    this.navigation_widths.dirty = true;
-                                    this.navigation_widths.save();
-                                    cx.notify();
-                                })),
-                        ),
+                        .when(!self.sidebar_collapsed, |panel| {
+                            panel.child(
+                                resize_handle("resource-sidebar-resize", Axis::Horizontal)
+                                    .inside(HandleEdge::Trailing)
+                                    .with_appearance(Rc::new(|_, _, _| {
+                                        Some(div().into_any_element())
+                                    }))
+                                    .on_drag(
+                                        ResizeNavigation { sidebar: true },
+                                        |drag, _, _, cx| cx.new(|_| drag.clone()),
+                                    )
+                                    .on_double_click(cx.listener(|this, _, _, cx| {
+                                        if !this.cluster_sidebar_open() || this.sidebar_collapsed {
+                                            return;
+                                        }
+                                        this.navigation_widths.sidebar = 252.0;
+                                        this.navigation_widths.dirty = true;
+                                        this.navigation_widths.save();
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
                 )
             })
             .child(

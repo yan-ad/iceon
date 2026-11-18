@@ -595,6 +595,7 @@ impl IceonApp {
         let current_namespace = namespace_label(&self.selected_namespaces);
         let inventory_count = self.header_inventory_count(cx);
         let sidebar_open = self.cluster_sidebar_open();
+        // Controls retain room for all navigation buttons, independent of the material split.
         let sidebar_width = self.navigation_widths.sidebar_width();
 
         // Do not replace the delegate on ordinary renders: doing so would reset the
@@ -621,7 +622,7 @@ impl IceonApp {
             .relative()
             .w_full()
             .flex_shrink_0()
-            .child(crate::shell_theme::chrome_background(sidebar_open.then_some(sidebar_width), cx))
+            .child(crate::shell_theme::chrome_background(sidebar_open.then_some(self.effective_sidebar_width()), cx))
             .child(TitleBar::new()
             .relative()
             .border_color(crate::shell_theme::chrome_border(cx.theme()))
@@ -652,7 +653,7 @@ impl IceonApp {
                             .gap_0()
                             .child(h_flex().items_center().gap_1p5().h_full().flex_shrink_0().pr_2()
                                  .w(px(header_controls_width(sidebar_width, sidebar_open, cfg!(target_os = "macos"))))
-                                .border_r_1().border_color(cx.theme().sidebar_border)
+                                .when(sidebar_open && !self.sidebar_collapsed, |controls| controls.border_r_1().border_color(cx.theme().sidebar_border))
                             .when(matches!(self.history.current(), Route::Cluster { .. }), |navigation| navigation.child(
                                 Button::new("nav-toggle-sidebar")
                                     .text_color(cx.theme().sidebar_foreground)
@@ -956,6 +957,14 @@ mod tests {
 
     #[test]
     fn header_split_tracks_sidebar_width_and_native_inset() {
+        // The rail material split must not become the controls allocation.
+        let widths = crate::cluster_view::NavigationWidths::default();
+        for macos in [false, true] {
+            assert!(
+                super::header_controls_width(widths.sidebar_width(), true, macos)
+                    > widths.effective_sidebar_width(true, true)
+            );
+        }
         assert_eq!(super::header_controls_width(252., true, true) + 80., 252.);
         assert_eq!(super::header_controls_width(420., true, true) + 80., 420.);
         assert_eq!(super::header_controls_width(252., true, false) + 12., 252.);
