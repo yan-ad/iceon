@@ -30,6 +30,32 @@ pub(crate) fn open_window<V: Render>(
     Ok((handle, view))
 }
 
+/// Move only as far toward white/black as needed, retaining the accent's hue.
+/// Include the selected sidebar fill, since the same ink is used for its label.
+fn readable_accent(accent: u32, background: u32, surface: u32, mode: ThemeMode) -> u32 {
+    let mix = |from: u32, to: u32, amount: f32| {
+        let channel = |shift| {
+            let from = ((from >> shift) & 255u32) as f32;
+            let to = ((to >> shift) & 255u32) as f32;
+            (from + (to - from) * amount).round() as u32
+        };
+        (channel(16) << 16) | (channel(8) << 8) | channel(0)
+    };
+    let backgrounds = [background, surface, mix(surface, accent, SELECTED_ALPHA)];
+    let target = if mode.is_dark() { 0xffffff } else { 0x000000 };
+    for step in 0..=255 {
+        let candidate = mix(accent, target, step as f32 / 255.0);
+        let ink = luminance(candidate);
+        if backgrounds.iter().all(|bg| {
+            let fill = luminance(*bg);
+            (ink.max(fill) + 0.05) / (ink.min(fill) + 0.05) >= 4.5
+        }) {
+            return candidate;
+        }
+    }
+    target
+}
+
 /// Horizontal shell chrome separators share the native title-bar border role.
 /// Sidebar dividers intentionally retain their separate sidebar-border role.
 pub(crate) fn chrome_border(theme: &Theme) -> Hsla {
@@ -216,19 +242,32 @@ pub(crate) fn brand_colors_with_accent(
     colors.button_primary_hover = colors.primary_hover;
     colors.button_primary_active = colors.primary_active;
     colors.ring = colors.primary;
-    // Filled buttons retain Iceon blue, while text links need a lighter blue
-    // against dark content (the brand blue alone is below readable contrast).
-    colors.link = if mode.is_dark() {
+    // Text accents follow the OS accent too, but need readable contrast on
+    // content and selected sidebar surfaces rather than the filled-button ink.
+    let text_accent = accent.map(|accent| readable_accent(accent, background, surface, mode));
+    colors.link = if let Some(accent) = text_accent {
+        neutral(accent, 1.0)
+    } else if mode.is_dark() {
         neutral(link, 1.0)
     } else {
         colors.primary
     };
-    colors.link_hover = if mode.is_dark() {
+    colors.link_hover = if let Some(accent) = accent {
+        neutral(
+            readable_accent(shade(accent, 0.94), background, surface, mode),
+            1.0,
+        )
+    } else if mode.is_dark() {
         neutral(0xc2d1ff, 1.0)
     } else {
         colors.primary_hover
     };
-    colors.link_active = if mode.is_dark() {
+    colors.link_active = if let Some(accent) = accent {
+        neutral(
+            readable_accent(shade(accent, 0.88), background, surface, mode),
+            1.0,
+        )
+    } else if mode.is_dark() {
         neutral(0xadc2ff, 1.0)
     } else {
         colors.primary_active
@@ -237,11 +276,7 @@ pub(crate) fn brand_colors_with_accent(
     colors.sidebar_primary = colors.primary;
     colors.sidebar_primary_foreground = colors.primary_foreground;
     colors.sidebar_accent = colors.primary.alpha(SELECTED_ALPHA);
-    colors.sidebar_accent_foreground = if mode.is_dark() {
-        neutral(link, 1.0)
-    } else {
-        colors.primary
-    };
+    colors.sidebar_accent_foreground = colors.link;
 }
 
 #[cfg(test)]
@@ -1310,6 +1345,69 @@ mod tests {
         );
         assert_eq!(light_colors.sidebar_foreground, neutral(0x18181b, 1.0));
         assert_eq!(light_colors.sidebar_accent_foreground, light_colors.primary);
+    }
+
+    #[test]
+    fn system_accent_labels_follow_accent_with_readable_contrast() {
+        use iceon_core::preferences::AppTheme;
+
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let palette = if mode.is_dark() {
+                AppTheme::Dark
+            } else {
+                AppTheme::Light
+            }
+            .palette_colors()
+            .unwrap();
+            for accent in [
+                0x007aff, 0xaf52de, 0xff2d55, 0xff3b30, 0xff9500, 0xffcc00, 0x34c759, 0x8e8e93,
+                0x000000, 0xffffff,
+            ] {
+                let mut colors = ThemeColor::default();
+                super::brand_colors_with_accent(&mut colors, mode, Some(accent));
+                assert_eq!(colors.primary, neutral(accent, 1.0));
+                assert_eq!(colors.sidebar_accent_foreground, colors.link);
+                for (color, source) in [
+                    (colors.link, accent),
+                    (colors.link_hover, super::shade(accent, 0.94)),
+                    (colors.link_active, super::shade(accent, 0.88)),
+                ] {
+                    let rgb = super::readable_accent(source, palette[0], palette[1], mode);
+                    assert_eq!(color, neutral(rgb, 1.0));
+                    for bg in [palette[0], palette[1]] {
+                        let ink = super::luminance(rgb);
+                        let fill = super::luminance(bg);
+                        assert!((ink.max(fill) + 0.05) / (ink.min(fill) + 0.05) >= 4.5);
+                    }
+                }
+                // A readable chromatic accent must not fall back to Iceon blue.
+                if accent == 0xff2d55 {
+                    assert_ne!(colors.link, neutral(0x9bb4ff, 1.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn changing_system_accent_refreshes_labels_and_restores_default_palette() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let mut colors = ThemeColor::default();
+            super::brand_colors_with_accent(&mut colors, mode, Some(0xff2d55));
+            let pink = colors.link;
+            super::brand_colors_with_accent(&mut colors, mode, Some(0x34c759));
+            assert_ne!(colors.link, pink);
+            assert_eq!(colors.sidebar_accent_foreground, colors.link);
+            super::brand_colors_with_accent(&mut colors, mode, None);
+            let mut defaults = ThemeColor::default();
+            brand_colors(&mut defaults, mode);
+            assert_eq!(colors.link, defaults.link);
+            assert_eq!(colors.link_hover, defaults.link_hover);
+            assert_eq!(colors.link_active, defaults.link_active);
+            assert_eq!(
+                colors.sidebar_accent_foreground,
+                defaults.sidebar_accent_foreground
+            );
+        }
     }
 
     #[test]
