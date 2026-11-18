@@ -24,7 +24,7 @@ impl Drop for SystemAccentObserver {
 #[cfg(target_os = "windows")]
 pub(crate) struct SystemAccentObserver {
     settings: windows::UI::ViewManagement::UISettings,
-    token: windows::core::EventRegistrationToken,
+    token: windows::Foundation::EventRegistrationToken,
 }
 
 #[cfg(target_os = "windows")]

@@ -1,5 +1,4 @@
 //! Embedded brand glyphs and boundary-aware Kubernetes API-group presentation.
-use gpui_kit::component::Icon;
 
 macro_rules! brand_assets {
     ($($file:literal),+ $(,)?) => {
@@ -71,10 +70,6 @@ pub(crate) fn api_group_path(group: &str) -> &'static str {
                     .is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1)
         })
         .map_or(KUBERNETES_PATH, |(_, path)| *path)
-}
-
-pub(crate) fn api_group_icon(group: &str) -> Icon {
-    Icon::default().path(api_group_path(group))
 }
 
 #[cfg(test)]
